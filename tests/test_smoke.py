@@ -96,6 +96,7 @@ def test_native_model_config_constructs() -> None:
 
     config = NativeModelConfig(
         hidden_size=64,
+        qkv_inner_size=64,
         num_layers=2,
         num_heads=4,
         head_dim=16,
@@ -103,7 +104,7 @@ def test_native_model_config_constructs() -> None:
         vocab_size=50257,
     )
     assert config.hidden_size == 64
-    assert config.num_heads * config.head_dim == config.hidden_size
+    assert config.num_heads * config.head_dim == config.qkv_inner_size
 
 
 def test_from_polygram_checkpoint_missing_file_raises() -> None:
