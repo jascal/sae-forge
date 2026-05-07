@@ -170,17 +170,91 @@ class ForgePipeline:
             )
         return cls(**kwargs)
 
-    def run(self, output_dir: str | Path) -> ForgeResult:
+    def run(
+        self,
+        output_dir: str | Path,
+        *,
+        finetune_iterator=None,
+    ) -> ForgeResult:
+        """Forge against a real HuggingFace host (``host_model_id`` set).
+
+        Dispatches on ``self.orchestrator``:
+
+        - ``"imperative"`` (default) — straight-line forge + faithfulness +
+          save. Fine-tune fields are NOT honoured on this path; if
+          ``finetune_corpus`` is set, a UserWarning surfaces so callers
+          who expect the recipe to run can spot the mismatch and switch
+          to ``orchestrator="fsm"``.
+        - ``"fsm"`` — runs the full
+          load → compress → optional regrow → project → fine-tune → eval
+          loop via the orca-runtime FSM, mirroring ``run_synthetic`` but
+          with ``AutoModelForCausalLM.from_pretrained`` + the host's
+          tokenizer for the eval pre-tokenisation. Fine-tune fields
+          (``finetune_corpus`` / ``finetune_total_steps`` / etc.) flow
+          into the recipe action and produce the post-tune
+          ``forged/`` checkpoint plus ``finetuned/`` directory.
+
+        ``finetune_iterator`` (optional, FSM path only) — a pre-tokenised
+        iterable yielding ``(batch_size, sequence_length)`` int64 tensors.
+        Mirrors the ``run_synthetic`` argument; useful for callers that
+        already own their tokenisation pipeline and want to skip the
+        ``AutoTokenizer + datasets`` round-trip the recipe action would
+        otherwise do via ``finetune_corpus``.
+
+        v0.3 footgun fix: the recipe was wired into the FSM only; the
+        v0.1 imperative ``run()`` silently dropped every ``finetune_*``
+        field on the floor when called against a real host. The new
+        ``"fsm"`` dispatch (and the imperative warning) closes that gap.
+        """
         from saeforge.utils.lazy import require_extra
 
         require_extra("torch", "torch")
-        transformers = require_extra("transformers", "torch")
+        require_extra("transformers", "torch")
 
         if self.host_model_id is None:
             raise ValueError("ForgePipeline.run requires a host_model_id")
 
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
+
+        if self.orchestrator == "fsm":
+            return self._run_real_fsm(output_dir, finetune_iterator=finetune_iterator)
+        if finetune_iterator is not None:
+            import warnings
+
+            warnings.warn(
+                "ForgePipeline.run(finetune_iterator=...) only takes effect "
+                "with orchestrator='fsm'; the imperative path ignores it.",
+                UserWarning,
+                stacklevel=2,
+            )
+        return self._run_real_imperative(output_dir)
+
+    def _run_real_imperative(self, output_dir: Path) -> ForgeResult:
+        """Pre-recipe forge path: load → project → eval → save. No fine-tune."""
+        import warnings
+
+        from saeforge.utils.lazy import require_extra
+
+        transformers = require_extra("transformers", "torch")
+
+        # The recipe action only runs on the FSM path. Surface a warning
+        # so callers who set finetune_corpus on the imperative path see
+        # immediately that their fine-tune was skipped — pre-fix this
+        # was a silent no-op.
+        if self.finetune_corpus is not None or self.finetune_total_steps not in (
+            0, 1000,  # 1000 is the dataclass default; treat both as "unset"
+        ):
+            warnings.warn(
+                "ForgePipeline.run with orchestrator='imperative' (the "
+                "default) does not run the fine-tune recipe. The "
+                f"finetune_corpus={self.finetune_corpus!r} and "
+                f"finetune_total_steps={self.finetune_total_steps} fields "
+                "are being ignored on this path. Pass "
+                "orchestrator='fsm' to enable the recipe end-to-end.",
+                UserWarning,
+                stacklevel=3,
+            )
 
         # Load via AutoModelForCausalLM so the host's actual architecture
         # (GPT-2 / Llama / Gemma-2) drives adapter dispatch. The pre-multi-
@@ -225,6 +299,75 @@ class ForgePipeline:
             model=model,
             output_dir=output_dir,
             n_params=n_params,
+            faithfulness_kl=faithfulness,
+            extras=result_meta,
+        )
+
+    def _run_real_fsm(
+        self, output_dir: Path, *, finetune_iterator=None
+    ) -> ForgeResult:
+        """Real-host FSM dispatch — mirrors ``_run_synthetic_fsm`` with
+        ``AutoModelForCausalLM.from_pretrained`` and host-tokenizer-driven
+        eval pre-tokenisation. Honours every ``finetune_*`` field via the
+        recipe action.
+        """
+        from saeforge.orchestrator import run_machine
+        from saeforge.utils.lazy import require_extra
+
+        transformers = require_extra("transformers", "torch")
+
+        # Persist the basis to disk so the FSM's load action picks it up.
+        sae_checkpoint = output_dir / "synth_basis.safetensors"
+        _write_basis_as_checkpoint(self.basis, sae_checkpoint)
+
+        host = transformers.AutoModelForCausalLM.from_pretrained(self.host_model_id).eval()
+
+        # Pre-tokenise eval_prompts with the host's tokenizer so the FSM
+        # ``evaluate_faithfulness`` action can compute KL via the existing
+        # ``_kl_from_input_ids`` path (no tokenizer round-trip inside the FSM).
+        eval_input_ids = None
+        if self.eval_prompts:
+            tokenizer = transformers.AutoTokenizer.from_pretrained(self.host_model_id)
+            if tokenizer.pad_token is None:
+                tokenizer.pad_token = tokenizer.eos_token
+            encoded = tokenizer(
+                list(self.eval_prompts),
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+            )
+            eval_input_ids = encoded["input_ids"]
+
+        ctx = self._build_fsm_ctx(
+            sae_checkpoint=sae_checkpoint,
+            output_dir=output_dir,
+            host_model=host,
+            eval_input_ids=eval_input_ids,
+            finetune_input_ids=None,
+            finetune_iterator=finetune_iterator,
+            host_model_id=self.host_model_id,
+        )
+        final = run_machine(ctx)
+        model = final.get("_native_model")
+
+        faithfulness = (
+            final.get("faithfulness") if eval_input_ids is not None else None
+        )
+        result_meta = {
+            "host_model_id": self.host_model_id,
+            "n_params": final.get("n_params", 0),
+            "faithfulness_kl": faithfulness,
+            "n_features": final.get("current_feature_count"),
+            "scale_compression_ratio": self.basis.scale_compression_ratio,
+            "transitions_log": final.get("transitions_log", []),
+            "final_state": _final_state_for_log(final),
+        }
+        (output_dir / "forge_result.json").write_text(json.dumps(result_meta, indent=2))
+
+        return ForgeResult(
+            model=model,
+            output_dir=output_dir,
+            n_params=final.get("n_params", 0),
             faithfulness_kl=faithfulness,
             extras=result_meta,
         )
@@ -318,9 +461,50 @@ class ForgePipeline:
             sae_checkpoint = output_dir / "synth_basis.safetensors"
             _write_basis_as_checkpoint(self.basis, sae_checkpoint)
 
-        ctx = {
+        ctx = self._build_fsm_ctx(
+            sae_checkpoint=sae_checkpoint,
+            output_dir=output_dir,
+            host_model=host_model,
+            eval_input_ids=eval_input_ids,
+            finetune_input_ids=finetune_input_ids,
+            finetune_iterator=finetune_iterator,
+            host_model_id="<in-memory>",
+        )
+        final = run_machine(ctx)
+        model = final.get("_native_model")
+        return ForgeResult(
+            model=model,
+            output_dir=output_dir,
+            n_params=final.get("n_params", 0),
+            faithfulness_kl=final.get("faithfulness") if eval_input_ids is not None else None,
+            extras={
+                "host_model_id": "<in-memory>",
+                "n_params": final.get("n_params", 0),
+                "faithfulness_kl": final.get("faithfulness"),
+                "n_features": final.get("current_feature_count"),
+                "transitions_log": final.get("transitions_log", []),
+                "final_state": _final_state_for_log(final),
+            },
+        )
+
+    def _build_fsm_ctx(
+        self,
+        *,
+        sae_checkpoint: str | Path,
+        output_dir: Path,
+        host_model,
+        eval_input_ids,
+        finetune_input_ids,
+        finetune_iterator,
+        host_model_id: str,
+    ) -> dict:
+        """Shared FSM-context builder for both ``_run_real_fsm`` and
+        ``_run_synthetic_fsm`` — keeps the polygram-tuning + finetune-recipe
+        ctx fields in lock-step across the two entry points.
+        """
+        return {
             "sae_checkpoint": str(sae_checkpoint),
-            "host_model_id": "<in-memory>",
+            "host_model_id": host_model_id,
             "output_dir": str(output_dir),
             "iterations": self.iterations,
             "regrow_count": self.regrow_count,
@@ -381,22 +565,6 @@ class ForgePipeline:
             "finetune_save_dir": str(self.finetune_save_dir) if self.finetune_save_dir else None,
             "finetune_log_every": self.finetune_log_every,
         }
-        final = run_machine(ctx)
-        model = final.get("_native_model")
-        return ForgeResult(
-            model=model,
-            output_dir=output_dir,
-            n_params=final.get("n_params", 0),
-            faithfulness_kl=final.get("faithfulness") if eval_input_ids is not None else None,
-            extras={
-                "host_model_id": "<in-memory>",
-                "n_params": final.get("n_params", 0),
-                "faithfulness_kl": final.get("faithfulness"),
-                "n_features": final.get("current_feature_count"),
-                "transitions_log": final.get("transitions_log", []),
-                "final_state": _final_state_for_log(final),
-            },
-        )
 
 
 def _write_basis_as_checkpoint(basis: FeatureBasis, path: str | Path) -> None:
