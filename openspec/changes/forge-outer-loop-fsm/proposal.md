@@ -18,9 +18,10 @@ forge, but it has three known weaknesses:
    to call Polygram's `Compressor` / `Regrower` from inside `run()` with
    ad-hoc loop scaffolding.
 
-[orca-lang](https://github.com/jascal/q-orca-lang) (the **classical**
-FSM language, not q-orca's quantum extension) was built precisely for
-this kind of problem. A `.orca.md` machine is statically verifiable, the
+[orca-lang](https://github.com/orca-lang/orca-lang) (the **classical**
+FSM language, distinct from q-orca's quantum extension) was built
+precisely for this kind of problem. Its Python runtime ships on PyPI
+as `orca-runtime-python` (>=0.1.27). A `.orca.md` machine is statically verifiable, the
 state graph is renderable, and per-state error transitions make
 failure-mode coverage a checked property rather than a code-review
 heuristic.
@@ -77,17 +78,21 @@ accepts a raw SAE checkpoint and runs the full pipeline.
 
 ### Optional dependency
 
-- New `[orca]` extra pinning the classical orca-lang runtime
-  (`orca-lang>=0.5`, the first PyPI release exposing the Python FSM
-  driver as `orca_lang.runtime`). The default forge path does not
-  require it; importing `saeforge.orchestrator` does. Match the same
-  lazy-import discipline as `[torch]` and `[polygram]`.
+- New `[orca]` extra pinning `orca-runtime-python>=0.1.27` (the PyPI
+  distribution name; module name `orca_runtime_python`). 0.1.27 is the
+  first release with a working `register_action` driver and full guard
+  expression evaluation — earlier versions stub `_evaluate_guard` and
+  `_execute_action`. The default forge path does not require it;
+  importing `saeforge.orchestrator` does. Match the same lazy-import
+  discipline as `[torch]` and `[polygram]`.
 
 ### Verification gate
 
-- CI gains an `orca verify saeforge/machines/sae_forge.orca.md` step
-  that runs whenever the file changes. Static verification failure
-  blocks the merge — that is the whole point of choosing an FSM here.
+- A `test_machine_loads_and_has_nine_states` test exercises the
+  parser + topology contract on every CI run. orca-runtime-python
+  doesn't ship a separate verifier binary — parsing failure (dead
+  states, undefined guards, malformed transitions) raises at parse
+  time and surfaces as a test failure.
 
 ## Capabilities
 

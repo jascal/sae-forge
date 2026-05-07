@@ -166,6 +166,38 @@ Polygram's `[behavioural]` extra, when and only when
    question, not a sae-forge orchestration question. Open it there
    if signal warrants.
 
+## v0.1 implementation notes vs the original proposal
+
+Two surprises during implementation, both affecting the original spec:
+
+1. **Dependency name.** The proposal called for `orca-lang>=0.5`. That
+   package does not exist on PyPI. The actual classical-orca Python
+   runtime is `orca-runtime-python` (PyPI), module name
+   `orca_runtime_python`. We pin `>=0.1.27` because earlier releases
+   ship stubbed `_evaluate_guard` (always-true) and `_execute_action`
+   (no-op). Both work in 0.1.27.
+
+2. **Guard arithmetic is not parsed.** orca-runtime-python's parser
+   silently mis-parses `ctx.field + 1 < ctx.other` as a null-check on
+   `ctx.field`, which always passes. The original design.md guard
+   `ctx.current_iter + 1 < ctx.iterations` would loop forever. The
+   v0.1 implementation moves the loop-condition logic into the
+   `evaluate_faithfulness` action, which writes a boolean
+   `should_continue` field, and the FSM guards become the trivial
+   `ctx.should_continue == true` / `== false`. This keeps the loop-
+   termination logic in Python where comparisons + arithmetic are
+   reliable, and the FSM only branches on a flat boolean. Update
+   upstream is tracked separately.
+
+3. **Compress / regrow / fine-tune are no-op pass-throughs in v0.1.**
+   The actions update `current_sae_path` bookkeeping but don't yet
+   call into Polygram's `Compressor` / `Regrower` (Polygram isn't on
+   PyPI; only editable installs work). v0.2 swaps these for real
+   calls. The byte-equivalence test holds because both orchestrators
+   currently exercise the same projection-only path; v0.2 will need a
+   weight-equivalence test that's tolerant to compression non-
+   determinism.
+
 ## Why not Q-orca for this
 
 The forge outer loop is classical: states are program states, not

@@ -57,19 +57,29 @@ with `openspec validate <change-name>` before working on it; archive via
 
 ## orca-lang dependency contract
 
-- Pinned at `orca-lang>=0.5` behind the `[orca]` extra. Required only
-  for the FSM-driven forge path landing in v0.1
+- Pinned at `orca-runtime-python>=0.1.27` behind the `[orca]` extra
+  (PyPI distribution name; module name `orca_runtime_python`). Earlier
+  releases ship stubbed guard / action handlers — 0.1.27 is the first
+  with working `register_action` and full guard expression evaluation.
+  The package called "orca-lang" in the original v0.1 spec does **not**
+  exist on PyPI; orca-runtime-python is the actual classical-orca
+  Python runtime.
+- Required only for the FSM-driven forge path landing in v0.1
   (`forge-outer-loop-fsm`). The default imperative `ForgePipeline.run`
   from v0 does **not** require it.
-- Lazy-import `orca_lang.runtime` inside `saeforge.orchestrator`, never
-  at package import time. `import saeforge` MUST succeed without
-  `orca-lang` installed.
+- Lazy-import `orca_runtime_python` inside `saeforge.orchestrator`,
+  never at package import time. `import saeforge` MUST succeed without
+  `orca-runtime-python` installed.
 - The canonical machine ships at `saeforge/machines/sae_forge.orca.md`
   as package data. Load it via `importlib.resources.files`, never via
   filesystem path resolution.
-- CI runs `orca verify` against the shipped machine. Static
-  verification failure blocks the merge — that is the whole reason we
-  chose an FSM here.
+- Known parser limitation: orca-runtime-python <=0.1.27 silently
+  mis-parses arithmetic guard expressions
+  (`ctx.field + 1 < ctx.other`) as a null-check. The forge-outer-loop
+  FSM works around this by computing loop-termination logic in the
+  `evaluate_faithfulness` action and exposing a flat
+  `should_continue: bool` for the FSM guard. Track upstream fix in
+  the orca-lang issue tracker.
 - This is **classical** orca-lang. q-orca-lang (the quantum extension)
   is never imported on the default forge path; `--quantum-aware` only
   influences which Polygram `confirmer` is selected inside
