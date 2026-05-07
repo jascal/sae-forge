@@ -61,12 +61,20 @@ class ForgePipeline:
     regrow_count: int = 0
     quantum_aware: bool = False
     validation_report_path: str | None = None
-    # Polygram tuning bundles (polygram>=0.1.0). Each is plumbed end-to-end
-    # via FSM context: serialised on the way in (``cfg.to_dict()`` →
-    # ``ctx[key]``) and reconstituted on the way out (in the action via
-    # ``<Config>.from_dict(ctx[key])``). When a field is ``None``, the
-    # corresponding polygram constructor is called without ``config=`` and
-    # falls back to polygram's own dataclass defaults.
+    # Polygram tuning bundles (polygram>=0.1.0). Each is plumbed
+    # end-to-end via FSM context — serialised on the way in
+    # (``cfg.to_dict()`` → ``ctx[key]``) and reconstituted on the way
+    # out (action: ``<Config>.from_dict(ctx[key])``). When a field is
+    # ``None`` the corresponding polygram constructor is called without
+    # ``config=``, so polygram's own defaults apply.
+    #
+    # ``compression``        → polygram.Compressor
+    #     (strategy / rep_selection / merge_mode / confirmer)
+    # ``epoch_compression``  → polygram.EpochCompressor
+    #     (coverage_target, cosine_threshold, max_iterations,
+    #      n_visits_per_feature, embedded ValidationConfig)
+    # ``regrow``             → polygram.Regrower.from_compression_report
+    #     (model_name, layer, strategy, prompts, seed, n_init, device)
     compression: "CompressionConfig | None" = None
     epoch_compression: "EpochCompressionConfig | None" = None
     regrow: "RegrowConfig | None" = None
@@ -102,11 +110,14 @@ class ForgePipeline:
         # construction time keeps the failure mode loud and local.
         if self.regrow_count > 0 and self.regrow is None:
             raise ValueError(
-                "ForgePipeline: regrow_count > 0 requires regrow="
-                "RegrowConfig(model_name=..., layer=...). The pre-change "
-                "GPT-2 defaults were removed; pass an explicit RegrowConfig "
-                "(see polygram>=0.1.0) describing the host model's residual "
-                "stream."
+                f"ForgePipeline: regrow_count={self.regrow_count} > 0 "
+                f"requires an explicit RegrowConfig. Either:\n"
+                f"  - pass regrow=RegrowConfig(model_name=..., layer=...) "
+                f"naming the host model's residual stream layer, OR\n"
+                f"  - set regrow_count=0 to skip regrowth entirely.\n"
+                f"The pre-change layer=10 / model_name=\"gpt2\" fallbacks "
+                f"were removed in polygram 0.1.0 because they silently "
+                f"bound regrowth to GPT-2."
             )
 
     @classmethod
@@ -139,18 +150,24 @@ class ForgePipeline:
             "epoch_compression": EpochCompressionConfig,
             "regrow": RegrowConfig,
         }
+        unknown: list[str] = []
         for key, value in data.items():
             if key not in known:
-                warnings.warn(
-                    f"ForgePipeline.from_dict: ignoring unknown key {key!r}",
-                    UserWarning,
-                    stacklevel=2,
-                )
+                unknown.append(key)
                 continue
             if key in nested and isinstance(value, Mapping):
                 kwargs[key] = nested[key].from_dict(value)
             else:
                 kwargs[key] = value
+        if unknown:
+            # Single warning collecting every unknown key — easier to
+            # spot in logs than one warning per dropped key.
+            warnings.warn(
+                f"ForgePipeline.from_dict: ignoring unknown key(s): "
+                f"{sorted(unknown)!r}",
+                UserWarning,
+                stacklevel=2,
+            )
         return cls(**kwargs)
 
     def run(self, output_dir: str | Path) -> ForgeResult:

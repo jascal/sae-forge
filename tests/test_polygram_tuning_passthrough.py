@@ -43,11 +43,17 @@ def _basis(n: int = 4) -> FeatureBasis:
 class TestRegrowGuard:
     def test_regrow_count_without_regrow_raises(self):
         basis = _basis()
-        with pytest.raises(ValueError, match="RegrowConfig"):
+        with pytest.raises(ValueError) as excinfo:
             ForgePipeline(
                 basis=basis, projector=SubspaceProjector(basis),
                 regrow_count=2,
             )
+        # Actionable message: names both fixes — supply RegrowConfig OR
+        # set regrow_count=0 — and references the polygram-side reason.
+        msg = str(excinfo.value)
+        assert "RegrowConfig" in msg
+        assert "regrow_count=0" in msg
+        assert "model_name" in msg and "layer" in msg
 
     def test_regrow_count_with_regrow_succeeds(self):
         basis = _basis()
@@ -125,6 +131,58 @@ class TestFromDict:
         assert any("futurefield" in str(wi.message) for wi in w)
         # Defaults still apply for the rest.
         assert pipeline.host_model_id is None
+
+    def test_multiple_unknown_keys_collected_in_one_warning(self):
+        # Single warning naming every unknown key, rather than one
+        # warning per dropped key — easier to spot in logs.
+        basis = _basis()
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            ForgePipeline.from_dict(
+                {
+                    "basis": basis,
+                    "projector": SubspaceProjector(basis),
+                    "futurefield": 42,
+                    "anotherfuture": "x",
+                    "third": True,
+                }
+            )
+        # Exactly one UserWarning; message lists every unknown key.
+        unknown_warnings = [wi for wi in w if "ignoring unknown" in str(wi.message)]
+        assert len(unknown_warnings) == 1, [str(wi.message) for wi in w]
+        msg = str(unknown_warnings[0].message)
+        assert "futurefield" in msg
+        assert "anotherfuture" in msg
+        assert "third" in msg
+
+    def test_nested_validation_error_bubbles_up(self):
+        # If the nested polygram config rejects a field (e.g. an
+        # out-of-range coverage_target), the error should surface
+        # cleanly from from_dict — naming the offending field and
+        # the polygram dataclass — not silently get swallowed.
+        basis = _basis()
+        with pytest.raises(ValueError, match=r"coverage_target"):
+            ForgePipeline.from_dict(
+                {
+                    "basis": basis,
+                    "projector": SubspaceProjector(basis),
+                    "epoch_compression": {"coverage_target": 1.5},
+                }
+            )
+
+    def test_nested_required_field_missing_bubbles_up(self):
+        # RegrowConfig requires model_name and layer; from_dict should
+        # bubble polygram's TypeError when either is missing.
+        basis = _basis()
+        with pytest.raises(TypeError, match=r"layer"):
+            ForgePipeline.from_dict(
+                {
+                    "basis": basis,
+                    "projector": SubspaceProjector(basis),
+                    "regrow_count": 2,
+                    "regrow": {"model_name": "gpt2"},  # layer missing
+                }
+            )
 
     def test_from_dict_rejects_non_mapping(self):
         with pytest.raises(TypeError, match="mapping"):
