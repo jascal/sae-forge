@@ -41,7 +41,7 @@ notebook = ["jupyter", "matplotlib"]
 # Torch + transformers — needed for native model construction, weight
 # projection from a real source model, and fine-tuning. The pure-numpy
 # basis loader and projector math stay on the no-extras install.
-torch = ["torch>=2.2", "transformers>=4.40"]
+torch = ["torch>=2.2", "transformers>=4.46"]
 # Polygram bridge — the canonical producer of compressed SAE checkpoints
 # that sae-forge consumes. Pinned to a release that ships scale-aware
 # merged decoder norms (Polygram PR #34). Published on PyPI by the
@@ -52,15 +52,19 @@ polygram = ["polygram>=0.0.1"]
 # `--fsm` opt-in path; the default imperative ForgePipeline does not
 # need it.
 orca = ["orca-runtime-python>=0.1.27"]
+# v0.3 forge-finetune-recipe — pulls HuggingFace `datasets` for the
+# stream-from-HF corpus path. Local-file corpora work without this.
+recipe = ["datasets>=2.16"]
 all = [
     "pytest",
     "ruff",
     "matplotlib",
     "jupyter",
     "torch>=2.2",
-    "transformers>=4.40",
+    "transformers>=4.46",
     "polygram>=0.0.1",
     "orca-runtime-python>=0.1.27",
+    "datasets>=2.16",
 ]
 
 [project.scripts]

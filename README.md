@@ -160,6 +160,14 @@ the turn-key path.
 > the canonical spec) lives in [`docs/algorithm.md`](docs/algorithm.md).
 > Read it before changing the projector or proposing a v1 architecture.
 
+> **Fine-tune recipe (v0.3).** The training loop (cosine LR + warmup,
+> gradient clipping, optional gradient checkpointing, optional bf16/
+> fp16 autocast, periodic eval, periodic saves, structured loss
+> tracking) lives in [`docs/finetune-recipe.md`](docs/finetune-recipe.md).
+> Local-corpus-first, offline-safe by spec — designed for proprietary
+> data flows where nothing should leak to remote services. The
+> headline demo is [`examples/forge_gemma2_2b.py`](examples/forge_gemma2_2b.py).
+
 ## Quickstart
 
 ```python

@@ -1,0 +1,271 @@
+"""End-to-end Gemma-2-2B forge against a Gemma Scope SAE + recipe fine-tune.
+
+Headline v0.3 demo:
+1. Pull a Gemma Scope SAE from HuggingFace (default:
+   ``google/gemma-scope-2b-pt-res``, configurable layer)
+2. Slice to a configurable feature subset (default 256)
+3. Run polygram.EpochCompressor against Gemma-2-2B forward passes
+4. Forge with v0 host-attention (v0.2 feature_native is a separate flag)
+5. Fine-tune via the v0.3 recipe: cosine LR + warmup, gradient
+   clipping, optional gradient checkpointing, optional bf16/fp16
+6. Periodic faithfulness eval; periodic checkpoint saves
+
+CPU is not realistic for this script — Gemma-2-2B at ~5GB fp16 needs
+GPU/MPS. Defaults assume `device="mps"` (Apple Silicon 24GB+) or
+`device="cuda"` (24GB+ NVIDIA).
+
+Wall-clock targets:
+- M4 Pro 24GB MPS: ~30-90 min for 1k-step fine-tune
+- RTX 4090 24GB CUDA: ~10-30 min for 1k-step fine-tune
+
+Pre-conditions:
+- Accept the Gemma license at https://huggingface.co/google/gemma-2-2b
+  and run `huggingface-cli login` with a token that has read access
+- ~10GB free under ~/.cache/huggingface/ for Gemma weights + SAE
+- For the corpus: either pass --corpus /path/to/local.txt or accept
+  the default streaming Fineweb-edu (lazy-imports `datasets`)
+
+Run:
+    python examples/forge_gemma2_2b.py /tmp/run --device mps --n-features 256 --steps 1000
+
+For a fast smoke test (no fine-tune, just forge + KL eval):
+    python examples/forge_gemma2_2b.py /tmp/run --device mps --n-features 64 --steps 0
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import time
+from pathlib import Path
+
+
+SAE_REPO = "google/gemma-scope-2b-pt-res"
+SAE_FILE_TEMPLATE = "layer_{layer}/width_16k/average_l0_71/params.npz"
+HOST_MODEL = "google/gemma-2-2b"
+DEFAULT_LAYER = 12
+
+EVAL_PROMPTS = [
+    "The mitochondrion is the powerhouse of the",
+    "To be or not to be, that is the",
+    "All happy families are alike; each unhappy family is",
+    "In the beginning God created the heavens and the",
+]
+
+
+def slice_sae_to_features(input_path: Path, output_path: Path, feature_indices: list[int]) -> None:
+    """Slice a Gemma Scope SAE (.npz format) to a feature subset, output as safetensors."""
+    import numpy as np
+    from safetensors.numpy import save_file
+
+    with np.load(str(input_path)) as state:
+        keys = list(state.keys())
+        sliced: dict = {}
+        # Gemma Scope npz convention: W_dec / W_enc / b_enc / b_dec / threshold
+        # (TopK-style SAE has a `threshold` row tensor too)
+        if "W_dec" in keys:
+            sliced["W_dec"] = state["W_dec"][feature_indices]
+        if "W_enc" in keys:
+            we = state["W_enc"]
+            if we.shape[1] == state["W_dec"].shape[0]:
+                sliced["W_enc"] = we[:, feature_indices]
+            else:
+                sliced["W_enc"] = we[feature_indices]
+        if "b_enc" in keys:
+            sliced["b_enc"] = state["b_enc"][feature_indices]
+        if "b_dec" in keys:
+            sliced["b_dec"] = state["b_dec"]
+        if "threshold" in keys:
+            sliced["threshold"] = state["threshold"][feature_indices]
+    save_file(sliced, str(output_path))
+
+
+def main(args) -> dict:
+    import torch  # noqa: F401
+    from huggingface_hub import hf_hub_download
+
+    from saeforge import FeatureBasis, ForgePipeline, SubspaceProjector
+
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # ---- Stage 1: download SAE -----------------------------------
+    sae_file = SAE_FILE_TEMPLATE.format(layer=args.layer)
+    print(f"[1/5] downloading Gemma Scope SAE: {SAE_REPO} :: {sae_file}")
+    t0 = time.monotonic()
+    sae_path = Path(hf_hub_download(repo_id=SAE_REPO, filename=sae_file))
+    print(f"      cached at {sae_path} ({time.monotonic() - t0:.1f}s)")
+
+    # ---- Stage 2: slice ------------------------------------------
+    print(f"[2/5] slicing SAE to first {args.n_features} features")
+    sliced_path = output_dir / "sae_sliced.safetensors"
+    slice_sae_to_features(sae_path, sliced_path, list(range(args.n_features)))
+
+    # ---- Stage 3: polygram compression ---------------------------
+    print(f"[3/5] polygram EpochCompressor on layer {args.layer}, "
+          f"{args.n_features} features, {args.n_compress_prompts} prompts")
+    from polygram import EpochCompressor
+
+    compressed_path = output_dir / "sae_compressed.safetensors"
+    compress_prompts = _load_corpus_lines(args.corpus, n=args.n_compress_prompts) \
+        if args.corpus and Path(args.corpus).exists() \
+        else _default_compression_prompts(args.n_compress_prompts)
+    epoch = EpochCompressor(
+        sae_checkpoint=sliced_path,
+        prompts=compress_prompts,
+        layer=args.layer,
+        model_name=HOST_MODEL,
+        strategy="zero",
+        device=args.device,
+        coverage_target=args.coverage_target,
+        cosine_threshold=0.30,
+        n_visits_per_feature=1,
+        max_iterations=args.compress_max_iterations,
+    )
+    t0 = time.monotonic()
+    epoch_result = epoch.run(compressed_path)
+    epoch_wall = time.monotonic() - t0
+    print(f"      done in {epoch_wall/60:.1f}min; "
+          f"zeroed={epoch_result.report.n_features_zeroed_total}/{args.n_features}, "
+          f"panels={epoch_result.report.n_panels_total}")
+
+    # ---- Stage 4: forge + fine-tune ------------------------------
+    print(f"[4/5] forging Gemma-2-2B against compressed SAE; "
+          f"fine-tune {args.steps} steps on {args.corpus or 'default Fineweb-edu'}")
+    basis = FeatureBasis.from_polygram_checkpoint(compressed_path)
+    if basis.n_features == 0:
+        raise RuntimeError("compression zeroed every feature; raise --n-features or relax --coverage-target")
+    print(f"      basis: n_features={basis.n_features}, d_model={basis.d_model}")
+
+    projector = SubspaceProjector(basis)
+    pipeline = ForgePipeline(
+        basis=basis,
+        projector=projector,
+        host_model_id=HOST_MODEL,
+        eval_prompts=EVAL_PROMPTS,
+        dtype=args.dtype,
+        device=args.device,
+        attention_width=args.attention_width,
+        finetune_corpus=args.corpus or "HuggingFaceFW/fineweb-edu",
+        finetune_total_steps=args.steps,
+        finetune_warmup_steps=max(1, args.steps // 10),
+        finetune_peak_lr=args.lr,
+        finetune_batch_size=args.batch_size,
+        finetune_seq_len=args.seq_len,
+        finetune_precision=args.precision,
+        finetune_grad_checkpoint=args.grad_checkpoint,
+        finetune_eval_every=max(1, args.steps // 10),
+        finetune_save_every=max(1, args.steps // 4),
+    )
+    t0 = time.monotonic()
+    if args.steps > 0:
+        result = pipeline.run(output_dir / "forge")
+    else:
+        # Skip fine-tune entirely — pipeline.run still does the forge + eval
+        pipeline.finetune_corpus = None
+        result = pipeline.run(output_dir / "forge")
+    forge_wall = time.monotonic() - t0
+    print(f"      forged: n_params={result.n_params}, "
+          f"final KL={result.faithfulness_kl}, wall={forge_wall/60:.1f}min")
+
+    # ---- Stage 5: summary ----------------------------------------
+    summary = {
+        "host_model": HOST_MODEL,
+        "sae_repo": SAE_REPO,
+        "sae_layer": args.layer,
+        "n_features_sliced": args.n_features,
+        "n_features_kept": basis.n_features,
+        "d_model": basis.d_model,
+        "compression": {
+            "zeroed": epoch_result.report.n_features_zeroed_total,
+            "panels": epoch_result.report.n_panels_total,
+            "wall_minutes": round(epoch_wall / 60, 2),
+        },
+        "forge": {
+            "attention_width": args.attention_width,
+            "n_params": result.n_params,
+            "faithfulness_kl": result.faithfulness_kl,
+            "wall_minutes": round(forge_wall / 60, 2),
+        },
+        "finetune": {
+            "steps": args.steps,
+            "corpus": args.corpus or "HuggingFaceFW/fineweb-edu",
+            "precision": args.precision,
+            "grad_checkpoint": args.grad_checkpoint,
+        },
+    }
+    (output_dir / "run_summary.json").write_text(json.dumps(summary, indent=2))
+    print(f"[5/5] summary written to {output_dir / 'run_summary.json'}")
+    print(json.dumps(summary, indent=2))
+    return summary
+
+
+def _default_compression_prompts(n: int) -> list[str]:
+    """Fallback compression prompts when no local corpus is supplied."""
+    base = [
+        "The capital of France is Paris.",
+        "Photosynthesis converts light into chemical energy.",
+        "Newton's third law: every action has an equal reaction.",
+        "The mitochondrion is the powerhouse of the cell.",
+        "Water freezes at zero degrees Celsius.",
+        "DNA carries genetic information in living organisms.",
+        "Computers manipulate symbols according to formal rules.",
+        "Music expresses emotions through structured sound.",
+    ]
+    out: list[str] = []
+    while len(out) < n:
+        out.extend(base)
+    return out[:n]
+
+
+def _load_corpus_lines(path: str, n: int) -> list[str]:
+    lines: list[str] = []
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                lines.append(line)
+            if len(lines) >= n:
+                break
+    return lines or _default_compression_prompts(n)
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
+    parser.add_argument("output_dir", help="where to write the forge artifacts")
+    parser.add_argument(
+        "--device", default="cpu",
+        help="cpu / mps (Apple) / cuda (NVIDIA). cpu is not realistic for Gemma-2-2B.",
+    )
+    parser.add_argument(
+        "--dtype", default="float32", choices=("float32", "float16", "bfloat16"),
+    )
+    parser.add_argument("--layer", type=int, default=DEFAULT_LAYER)
+    parser.add_argument("--n-features", type=int, default=256)
+    parser.add_argument("--n-compress-prompts", type=int, default=16)
+    parser.add_argument("--coverage-target", type=float, default=0.5)
+    parser.add_argument("--compress-max-iterations", type=int, default=1)
+    parser.add_argument(
+        "--attention-width", default="host", choices=("host", "feature_native"),
+    )
+    parser.add_argument(
+        "--corpus", default=None,
+        help="local file path for fine-tune corpus; defaults to HuggingFaceFW/fineweb-edu",
+    )
+    parser.add_argument("--steps", type=int, default=1000)
+    parser.add_argument("--lr", type=float, default=5e-5)
+    parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--seq-len", type=int, default=512)
+    parser.add_argument(
+        "--precision", default="bf16", choices=("fp32", "bf16", "fp16"),
+        help="bf16 recommended on M-series and modern CUDA",
+    )
+    parser.add_argument("--grad-checkpoint", action="store_true")
+    return parser
+
+
+if __name__ == "__main__":
+    parser = _build_parser()
+    args = parser.parse_args()
+    sys.exit(0 if main(args) else 1)
