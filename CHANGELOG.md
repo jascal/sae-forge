@@ -3,6 +3,27 @@
 All notable changes to sae-forge are tracked here. v0 entries land as
 their corresponding OpenSpec change is archived.
 
+## [0.2.1] — 2026-05-07
+
+### Fixed
+
+- **`NativeModel.save_pretrained` / `load_pretrained` round-trip on
+  tied-embedding hosts** ([PR #5](../../pull/5)). The `ForgedLlama`
+  constructor aliases `lm_head.weight` to `model.embed_tokens.weight`
+  when `config.tied_embeddings` is True (Gemma-2 default + tied
+  Llama configs), but `safetensors.torch.save_file` rejects
+  shared-storage tensors. The fix drops `lm_head.weight` from the
+  saved state_dict when tied; `load_pretrained` reconstructs the
+  alias via the constructor and relaxes `load_state_dict(strict=False)`
+  for the missing slot. Without this fix the Gemma-2-2B forge crashed
+  at stage 4 save, after polygram + projection had already succeeded.
+
+- **`examples/forge_gemma2_2b.py` SAE filename templating**
+  ([PR #5](../../pull/5)). The previous hard-coded `average_l0_71`
+  doesn't exist for layer 12 of `google/gemma-scope-2b-pt-res`
+  (layer 12 publishes `{22, 41, 82, 176, 445}`). New `--l0` flag
+  (default 82) templates into the `SAE_FILE_TEMPLATE` path.
+
 ## [0.2.0] — 2026-05-07
 
 ### Added (multi-architecture-support)
