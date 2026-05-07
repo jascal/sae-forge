@@ -230,6 +230,13 @@ class NativeModel:
         output_dir.mkdir(parents=True, exist_ok=True)
         (output_dir / "config.json").write_text(json.dumps(self.config.to_dict(), indent=2))
         state = {k: v.contiguous() for k, v in self._module.state_dict().items()}
+        if self.config.tied_embeddings:
+            # ``lm_head.weight`` aliases ``model.embed_tokens.weight`` post-
+            # construction (see ForgedLlama.__init__). safetensors refuses
+            # shared-storage tensors on save; drop the alias so the file
+            # contains a single copy of the embedding. ``load_pretrained``
+            # rebuilds the alias via the constructor.
+            state.pop("lm_head.weight", None)
         save_file(state, str(output_dir / "model.safetensors"))
 
     @classmethod
@@ -238,9 +245,16 @@ class NativeModel:
 
         input_dir = Path(input_dir)
         config = NativeModelConfig.from_dict(json.loads((input_dir / "config.json").read_text()))
+        # The constructor already aliases lm_head.weight to embed_tokens.weight
+        # when tied_embeddings is True (no explicit slot present in the
+        # safetensors file in that case).
         model = cls(config)
         state = load_file(str(input_dir / "model.safetensors"))
-        model._module.load_state_dict(state)
+        # When tied, the saved state_dict legitimately omits lm_head.weight.
+        # load_state_dict's ``strict=True`` would raise on the missing slot;
+        # relax it for tied models so the alias survives.
+        strict = not config.tied_embeddings
+        model._module.load_state_dict(state, strict=strict)
         return model
 
 
