@@ -26,7 +26,10 @@ class NativeModelConfig:
     """Architecture knobs for a forged native model.
 
     ``hidden_size`` is fixed by the feature basis (``basis.n_features``).
-    ``qkv_inner_size`` and ``intermediate_size`` are inherited from the host.
+    ``qkv_inner_size`` and ``intermediate_size`` are inherited from the host
+    when ``attention_width == "host"``. When ``attention_width ==
+    "feature_native"`` (v0.2 opt-in), ``qkv_inner_size`` MUST equal
+    ``hidden_size`` and ``num_heads * head_dim == hidden_size``.
     """
 
     hidden_size: int
@@ -39,13 +42,32 @@ class NativeModelConfig:
     max_position_embeddings: int = 1024
     layer_norm_epsilon: float = 1e-5
     activation: str = "gelu"
+    attention_width: str = "host"
 
     def __post_init__(self) -> None:
+        if self.attention_width not in ("host", "feature_native"):
+            raise ValueError(
+                f"attention_width must be 'host' or 'feature_native'; got {self.attention_width!r}"
+            )
         if self.num_heads * self.head_dim != self.qkv_inner_size:
             raise ValueError(
                 f"qkv_inner_size {self.qkv_inner_size} must equal "
                 f"num_heads ({self.num_heads}) * head_dim ({self.head_dim})"
             )
+        if self.attention_width == "feature_native":
+            if self.qkv_inner_size != self.hidden_size:
+                raise ValueError(
+                    f"feature-native attention requires qkv_inner_size "
+                    f"({self.qkv_inner_size}) to equal hidden_size "
+                    f"({self.hidden_size})"
+                )
+            if self.hidden_size % self.num_heads != 0:
+                raise ValueError(
+                    f"feature-native attention requires hidden_size "
+                    f"({self.hidden_size}) to be divisible by num_heads "
+                    f"({self.num_heads}); set num_heads to a divisor of "
+                    f"hidden_size or pad the basis"
+                )
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -252,13 +274,26 @@ class NativeModel:
         return model
 
 
-def _config_from_host(host_model, n_features: int) -> NativeModelConfig:
-    """Pull the host's per-block dimensions and merge with the basis-width residual."""
+def _config_from_host(
+    host_model, n_features: int, *, attention_width: str = "host"
+) -> NativeModelConfig:
+    """Pull the host's per-block dimensions and merge with the basis-width residual.
+
+    When ``attention_width == "feature_native"``, the QKV-inner width is
+    pinned to ``n_features`` (the basis width) and ``head_dim`` is recomputed
+    accordingly. ``num_heads`` is inherited from the host; users with awkward
+    ``n_features`` (prime, near-prime) should override.
+    """
     cfg = host_model.config
-    head_dim = cfg.n_embd // cfg.n_head
+    if attention_width == "feature_native":
+        qkv_inner = n_features
+        head_dim = n_features // cfg.n_head
+    else:
+        qkv_inner = cfg.n_embd
+        head_dim = cfg.n_embd // cfg.n_head
     return NativeModelConfig(
         hidden_size=n_features,
-        qkv_inner_size=cfg.n_embd,
+        qkv_inner_size=qkv_inner,
         num_layers=cfg.n_layer,
         num_heads=cfg.n_head,
         head_dim=head_dim,
@@ -266,4 +301,5 @@ def _config_from_host(host_model, n_features: int) -> NativeModelConfig:
         vocab_size=cfg.vocab_size,
         max_position_embeddings=cfg.n_positions,
         layer_norm_epsilon=cfg.layer_norm_epsilon,
+        attention_width=attention_width,
     )

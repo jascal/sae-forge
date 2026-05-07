@@ -143,8 +143,9 @@ def project_to_subspace(ctx: dict, _payload: dict | None = None) -> dict:
         transformers = require_extra("transformers", "torch")
         host = transformers.GPT2LMHeadModel.from_pretrained(ctx["host_model_id"]).eval()
 
-    weights = projector.project_module(host)
-    config = _config_from_host(host, basis.n_features)
+    attention_width = ctx.get("attention_width", "host")
+    weights = projector.project_module(host, attention_width=attention_width)
+    config = _config_from_host(host, basis.n_features, attention_width=attention_width)
     model = NativeModel.from_projected_weights(config, weights)
 
     output_dir = Path(ctx["output_dir"])

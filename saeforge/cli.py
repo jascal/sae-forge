@@ -29,6 +29,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     forge.add_argument("--dtype", default="float32", choices=("float32", "float16", "bfloat16"))
     forge.add_argument("--device", default="cpu")
+    forge.add_argument(
+        "--feature-native-attention",
+        action="store_true",
+        help="opt in to v0.2 feature-native attention; default is host-inherited internal width",
+    )
 
     inspect = sub.add_parser(
         "inspect",
@@ -51,6 +56,7 @@ def _cmd_forge(args: argparse.Namespace) -> int:
         host_model_id=args.host_model,
         dtype=args.dtype,
         device=args.device,
+        attention_width="feature_native" if args.feature_native_attention else "host",
     )
     result = pipeline.run(args.output_dir)
     print(f"forged: {result.output_dir} ({result.n_params} params)")

@@ -56,6 +56,7 @@ class ForgePipeline:
     rep_selection: str = "scale_aware"
     finetune_steps: int = 0
     finetune_lr: float = 1e-3
+    attention_width: str = "host"
 
     def run(self, output_dir: str | Path) -> ForgeResult:
         from saeforge.utils.lazy import require_extra
@@ -70,8 +71,10 @@ class ForgePipeline:
         output_dir.mkdir(parents=True, exist_ok=True)
 
         host = transformers.GPT2LMHeadModel.from_pretrained(self.host_model_id).eval()
-        weights = self.projector.project_module(host)
-        config = _config_from_host(host, self.basis.n_features)
+        weights = self.projector.project_module(host, attention_width=self.attention_width)
+        config = _config_from_host(
+            host, self.basis.n_features, attention_width=self.attention_width
+        )
         model = NativeModel.from_projected_weights(config, weights)
         model._move(dtype=self.dtype, device=self.device)
 
@@ -138,8 +141,10 @@ class ForgePipeline:
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        weights = self.projector.project_module(host_model)
-        config = _config_from_host(host_model, self.basis.n_features)
+        weights = self.projector.project_module(host_model, attention_width=self.attention_width)
+        config = _config_from_host(
+            host_model, self.basis.n_features, attention_width=self.attention_width
+        )
         model = NativeModel.from_projected_weights(config, weights)
         model._move(dtype=self.dtype, device=self.device)
 
@@ -156,6 +161,7 @@ class ForgePipeline:
             "faithfulness_kl": faithfulness,
             "n_features": self.basis.n_features,
             "scale_compression_ratio": self.basis.scale_compression_ratio,
+            "attention_width": self.attention_width,
         }
         (output_dir / "forge_result.json").write_text(json.dumps(result_meta, indent=2))
         return ForgeResult(
@@ -216,6 +222,7 @@ class ForgePipeline:
             "rep_selection": self.rep_selection,
             "finetune_steps": self.finetune_steps,
             "finetune_lr": self.finetune_lr,
+            "attention_width": self.attention_width,
         }
         final = run_machine(ctx)
         model = final.get("_native_model")

@@ -186,31 +186,56 @@ geometry the SAE learned beyond span-recovery — a reasonable choice
 when scale-aware compression has already isolated the meaningful
 basis directions.
 
-### 10.2 Attention / MLP internal widths are host-inherited
+### 10.2 Attention internal widths — host-inherited (default) or feature-native (v0.2 opt-in)
 
-The spec's §4 example `W_Q_new = E.T @ W_Q @ B.T` projects **both
-sides** of the Q / K / V matrices, so the QKV inner space is also
-k-wide. v0 instead inherits the host's attention internal width
-(`n_heads × head_dim`) and projects only the residual-touching
-edges:
+v0.2 ships **both** modes behind a `attention_width` knob on
+`NativeModelConfig`, `ForgePipeline`, and the `--feature-native-attention`
+CLI flag. Default is `"host"` to preserve byte-equivalence with v0
+output; `"feature_native"` realizes the full §4 form.
+
+**`attention_width="host"` (default)** — inherits the host's attention
+internal width (`n_heads × head_dim`), projects only the residual-
+touching edges:
 
 ```
-W_Q_v0 = D @ W_Q          # shape (k, host_qkv_inner)
-W_O_v0 = W_O @ E_v0       # shape (host_qkv_inner, k)
+W_Q_host = D @ W_Q          # shape (k, host_qkv_inner)
+W_O_host = W_O @ E_v0       # shape (host_qkv_inner, k)
 ```
 
-This keeps the attention mechanics (softmax, head splitting,
-positional handling) identical to the host, so attention faithfulness
-on the toy GPT-2 case is preserved exactly. The full §4 formulation
-where attention also lives in k-space is a v1 target — it has the
-attractive property that *every* dimension of the model becomes
-feature-native, but it also requires retraining attention from
-scratch (no host weights to inherit cleanly).
+Keeps attention mechanics (softmax, head splitting, positional
+handling) identical to the host. Attention faithfulness preserved
+exactly when the basis spans the full residual.
 
-The exact algebra v0 ships is documented in the
+**`attention_width="feature_native"` (v0.2 opt-in)** — every dimension
+becomes k-wide; both sides of c_attn / c_proj project per §4:
+
+```
+W_Q_fn = D @ W_Q @ E_v0     # shape (k, k)
+W_O_fn = D @ W_O @ E_v0     # shape (k, k)
+```
+
+Identity-basis sanity check still holds in this mode (when `W_dec = I`,
+`D @ W @ E = W`). Constraint: `n_features` must be divisible by
+`num_heads` (the standard transformer constraint applied to the basis
+width). Default is to inherit the host's `num_heads` and pick
+`head_dim = n_features // num_heads`.
+
+When to use which: if the basis spans most of the residual (e.g.
+top-256 features in a 768-d model with strong SAE coverage), `host`
+mode keeps attention numerics tight. If the basis is narrow but
+fine-tuning is on the table, `feature_native` mode gives a smaller,
+more interpretable model whose attention scores live in feature
+space.
+
+The exact algebra both modes ship is documented in the
 [`SubspaceProjector` module docstring](../saeforge/projector.py) and
 pinned by the
-[`subspace-projector` capability spec](../openspec/changes/subspace-projector/specs/subspace-projector/spec.md).
+[`subspace-projector`](../openspec/changes/subspace-projector/specs/subspace-projector/spec.md)
++ [`feature-native-attention`](../openspec/changes/feature-native-attention/specs/feature-native-attention/spec.md)
+capability specs.
+
+v1.0 (separate change `feature-native-attention-default`) flips the
+default to `feature_native`. v1.1 removes `host` mode entirely.
 
 ### 10.3 Polygram surface used by the shipped FSM
 

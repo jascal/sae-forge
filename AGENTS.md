@@ -34,6 +34,20 @@ orca-lang FSM and expands sae-forge's scope to drive the full compress
    extra; CI gains `orca verify`. Polygram's `Compressor` and
    `Regrower` become FSM actions, not externally-staged inputs.
 
+The v0.2 and v0.3 milestones converge the implementation onto the
+`docs/algorithm.md` spec and unlock real fine-tuning:
+
+7. `feature-native-attention` (v0.2) — `attention_width` knob on
+   `NativeModelConfig` / `ForgePipeline`; `"host"` default preserves
+   v0.1; `"feature_native"` opts into the both-sides-projected
+   c_attn / c_proj where attention internals also become k-wide. CLI
+   flag `--feature-native-attention`.
+8. `forge-finetune-recipe` (v0.3, drafted) — replaces the v0.1 4-step
+   smoke fine-tune with a real recipe in `saeforge.training` (cosine
+   LR + warmup, gradient clipping, optional gradient checkpointing,
+   bf16/fp16 autocast, periodic eval, periodic saves, structured loss
+   tracking). Local-corpus-first; offline-safe by spec.
+
 Each change has `proposal.md` (why + scope), optional `design.md`
 (rationale, alternatives, open questions), `tasks.md` (checklist), and
 `specs/<capability>/spec.md` (delta requirements + scenarios). Validate
