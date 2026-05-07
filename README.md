@@ -33,12 +33,74 @@ construction, `SubspaceProjector` projection from a real source model, and
 fine-tuning), `[polygram]` (the upstream compressed-SAE producer),
 `[orca]` (`orca-runtime-python` for the v0.1 FSM orchestrator).
 
+### Setting up `.venv`
+
+sae-forge expects Python 3.10+ and is developed against an in-repo
+virtualenv at `.venv/`. The standard bootstrap:
+
+```bash
+git clone git@github.com:jascal/sae-forge.git
+cd sae-forge
+
+# 1. Create the venv (use a 3.10+ interpreter; check with `python3 --version`)
+python3 -m venv .venv
+
+# 2. Activate it
+source .venv/bin/activate
+
+# 3. Upgrade pip inside the venv (avoids stale-resolver headaches with torch wheels)
+python -m pip install --upgrade pip
+
+# 4. Editable install with the extras you need
+pip install -e ".[dev,torch,polygram,orca]"
+
+# 5. Verify
+pytest -q
+python -c "import saeforge; print(saeforge.__version__)"
+```
+
+Deactivate with `deactivate` when you're done. The platform-specific
+sections below assume an activated `.venv` and only differ in which
+torch wheel gets pulled.
+
+> **Intel Mac (x86_64) caveat — use Python 3.10/3.11 and the `[intel]`
+> extra.** PyTorch's last x86_64 macOS wheels are torch 2.2.2, which only
+> ship for CPython 3.8–3.11 *and* were built against numpy 1.x. That
+> creates two failure modes:
+>
+> 1. **Wrong Python.** On 3.12+, `pip install -e ".[torch,…]"` fails with
+>    `Could not find a version that satisfies the requirement torch>=2.2
+>    … (from versions: none)`.
+> 2. **numpy 2 ABI break.** With Python 3.10/3.11 + numpy 2, `import
+>    torch` "succeeds" with a UserWarning but the C extensions are
+>    disabled. transformers's `is_torch_available()` then returns False
+>    and tests fail with the misleading `GPT2LMHeadModel requires the
+>    PyTorch library but it was not found in your environment`.
+>
+> The `[intel]` extra is a drop-in replacement for `[torch]` that pins
+> the compatible set (`torch==2.2.2`, `transformers>=4.46,<4.50`,
+> `numpy<2`). Use it instead of `[torch]`:
+>
+> ```bash
+> brew install python@3.11           # if not already installed
+> deactivate 2>/dev/null
+> rm -rf .venv
+> python3.11 -m venv .venv
+> source .venv/bin/activate
+> python -m pip install --upgrade pip
+> pip install -e ".[dev,intel,polygram,orca]"
+> ```
+>
+> Apple Silicon and Linux/CUDA hosts are unaffected — they should keep
+> using `[torch]`, which tracks current wheels for 3.10–3.13.
+
 ### Running on Apple Silicon (M-series)
 
 sae-forge runs natively on M-series Macs with MPS (Apple's GPU
-backend). On arm64 the `[torch]` extra pulls torch 2.4+ which has
-mature M-series MPS support; bf16 paths work, op coverage is high,
-unified memory eliminates host-device transfer overhead.
+backend). arm64 hosts get current torch wheels (2.4+) for CPython
+3.10–3.13, so any interpreter in that range works — MPS support is
+mature, bf16 paths work, op coverage is high, and unified memory
+eliminates host-device transfer overhead.
 
 ```bash
 git clone git@github.com:jascal/sae-forge.git
@@ -63,9 +125,11 @@ Tier guidance for the workloads sae-forge currently ships:
 | 36GB+ unified (M3/M4 Max)    | Gemma-2-2B comfortable, Gemma-2-9B forward-only |
 | 64GB+ unified (Max/Ultra)    | Gemma-2-9B forge + fine-tune territory          |
 
-x86_64 macOS works for everything except newer torch — PyTorch
-dropped x86_64 macOS wheels after 2.2.2, so Intel Macs install the
-2.2.2 line and miss recent MPS improvements.
+**Intel Mac (x86_64) is supported but constrained.** PyTorch dropped
+x86_64 macOS wheels after 2.2.2, and 2.2.2 only ships for CPython
+3.8–3.11 — so Intel Macs must pin the venv to Python 3.10 or 3.11
+(see the Intel-Mac caveat under [Setting up `.venv`](#setting-up-venv))
+and stay on the 2.2.2 line, missing recent MPS improvements.
 
 ### Running on Linux + CUDA (NVIDIA)
 

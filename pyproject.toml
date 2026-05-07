@@ -42,6 +42,15 @@ notebook = ["jupyter", "matplotlib"]
 # projection from a real source model, and fine-tuning. The pure-numpy
 # basis loader and projector math stay on the no-extras install.
 torch = ["torch>=2.2", "transformers>=4.46"]
+# Intel Mac (x86_64 macOS) compatibility set — drop-in replacement for
+# `[torch]`. PyTorch's last x86_64 macOS wheel is 2.2.2 (CPython
+# 3.10/3.11 only), and 2.2.2 was built against numpy 1.x, so installing
+# under numpy 2 leaves `import torch` half-broken: it warns and disables
+# the C extensions, which makes transformers's `is_torch_available()`
+# return False with the misleading "PyTorch not found" ImportError. The
+# transformers ceiling tracks the last release line that doesn't require
+# a newer torch than 2.2.2.
+intel = ["torch==2.2.2", "transformers>=4.46,<4.50", "numpy<2"]
 # Polygram bridge — the canonical producer of compressed SAE checkpoints
 # that sae-forge consumes. Pinned to a release that ships the
 # polygram-tuning-config dataclasses (CompressionConfig,
