@@ -182,7 +182,12 @@ class ForgePipeline:
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        host = transformers.GPT2LMHeadModel.from_pretrained(self.host_model_id).eval()
+        # Load via AutoModelForCausalLM so the host's actual architecture
+        # (GPT-2 / Llama / Gemma-2) drives adapter dispatch. The pre-multi-
+        # arch v0.1 path called ``GPT2LMHeadModel.from_pretrained`` against
+        # any host_model_id, which silently produced a randomly-initialised
+        # GPT-2 for non-GPT-2 inputs (e.g. ``google/gemma-2-2b``).
+        host = transformers.AutoModelForCausalLM.from_pretrained(self.host_model_id).eval()
         weights = self.projector.project_module(host, attention_width=self.attention_width)
         config = _config_from_host(
             host, self.basis.n_features, attention_width=self.attention_width

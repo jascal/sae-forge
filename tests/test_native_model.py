@@ -10,7 +10,7 @@ from saeforge.model import NativeModelConfig
 
 def test_config_validates_qkv_inner_size_factorization():
     NativeModelConfig(
-        hidden_size=8,
+        family="gpt2", hidden_size=8,
         qkv_inner_size=16,
         num_layers=2,
         num_heads=4,
@@ -20,7 +20,7 @@ def test_config_validates_qkv_inner_size_factorization():
     )
     with pytest.raises(ValueError, match="qkv_inner_size"):
         NativeModelConfig(
-            hidden_size=8,
+            family="gpt2", hidden_size=8,
             qkv_inner_size=15,  # not divisible by num_heads * head_dim
             num_layers=2,
             num_heads=4,
@@ -32,7 +32,7 @@ def test_config_validates_qkv_inner_size_factorization():
 
 def test_config_round_trip():
     config = NativeModelConfig(
-        hidden_size=8,
+        family="gpt2", hidden_size=8,
         qkv_inner_size=16,
         num_layers=2,
         num_heads=4,
@@ -48,7 +48,7 @@ def test_config_round_trip():
 def test_construct_with_synthetic_config():
     pytest.importorskip("torch")
     config = NativeModelConfig(
-        hidden_size=8,
+        family="gpt2", hidden_size=8,
         qkv_inner_size=16,
         num_layers=2,
         num_heads=4,
@@ -64,7 +64,7 @@ def test_construct_with_synthetic_config():
 def test_forward_runs_on_random_input():
     torch = pytest.importorskip("torch")
     config = NativeModelConfig(
-        hidden_size=8,
+        family="gpt2", hidden_size=8,
         qkv_inner_size=16,
         num_layers=2,
         num_heads=4,
@@ -84,7 +84,7 @@ def test_from_host_with_tiny_gpt2(tiny_gpt2, tiny_synthetic_basis):
     projector = SubspaceProjector(tiny_synthetic_basis)
     weights = projector.project_module(tiny_gpt2)
     config = NativeModelConfig(
-        hidden_size=tiny_synthetic_basis.n_features,
+        family="gpt2", hidden_size=tiny_synthetic_basis.n_features,
         qkv_inner_size=tiny_gpt2.config.n_embd,
         num_layers=tiny_gpt2.config.n_layer,
         num_heads=tiny_gpt2.config.n_head,
@@ -100,7 +100,7 @@ def test_from_host_with_tiny_gpt2(tiny_gpt2, tiny_synthetic_basis):
 def test_from_projected_weights_rejects_extra_keys(tiny_synthetic_basis):
     pytest.importorskip("torch")
     config = NativeModelConfig(
-        hidden_size=tiny_synthetic_basis.n_features,
+        family="gpt2", hidden_size=tiny_synthetic_basis.n_features,
         qkv_inner_size=16,
         num_layers=1,
         num_heads=4,
@@ -116,7 +116,7 @@ def test_from_projected_weights_rejects_extra_keys(tiny_synthetic_basis):
 def test_save_and_load_round_trip(tmp_path):
     torch = pytest.importorskip("torch")
     config = NativeModelConfig(
-        hidden_size=8,
+        family="gpt2", hidden_size=8,
         qkv_inner_size=16,
         num_layers=1,
         num_heads=4,

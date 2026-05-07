@@ -115,5 +115,13 @@ def test_project_module_unsupported_arch_raises(tiny_synthetic_basis):
     class FakeBert:
         pass
 
-    with pytest.raises(NotImplementedError, match="GPT-2"):
+    # Multi-architecture-support: the dispatcher raises a registry-aware
+    # error naming the offending type and the registered adapter set.
+    with pytest.raises(NotImplementedError) as excinfo:
         projector.project_module(FakeBert())
+    msg = str(excinfo.value)
+    assert "FakeBert" in msg
+    assert "Registered:" in msg
+    # Whichever bundled adapters are loaded should appear in the list;
+    # GPT2LMHeadModel is always there.
+    assert "GPT2LMHeadModel" in msg

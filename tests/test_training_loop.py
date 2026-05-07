@@ -16,7 +16,7 @@ def _build_tiny_native_model():
     from saeforge.model import NativeModelConfig
 
     config = NativeModelConfig(
-        hidden_size=8,
+        family="gpt2", hidden_size=8,
         qkv_inner_size=16,
         num_layers=2,
         num_heads=4,
