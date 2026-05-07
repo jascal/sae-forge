@@ -45,7 +45,14 @@ from pathlib import Path
 
 
 SAE_REPO = "google/gemma-scope-2b-pt-res"
-SAE_FILE_TEMPLATE = "layer_{layer}/width_16k/average_l0_71/params.npz"
+# Gemma Scope publishes a small set of L0 variants per layer. Layer 12
+# has {22, 41, 82, 176, 445}; the previous hard-coded ``average_l0_71``
+# does not exist for any layer 12 release. Pick via ``--l0``; default
+# 82 is the layer-12 default that closest matches the recommended
+# coverage target. See https://huggingface.co/google/gemma-scope-2b-pt-res
+# for the full list.
+SAE_FILE_TEMPLATE = "layer_{layer}/width_16k/average_l0_{l0}/params.npz"
+DEFAULT_L0 = 82
 HOST_MODEL = "google/gemma-2-2b"
 DEFAULT_LAYER = 12
 
@@ -94,7 +101,7 @@ def main(args) -> dict:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # ---- Stage 1: download SAE -----------------------------------
-    sae_file = SAE_FILE_TEMPLATE.format(layer=args.layer)
+    sae_file = SAE_FILE_TEMPLATE.format(layer=args.layer, l0=args.l0)
     print(f"[1/5] downloading Gemma Scope SAE: {SAE_REPO} :: {sae_file}")
     t0 = time.monotonic()
     sae_path = Path(hf_hub_download(repo_id=SAE_REPO, filename=sae_file))
@@ -253,6 +260,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "--dtype", default="float32", choices=("float32", "float16", "bfloat16"),
     )
     parser.add_argument("--layer", type=int, default=DEFAULT_LAYER)
+    parser.add_argument(
+        "--l0",
+        type=int,
+        default=DEFAULT_L0,
+        help=(
+            "Gemma Scope L0 variant for the SAE checkpoint. Layer 12 has "
+            "{22, 41, 82, 176, 445}; default is 82. Mismatch → 404 from "
+            "huggingface_hub.hf_hub_download."
+        ),
+    )
     parser.add_argument("--n-features", type=int, default=256)
     parser.add_argument("--n-compress-prompts", type=int, default=16)
     parser.add_argument("--coverage-target", type=float, default=0.5)

@@ -137,3 +137,68 @@ def test_save_and_load_round_trip(tmp_path):
     loaded = NativeModel.load_pretrained(out)
     after = loaded.forward(input_ids)
     assert torch.allclose(before, after, atol=1e-6)
+
+
+def test_save_and_load_round_trip_tied_embeddings(
+    tmp_path, tiny_llama_tied, feature_basis_128_to_32
+):
+    """Regression test for the safetensors shared-storage crash.
+
+    Before the fix, ``save_pretrained`` raised
+    ``RuntimeError: Some tensors share memory ...`` whenever
+    ``config.tied_embeddings`` was True (Gemma-2, tied Llama hosts):
+    the ForgedLlama constructor aliases ``lm_head.weight`` to
+    ``model.embed_tokens.weight``, but ``safetensors.torch.save_file``
+    refuses to write tensors that share storage. The fix drops the
+    aliased ``lm_head.weight`` from the saved state_dict and reconstructs
+    the alias via the constructor on load.
+    """
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("transformers")
+
+    from saeforge import SubspaceProjector
+    from saeforge.adapters import adapter_for
+
+    projector = SubspaceProjector(feature_basis_128_to_32)
+    adapter = adapter_for(tiny_llama_tied)
+    walk = adapter.walk(tiny_llama_tied, projector)
+    config = adapter.build_native_config(
+        tiny_llama_tied, feature_basis_128_to_32.n_features
+    )
+    assert config.tied_embeddings is True
+
+    nm = NativeModel.from_projected_weights(config, walk)
+
+    # Snapshot the forward output before save so we can verify the
+    # round-trip reproduces it bit-for-bit.
+    torch.manual_seed(0)
+    input_ids = torch.randint(0, config.vocab_size, (1, 8))
+    nm._module.eval()
+    with torch.no_grad():
+        before = nm.forward(input_ids).clone()
+
+    out = tmp_path / "forged_tied"
+    nm.save_pretrained(out)
+    assert (out / "model.safetensors").is_file()
+
+    # The saved file must NOT contain lm_head.weight when tied — that's
+    # the whole point of the fix.
+    from safetensors.torch import load_file as _load_safetensors
+
+    saved_state = _load_safetensors(str(out / "model.safetensors"))
+    assert "lm_head.weight" not in saved_state
+    assert "model.embed_tokens.weight" in saved_state
+
+    loaded = NativeModel.load_pretrained(out)
+
+    # The tied alias must be re-established by the constructor.
+    assert (
+        loaded._module.lm_head.weight.data_ptr()
+        == loaded._module.model.embed_tokens.weight.data_ptr()
+    )
+
+    # Forward output is identical — no regression in the projected weights.
+    loaded._module.eval()
+    with torch.no_grad():
+        after = loaded.forward(input_ids)
+    assert torch.allclose(before, after, atol=1e-6)
