@@ -9,10 +9,10 @@
 - [x] 2.1 Use a plain `dict` as the context (orca-runtime-python's `OrcaMachine` mutates `self.context.update(result)`); document the field set in `saeforge/machines/sae_forge.orca.md` `## context` table
 - [x] 2.2 Add `saeforge/actions/__init__.py` exporting `ACTION_TABLE` plus every action function
 - [x] 2.3 `load_sae_and_corpus` validates `ctx["sae_checkpoint"]` exists, sets `current_sae_path`
-- [x] 2.4 `compress_with_polygram` is a v0.1 pass-through that records `quantum_aware` in the transitions log; v0.2 swaps for a real `Compressor` call
-- [x] 2.5 `perform_regrowth` is a v0.1 pass-through; v0.2 swaps for `Regrower`
+- [x] 2.4 `compress_with_polygram` runs Polygram's `Compressor` when `ctx["validation_report_path"]` is set; pass-through otherwise. Writes the compression report at `<stem>_compression_report.json` so `FeatureBasis.from_polygram_checkpoint`'s auto-locator finds it
+- [x] 2.5 `perform_regrowth` runs Polygram's `Regrower.from_compression_report` when `regrow_count > 0` AND a compression report is reachable; pass-through otherwise
 - [x] 2.6 `project_to_subspace` does the real work: `FeatureBasis.from_polygram_checkpoint` → `SubspaceProjector.project_module` → `NativeModel.from_projected_weights` → `save_pretrained` to `output_dir/projected/`
-- [x] 2.7 `fine_tune_model` is a v0.1 pass-through; v0.2 wires HF Trainer
+- [x] 2.7 `fine_tune_model` runs N steps of LM cross-entropy training (AdamW) when `ctx["_finetune_input_ids"]` is set; pass-through otherwise. Logs the first / last step losses for monotonicity checks
 - [x] 2.8 `evaluate_faithfulness` runs the existing `_kl_from_input_ids` against the carry-over host + native model; computes `perplexity = exp(kl)` and writes `should_continue` (the loop predicate, computed in Python — the idiomatic orca-lang pattern: guards stay flat boolean comparisons, complex predicates live in actions)
 - [x] 2.9 `rotate_for_next_iter` increments `current_iter`, rotates `current_sae_path`, updates `best_perplexity`
 - [x] 2.10 `save_final_model` writes the forged model to `output_dir/forged/` and a JSON summary to `forge_result.json`
@@ -37,6 +37,15 @@
 - [x] 5.2 Split `run_synthetic` into `_run_synthetic_imperative` and `_run_synthetic_fsm`; the FSM path serializes the basis to a temp safetensors so the FSM's checkpoint loader has something to read
 - [x] 5.3 `_write_basis_as_checkpoint` preserves the basis dtype (float64) so the round-trip through `from_polygram_checkpoint` is byte-exact — required for the imperative/FSM byte-equivalence safety net
 - [ ] 5.4 Wire `--fsm`, `--iterations`, `--regrow-count`, `--quantum-aware` to the `sae-forge forge` CLI — deferred to a follow-up cli-fsm-flags change
+
+## 5b. Real-action tests (added after polygram shipped to PyPI)
+
+- [x] 5b.1 `test_compress_action_runs_polygram_when_validation_report_provided`: writes uncompressed SAE → builds minimal `ValidationReport` → compress action produces compressed checkpoint with `n_features_kept < n_total`
+- [x] 5b.2 `test_compress_action_passes_through_without_validation_report`: gating-by-input invariant
+- [x] 5b.3 `test_fine_tune_action_reduces_loss`: 4 AdamW steps on random ids; final loss <= initial
+- [x] 5b.4 `test_fine_tune_action_passes_through_without_input_ids`: gating-by-input invariant
+- [x] 5b.5 `test_full_compress_then_forge_via_fsm`: end-to-end uncompressed-SAE → FSM compresses → projects → forges → eval; verifies forge_result.json carries `compress_mode == "polygram"` and the basis loader picked up the FSM-emitted compression report
+- [x] 5b.6 New conftest fixture `synthetic_validation_report` builds a 2-pair-confirmed minimal `ValidationReport` JSON
 
 ## 6. Tests
 

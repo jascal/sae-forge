@@ -101,6 +101,57 @@ def tiny_synthetic_basis():
 
 
 @pytest.fixture
+def synthetic_validation_report(tmp_path):
+    """Build a minimal polygram ValidationReport JSON for compress action tests.
+
+    Two clusters: features (0,1) confirmed and (4,5) confirmed against a
+    synthetic 8-feature SAE. The actual numerical fields are placeholders;
+    only the schema and the confirmed-pair list matter for downstream
+    Compressor wiring.
+    """
+    pytest.importorskip("polygram")
+    from polygram import (
+        BucketStats,
+        CandidatePair,
+        ValidationReport,
+        ValidationSummary,
+    )
+
+    pair_a = CandidatePair(
+        i=0, j=1, polygram_overlap=0.9, decoder_overlap=0.95, jaccard=0.5,
+        pearson_activation=0.4, kl_ablate_i=0.01, kl_ablate_j=0.01,
+        kl_ratio_paired=0.0, kl_log_ratio_abs=0.0,
+        n_fires_i=10, n_fires_j=10, n_both_fire=8, n_either_fire=12, gate_pass=True,
+    )
+    pair_b = CandidatePair(
+        i=4, j=5, polygram_overlap=0.85, decoder_overlap=0.9, jaccard=0.5,
+        pearson_activation=0.4, kl_ablate_i=0.01, kl_ablate_j=0.01,
+        kl_ratio_paired=0.0, kl_log_ratio_abs=0.0,
+        n_fires_i=10, n_fires_j=10, n_both_fire=8, n_either_fire=12, gate_pass=True,
+    )
+    buckets = {"all": BucketStats(
+        polygram_range="0-1", n_pairs=2, jaccard_mean=0.5, jaccard_ci_95=(0.4, 0.6),
+    )}
+    summary = ValidationSummary(
+        spearman_polygram_jaccard=0.0, spearman_decoder_jaccard=0.0,
+        spearman_polygram_log_kl_abs=0.0, pearson_polygram_jaccard=0.0,
+        pearson_decoder_jaccard=0.0, buckets=buckets, outcome="confirmed",
+    )
+    report = ValidationReport(
+        schema_version=1, dictionary_name="synthetic", model_name="gpt2", layer=10,
+        n_prompts=4, n_tokens=64, polygram_overlap_threshold=0.7, jaccard_threshold=0.3,
+        min_firing_rate=0.0, min_both_fire=0,
+        feature_ids=(0, 1, 2, 3, 4, 5, 6, 7),
+        pairs=(pair_a, pair_b),
+        summary=summary,
+        confirmed=((0, 1), (4, 5)),
+    )
+    path = tmp_path / "validation_report.json"
+    report.to_json(path)
+    return {"path": path, "report": report}
+
+
+@pytest.fixture
 def tiny_gpt2(monkeypatch):
     """A tiny torch GPT-2 — 16-dim residual, 2 layers, 4 heads, 100 vocab."""
     pytest.importorskip("torch")

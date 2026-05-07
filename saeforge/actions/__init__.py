@@ -4,8 +4,18 @@ Every action takes ``(ctx: dict, payload: dict | None) -> dict | None``
 and returns a delta that the orca-runtime-python ``OrcaMachine`` merges
 into the machine context.
 
-Compress / regrow / fine-tune are no-op pass-throughs in v0.1. The
-v0.2 milestone swaps them for real Polygram + HF trainer calls.
+Actions gate their work on the presence of input fields in ``ctx``:
+
+- ``compress_with_polygram`` runs Polygram's ``Compressor`` when
+  ``ctx["validation_report_path"]`` is set; pass-through otherwise.
+- ``perform_regrowth`` runs Polygram's ``Regrower`` when ``regrow_count
+  > 0`` AND a compression report is reachable; pass-through otherwise.
+- ``fine_tune_model`` runs N steps of LM training when
+  ``ctx["_finetune_input_ids"]`` is set; pass-through otherwise.
+
+The byte-equivalence with the imperative orchestrator holds for the
+no-input case (the projection-only path). Real production runs supply
+the gating inputs and the actions actually do work.
 """
 
 from __future__ import annotations
@@ -33,16 +43,88 @@ def load_sae_and_corpus(ctx: dict, _payload: dict | None = None) -> dict:
 
 
 def compress_with_polygram(ctx: dict, _payload: dict | None = None) -> dict:
-    _log(ctx, "compress_with_polygram", {"quantum_aware": ctx.get("quantum_aware", False)})
+    """Run Polygram's Compressor against the current SAE when a validation report is supplied.
+
+    Gating: ``ctx["validation_report_path"]`` must point to a polygram
+    ``ValidationReport`` JSON. When absent, the action is a pass-through —
+    the FSM treats the input SAE as already-compressed and forwards
+    ``current_sae_path`` to ``compressed_sae_path`` unchanged.
+    """
+    report_path = ctx.get("validation_report_path")
+    if not report_path:
+        _log(ctx, "compress_with_polygram", {"mode": "passthrough"})
+        return {
+            "compressed_sae_path": ctx["current_sae_path"],
+            "current_feature_count": ctx.get("current_feature_count", 0),
+        }
+
+    from polygram import Compressor, ValidationReport
+
+    output_dir = Path(ctx["output_dir"])
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / "compressed.safetensors"
+
+    confirmer = "quantum_interference" if ctx.get("quantum_aware", False) else None
+    validation = ValidationReport.from_json(report_path)
+    compressor_kwargs: dict[str, Any] = {
+        "validation_report": validation,
+        "sae_checkpoint": Path(ctx["current_sae_path"]),
+        "strategy": ctx.get("compression_strategy", "merge"),
+        "rep_selection": ctx.get("rep_selection", "scale_aware"),
+    }
+    if confirmer is not None:
+        compressor_kwargs["confirmer"] = confirmer
+    compressor = Compressor(**{k: v for k, v in compressor_kwargs.items() if k != "confirmer"})
+    result = compressor.run(output_path)
+
+    report = result.report
+    _log(
+        ctx,
+        "compress_with_polygram",
+        {
+            "mode": "polygram",
+            "n_features_kept": report.n_features_kept,
+            "n_features_zeroed": report.n_features_zeroed,
+            "scale_compression_ratio": report.scale_compression_ratio,
+            "quantum_aware": ctx.get("quantum_aware", False),
+        },
+    )
+    # Match FeatureBasis.from_polygram_checkpoint's auto-locator: look for
+    # `<stem>_compression_report.json` next to the checkpoint.
+    compression_report_path = output_dir / "compressed_compression_report.json"
+    report.to_json(compression_report_path)
     return {
-        "compressed_sae_path": ctx["current_sae_path"],
-        "current_feature_count": ctx.get("current_feature_count", 0),
+        "compressed_sae_path": str(output_path),
+        "current_feature_count": report.n_features_kept,
+        "compression_report_path": str(compression_report_path),
     }
 
 
 def perform_regrowth(ctx: dict, _payload: dict | None = None) -> dict:
-    _log(ctx, "perform_regrowth")
-    return {"regrown_sae_path": ctx["compressed_sae_path"]}
+    """Regrow zeroed slots via Polygram's Regrower when a compression report and prompts are supplied."""
+    if ctx.get("regrow_count", 0) == 0 or not ctx.get("compression_report_path"):
+        _log(ctx, "perform_regrowth", {"mode": "passthrough"})
+        return {"regrown_sae_path": ctx["compressed_sae_path"]}
+
+    from polygram import CompressionReport, Regrower
+
+    output_dir = Path(ctx["output_dir"])
+    output_path = output_dir / "regrown.safetensors"
+    report = CompressionReport.from_json(ctx["compression_report_path"])
+    prompts = ctx.get("regrow_prompts") or [""] * 16
+
+    regrower = Regrower.from_compression_report(
+        report,
+        sae_checkpoint=Path(ctx["compressed_sae_path"]),
+        strategy=ctx.get("regrow_strategy", "residual_kmeans"),
+        prompts=prompts,
+        layer=ctx.get("regrow_layer", 10),
+        model_name=ctx.get("host_model_id") or "gpt2",
+        seed=ctx.get("regrow_seed", 0),
+    )
+    result = regrower.run(output_path)
+    _log(ctx, "perform_regrowth", {"mode": "polygram", "n_regrown": len(result.report.populations)})
+    return {"regrown_sae_path": str(output_path)}
 
 
 def project_to_subspace(ctx: dict, _payload: dict | None = None) -> dict:
@@ -80,8 +162,53 @@ def project_to_subspace(ctx: dict, _payload: dict | None = None) -> dict:
 
 
 def fine_tune_model(ctx: dict, _payload: dict | None = None) -> dict:
-    _log(ctx, "fine_tune_model")
-    return {"finetuned_model_path": ctx["projected_weights_path"]}
+    """Run N steps of LM cross-entropy training on the forged native model.
+
+    Gating: ``ctx["_finetune_input_ids"]`` must be a torch tensor of shape
+    ``(batch, seq)``. Without it the action is a pass-through.
+    """
+    input_ids = ctx.get("_finetune_input_ids")
+    model = ctx.get("_native_model")
+    if input_ids is None or model is None:
+        _log(ctx, "fine_tune_model", {"mode": "passthrough"})
+        return {"finetuned_model_path": ctx["projected_weights_path"]}
+
+    from saeforge.utils.lazy import require_extra
+
+    torch = require_extra("torch", "torch")
+    F = torch.nn.functional
+
+    n_steps = ctx.get("finetune_steps", 4)
+    lr = ctx.get("finetune_lr", 1e-3)
+    device = ctx.get("device", "cpu")
+
+    module = model.torch_module.to(device).train()
+    optim = torch.optim.AdamW(module.parameters(), lr=lr)
+    input_ids = input_ids.to(device)
+    losses: list[float] = []
+    for _ in range(n_steps):
+        logits = module(input_ids)
+        targets = input_ids[:, 1:]
+        preds = logits[:, :-1].reshape(-1, logits.size(-1))
+        loss = F.cross_entropy(preds, targets.reshape(-1))
+        optim.zero_grad(set_to_none=True)
+        loss.backward()
+        optim.step()
+        losses.append(float(loss.item()))
+    module.eval()
+
+    output_dir = Path(ctx["output_dir"])
+    finetuned_dir = output_dir / "finetuned"
+    model.save_pretrained(finetuned_dir)
+    _log(
+        ctx,
+        "fine_tune_model",
+        {"mode": "trained", "n_steps": n_steps, "loss_first": losses[0], "loss_last": losses[-1]},
+    )
+    return {
+        "finetuned_model_path": str(finetuned_dir),
+        "_finetune_losses": losses,
+    }
 
 
 def evaluate_faithfulness(ctx: dict, _payload: dict | None = None) -> dict:
@@ -149,6 +276,8 @@ def save_final_model(ctx: dict, _payload: dict | None = None) -> dict:
         "faithfulness_kl": ctx.get("faithfulness"),
         "n_features": ctx.get("current_feature_count"),
         "iterations": ctx.get("current_iter", 0) + 1,
+        "compress_mode": _last_log_extra(ctx, "compress_with_polygram", "mode"),
+        "finetune_mode": _last_log_extra(ctx, "fine_tune_model", "mode"),
     }
     (output_dir / "forge_result.json").write_text(json.dumps(summary, indent=2))
     return {"final_model_path": str(forged_dir), "n_params": n_params}
@@ -158,6 +287,13 @@ def log_error(ctx: dict, payload: dict | None = None) -> dict:
     msg = (payload or {}).get("error", ctx.get("error_message", "unknown error"))
     _log(ctx, "log_error", {"error": msg})
     return {"error_message": str(msg)}
+
+
+def _last_log_extra(ctx: dict, action_name: str, key: str):
+    for entry in reversed(ctx.get("transitions_log", [])):
+        if entry.get("action") == action_name and key in entry:
+            return entry[key]
+    return None
 
 
 ACTION_TABLE: dict[str, Any] = {

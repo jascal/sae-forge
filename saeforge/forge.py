@@ -51,6 +51,11 @@ class ForgePipeline:
     iterations: int = 1
     regrow_count: int = 0
     quantum_aware: bool = False
+    validation_report_path: str | None = None
+    compression_strategy: str = "merge"
+    rep_selection: str = "scale_aware"
+    finetune_steps: int = 0
+    finetune_lr: float = 1e-3
 
     def run(self, output_dir: str | Path) -> ForgeResult:
         from saeforge.utils.lazy import require_extra
@@ -110,6 +115,7 @@ class ForgePipeline:
         output_dir: str | Path,
         eval_input_ids=None,
         sae_checkpoint: str | Path | None = None,
+        finetune_input_ids=None,
     ) -> ForgeResult:
         """Run the pipeline against an already-loaded host model.
 
@@ -118,7 +124,9 @@ class ForgePipeline:
         pulling the canonical 124M-param checkpoint.
         """
         if self.orchestrator == "fsm":
-            return self._run_synthetic_fsm(host_model, output_dir, eval_input_ids, sae_checkpoint)
+            return self._run_synthetic_fsm(
+                host_model, output_dir, eval_input_ids, sae_checkpoint, finetune_input_ids
+            )
         return self._run_synthetic_imperative(host_model, output_dir, eval_input_ids)
 
     def _run_synthetic_imperative(
@@ -164,6 +172,7 @@ class ForgePipeline:
         output_dir: str | Path,
         eval_input_ids,
         sae_checkpoint: str | Path | None,
+        finetune_input_ids=None,
     ) -> ForgeResult:
         from saeforge.orchestrator import run_machine
 
@@ -201,6 +210,12 @@ class ForgePipeline:
             "device": self.device,
             "_host_model": host_model,
             "_eval_input_ids": eval_input_ids,
+            "_finetune_input_ids": finetune_input_ids,
+            "validation_report_path": self.validation_report_path,
+            "compression_strategy": self.compression_strategy,
+            "rep_selection": self.rep_selection,
+            "finetune_steps": self.finetune_steps,
+            "finetune_lr": self.finetune_lr,
         }
         final = run_machine(ctx)
         model = final.get("_native_model")
