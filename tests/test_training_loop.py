@@ -202,3 +202,102 @@ def test_convergence_heuristic_marks_steady_loss_converged():
     assert _check_convergence(history2) is False
     # Too short → not converged
     assert _check_convergence([(0, 1.0), (1, 0.9)]) is False
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for the family-aware grad-checkpointing fix.
+#
+# Before the fix, _enable_grad_checkpointing hardcoded GPT-2 submodule
+# names (module.transformer.h, module.transformer.wte.weight). Any
+# --grad-checkpoint run on a Llama or Gemma-2 host crashed inside the
+# FSM with "'ForgedLlama' object has no attribute 'transformer'", which
+# the FSM swallowed into final_state: failed, and ForgePipeline.run()
+# returned a ForgeResult with n_params=0, faithfulness_kl=0.0 — caller
+# saw exit code 0. The fix dispatches via adapter.grad_checkpoint_targets
+# so each family's native module gets the right block list and embedding
+# parameter.
+# ---------------------------------------------------------------------------
+
+
+def _project_to(host, n_features: int):
+    """Helper: project ``host`` through a tiny synthetic basis, return the
+    NativeModel ready for grad-checkpointing."""
+    import numpy as np
+
+    from saeforge import NativeModel, SubspaceProjector
+    from saeforge.adapters import adapter_for
+    from saeforge.basis import FeatureBasis
+
+    d_model = (
+        host.config.hidden_size
+        if hasattr(host.config, "hidden_size")
+        else host.config.n_embd
+    )
+    rng = np.random.default_rng(0)
+    W = rng.standard_normal((n_features, d_model)).astype(np.float32)
+    basis = FeatureBasis(
+        kept_ids=np.arange(n_features, dtype=np.int64),
+        W_dec=W,
+        merged_norms=np.linalg.norm(W, axis=1).astype(np.float32),
+        original_norms=np.linalg.norm(W, axis=1).astype(np.float32),
+    )
+    projector = SubspaceProjector(basis)
+    adapter = adapter_for(host)
+    walk = adapter.walk(host, projector)
+    config = adapter.build_native_config(host, n_features)
+    return NativeModel.from_projected_weights(config, walk)
+
+
+def test_grad_checkpointing_runs_on_gpt2(tiny_gpt2):
+    pytest.importorskip("torch")
+    from saeforge.training.loop import _enable_grad_checkpointing
+
+    nm = _project_to(tiny_gpt2, n_features=8)
+    _enable_grad_checkpointing(nm._module)
+    # Block forward got wrapped in a closure; embedding requires grad.
+    assert nm._module.transformer.h[0].forward.__closure__ is not None
+    assert nm._module.transformer.wte.weight.requires_grad
+
+
+def test_grad_checkpointing_runs_on_llama(tiny_llama):
+    pytest.importorskip("torch")
+    from saeforge.training.loop import _enable_grad_checkpointing
+
+    nm = _project_to(tiny_llama, n_features=32)
+    # Pre-fix this raised AttributeError: 'ForgedLlama' object has no
+    # attribute 'transformer'. Now it dispatches via the adapter.
+    _enable_grad_checkpointing(nm._module)
+    assert nm._module.model.layers[0].forward.__closure__ is not None
+    assert nm._module.model.embed_tokens.weight.requires_grad
+
+
+def test_grad_checkpointing_runs_on_llama_tied(tiny_llama_tied):
+    pytest.importorskip("torch")
+    from saeforge.training.loop import _enable_grad_checkpointing
+
+    nm = _project_to(tiny_llama_tied, n_features=32)
+    _enable_grad_checkpointing(nm._module)
+    assert nm._module.model.layers[0].forward.__closure__ is not None
+    assert nm._module.model.embed_tokens.weight.requires_grad
+
+
+def test_grad_checkpointing_runs_on_gemma2(tiny_gemma2):
+    pytest.importorskip("torch")
+    from saeforge.training.loop import _enable_grad_checkpointing
+
+    nm = _project_to(tiny_gemma2, n_features=32)
+    _enable_grad_checkpointing(nm._module)
+    assert nm._module.model.layers[0].forward.__closure__ is not None
+    assert nm._module.model.embed_tokens.weight.requires_grad
+
+
+def test_grad_checkpointing_unknown_family_raises():
+    """If a hypothetical native module slips through with an unsupported
+    family field, the dispatcher raises a clear ValueError naming the
+    available families. Exercises the registry's adapter_for_family
+    error path so a future architectural mismatch fails loudly."""
+    pytest.importorskip("torch")
+    from saeforge.adapters import adapter_for_family
+
+    with pytest.raises(ValueError, match="No adapter registered for family"):
+        adapter_for_family("not-a-real-family")

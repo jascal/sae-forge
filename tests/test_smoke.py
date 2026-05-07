@@ -20,6 +20,9 @@ def test_public_surface_is_frozen() -> None:
 
     expected = {
         "FeatureBasis",
+        # ForgeFailed added in 0.2.3 — surfaces FSM failures as
+        # exceptions instead of silent KL=0.0 returns.
+        "ForgeFailed",
         "ForgePipeline",
         "ForgeResult",
         "NativeModel",

@@ -14,6 +14,59 @@ from saeforge.basis import FeatureBasis
 from saeforge.model import NativeModel, _config_from_host
 from saeforge.projector import SubspaceProjector
 
+
+class ForgeFailed(RuntimeError):
+    """The FSM ended in a ``failed`` state and the run could not produce
+    a valid forged model.
+
+    Pre-fix, an action raising inside the FSM (e.g. ``AttributeError``
+    from the GPT-2-only grad-checkpointing path running against a
+    ForgedLlama) was swallowed into ``final_state: failed`` and
+    returned to the caller as a ``ForgeResult`` with ``n_params=0`` and
+    ``faithfulness_kl=0.0`` — exit code 0 with no exception. Callers
+    had no signal that anything went wrong. The FSM dispatch now
+    raises this exception when the run ends in ``failed``.
+
+    Attributes:
+        error_message: The ``log_error`` action's recorded message.
+        transitions_log: The full FSM transitions log for debugging.
+        extras: The unfinished ``ForgeResult.extras`` dict (n_params,
+            faithfulness, etc. as far as the FSM got).
+    """
+
+    def __init__(
+        self,
+        error_message: str,
+        *,
+        transitions_log: list,
+        extras: dict,
+    ) -> None:
+        super().__init__(error_message)
+        self.error_message = error_message
+        self.transitions_log = transitions_log
+        self.extras = extras
+
+
+def _raise_if_failed(final: dict) -> None:
+    """Raise :class:`ForgeFailed` when the FSM ended in ``failed``.
+
+    Inspects the transitions log for the last action; if it's
+    ``log_error``, surfaces the recorded ``error_message`` so silent
+    KL=0.0 returns can't recur.
+    """
+    if _final_state_for_log(final) != "failed":
+        return
+    msg = final.get("error_message") or "FSM ended in failed state"
+    raise ForgeFailed(
+        msg,
+        transitions_log=final.get("transitions_log", []),
+        extras={
+            "n_params": final.get("n_params", 0),
+            "faithfulness_kl": final.get("faithfulness"),
+            "n_features": final.get("current_feature_count"),
+        },
+    )
+
 if TYPE_CHECKING:  # pragma: no cover — type-only imports
     from polygram import (  # noqa: F401
         CompressionConfig,
@@ -348,6 +401,9 @@ class ForgePipeline:
             host_model_id=self.host_model_id,
         )
         final = run_machine(ctx)
+        # Surface FSM failures as exceptions instead of returning a
+        # ForgeResult with n_params=0 / KL=0.0. See ForgeFailed.
+        _raise_if_failed(final)
         model = final.get("_native_model")
 
         faithfulness = (
@@ -471,6 +527,9 @@ class ForgePipeline:
             host_model_id="<in-memory>",
         )
         final = run_machine(ctx)
+        # Surface FSM failures as exceptions instead of returning a
+        # ForgeResult with n_params=0 / KL=0.0. See ForgeFailed.
+        _raise_if_failed(final)
         model = final.get("_native_model")
         return ForgeResult(
             model=model,

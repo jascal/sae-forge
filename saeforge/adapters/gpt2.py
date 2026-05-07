@@ -173,6 +173,12 @@ class GPT2Adapter(ArchitectureAdapter):
     def native_module_class(self) -> type:
         return _get_forged_gpt2_class()
 
+    def grad_checkpoint_targets(self, module):
+        # ForgedGPT2: every transformer block lives at
+        # ``module.transformer.h.{i}``; the input embedding is
+        # ``transformer.wte.weight``.
+        return module.transformer.h, module.transformer.wte.weight
+
 
 # ---------------------------------------------------------------------------
 # Native module factory — produces the same `ForgedGPT2` shape that v0.1

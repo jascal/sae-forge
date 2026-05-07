@@ -210,3 +210,59 @@ def test_run_imperative_warns_when_finetune_corpus_set(
     assert "imperative" in msg
     assert "orchestrator='fsm'" in msg
     assert "fineweb-edu" in msg
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for the FSM-failure-surfacing fix.
+#
+# Before the fix, an action raising inside the FSM (e.g. AttributeError
+# from the GPT-2-only grad-checkpointing path running against a
+# ForgedLlama) was swallowed into final_state: failed and returned to
+# the caller as a ForgeResult with n_params=0, faithfulness_kl=0.0,
+# exit code 0. The fix raises ForgeFailed instead so the caller sees
+# the recorded error_message.
+# ---------------------------------------------------------------------------
+
+
+def test_run_fsm_raises_forge_failed_on_action_error(
+    tiny_gpt2, tiny_synthetic_basis, tmp_path
+):
+    """Simulate an action failure: monkey-patch project_to_subspace to
+    raise. The FSM should record a log_error transition and the
+    pipeline should raise ForgeFailed (not return a successful-looking
+    result with n_params=0 / KL=0.0)."""
+    pytest.importorskip("orca_runtime_python")
+    from unittest.mock import patch
+
+    from saeforge import ForgeFailed, ForgePipeline, SubspaceProjector
+
+    pipeline = ForgePipeline(
+        basis=tiny_synthetic_basis,
+        projector=SubspaceProjector(tiny_synthetic_basis),
+        host_model_id="gpt2-stub",
+        orchestrator="fsm",
+    )
+
+    def _boom(ctx, payload=None):
+        raise AttributeError(
+            "'ForgedLlama' object has no attribute 'transformer'"
+        )
+
+    with patch(
+        "transformers.AutoModelForCausalLM.from_pretrained",
+        return_value=tiny_gpt2,
+    ), patch.dict(
+        "saeforge.actions.ACTION_TABLE",
+        {"project_to_subspace": _boom},
+    ):
+        with pytest.raises(ForgeFailed) as excinfo:
+            pipeline.run(tmp_path / "fsm_failed")
+
+    # Error message surfaces from the action's exception text.
+    msg = str(excinfo.value)
+    assert "ForgedLlama" in msg or "transformer" in msg or "FSM ended" in msg
+    # Diagnostics are attached so callers can inspect what got far.
+    assert hasattr(excinfo.value, "transitions_log")
+    assert hasattr(excinfo.value, "extras")
+    log = excinfo.value.transitions_log
+    assert any(e.get("action") == "log_error" for e in log)

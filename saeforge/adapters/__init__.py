@@ -65,6 +65,27 @@ def registered_classes() -> list[type]:
     return [cls for cls, _ in _REGISTRY]
 
 
+def adapter_for_family(family: str) -> ArchitectureAdapter:
+    """Return the adapter whose ``family`` attribute matches ``family``.
+
+    Used by code paths that have only the ``NativeModelConfig.family``
+    string in hand (e.g. inside the training loop, where the host class
+    is already gone). Raises ``ValueError`` naming the available
+    families when none match.
+    """
+    seen: set[str] = set()
+    for _, adapter in _REGISTRY:
+        if adapter.family in seen:
+            continue
+        seen.add(adapter.family)
+        if adapter.family == family:
+            return adapter
+    raise ValueError(
+        f"No adapter registered for family={family!r}. "
+        f"Available families: {sorted(seen)!r}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Built-in adapters — register at import time so `import saeforge.adapters`
 # is enough to populate the registry.
@@ -81,6 +102,7 @@ from saeforge.adapters import gemma2 as _gemma2  # noqa: E402,F401
 __all__ = [
     "ArchitectureAdapter",
     "adapter_for",
+    "adapter_for_family",
     "register_adapter",
     "registered_classes",
     "to_numpy",
