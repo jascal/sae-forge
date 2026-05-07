@@ -23,15 +23,49 @@ through OpenSpec changes — see `openspec/changes/`.
 ## Install
 
 ```bash
-pip install -e ".[dev,torch,polygram]"   # editable install with test, torch, and polygram bridge
-pytest                                    # run the suite
+pip install -e ".[dev,torch,polygram,orca]"   # editable install with test deps + torch + polygram + FSM
+pytest                                         # run the suite
 ```
 
 Optional extras: `[plot]` (matplotlib), `[notebook]` (jupyter +
 matplotlib), `[torch]` (torch + transformers — required for `NativeModel`
 construction, `SubspaceProjector` projection from a real source model, and
-fine-tuning), `[polygram]` (the upstream compressed-SAE producer; pinned
-at `>=0.4` for scale-aware merged norms).
+fine-tuning), `[polygram]` (the upstream compressed-SAE producer),
+`[orca]` (`orca-runtime-python` for the v0.1 FSM orchestrator).
+
+### Running on Apple Silicon (M-series)
+
+sae-forge runs natively on M-series Macs with MPS (Apple's GPU
+backend). On arm64 the `[torch]` extra pulls torch 2.4+ which has
+mature M-series MPS support; bf16 paths work, op coverage is high,
+unified memory eliminates host-device transfer overhead.
+
+```bash
+git clone git@github.com:jascal/sae-forge.git
+cd sae-forge
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev,torch,polygram,orca]"
+
+# Smoke check (synthetic basis on real gpt2, ~12s):
+python examples/forge_gpt2_real.py /tmp/sae-forge-test
+
+# Real-SAE forge with MPS (~20s on M4):
+python examples/forge_gpt2_real_sae.py /tmp/sae-forge-real-sae 32 mps
+```
+
+Tier guidance for the workloads sae-forge currently ships:
+
+| Mac configuration            | What's comfortable                              |
+|------------------------------|-------------------------------------------------|
+| 16GB unified                 | GPT-2 family, real-SAE forge + smoke fine-tune  |
+| 24GB unified (M4 / M3 Pro)   | Gemma-2-2B forge + serious fine-tune (planned)  |
+| 36GB+ unified (M3/M4 Max)    | Gemma-2-2B comfortable, Gemma-2-9B forward-only |
+| 64GB+ unified (Max/Ultra)    | Gemma-2-9B forge + fine-tune territory          |
+
+x86_64 macOS works for everything except newer torch — PyTorch
+dropped x86_64 macOS wheels after 2.2.2, so Intel Macs install the
+2.2.2 line and miss recent MPS improvements.
 
 ## Layout
 
