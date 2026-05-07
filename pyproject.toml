@@ -43,10 +43,15 @@ notebook = ["jupyter", "matplotlib"]
 # basis loader and projector math stay on the no-extras install.
 torch = ["torch>=2.2", "transformers>=4.46"]
 # Polygram bridge — the canonical producer of compressed SAE checkpoints
-# that sae-forge consumes. Pinned to a release that ships scale-aware
-# merged decoder norms (Polygram PR #34). Published on PyPI by the
-# `orcalang` user; v0.0.1 is the first release.
-polygram = ["polygram>=0.0.1"]
+# that sae-forge consumes. Pinned to a release that ships the
+# polygram-tuning-config dataclasses (CompressionConfig,
+# EpochCompressionConfig, RegrowConfig, …) and the `config=` kwarg
+# accepted by Compressor / EpochCompressor / Regrower /
+# BehaviouralValidator / Cancellation / from_sae_lens. Polygram 0.1.0
+# also flipped the EpochCompressor defaults to the iterative preset and
+# made Regrower.from_compression_report require explicit model_name and
+# layer; this change adapts sae-forge to that surface.
+polygram = ["polygram>=0.1.0"]
 # orca-runtime-python — the classical orca-lang FSM runtime that drives
 # the v0.1 forge-outer-loop-fsm orchestrator. Required only for the
 # `--fsm` opt-in path; the default imperative ForgePipeline does not

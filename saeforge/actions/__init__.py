@@ -34,6 +34,39 @@ def _log(ctx: dict, name: str, extra: dict | None = None) -> None:
     ctx.setdefault("transitions_log", []).append(entry)
 
 
+_POLYGRAM_VERSION_HINT = (
+    "sae-forge requires polygram>=0.1.0 (the polygram-tuning-config "
+    "release that ships CompressionConfig / EpochCompressionConfig / "
+    "RegrowConfig and the matching `config=` kwargs). Upgrade with "
+    "`pip install -U 'polygram>=0.1.0'`."
+)
+
+
+def _import_polygram_symbols(*names: str):
+    """Import the named attributes from ``polygram``; raise an ImportError
+    that points the user at the right ``polygram`` version when one of
+    the new symbols (``CompressionConfig``, ``EpochCompressionConfig``,
+    ``RegrowConfig``) is missing.
+    """
+    try:
+        import polygram
+    except ImportError as exc:
+        raise ImportError(
+            "sae-forge action needs the `polygram` package. "
+            + _POLYGRAM_VERSION_HINT
+        ) from exc
+
+    resolved = []
+    for name in names:
+        if not hasattr(polygram, name):
+            raise ImportError(
+                f"polygram is installed but does not export {name!r}. "
+                + _POLYGRAM_VERSION_HINT
+            )
+        resolved.append(getattr(polygram, name))
+    return resolved
+
+
 def load_sae_and_corpus(ctx: dict, _payload: dict | None = None) -> dict:
     sae = Path(ctx["sae_checkpoint"])
     if not sae.is_file():
@@ -58,23 +91,42 @@ def compress_with_polygram(ctx: dict, _payload: dict | None = None) -> dict:
             "current_feature_count": ctx.get("current_feature_count", 0),
         }
 
-    from polygram import Compressor, ValidationReport
+    Compressor, ValidationReport, CompressionConfig = _import_polygram_symbols(
+        "Compressor", "ValidationReport", "CompressionConfig"
+    )
 
     output_dir = Path(ctx["output_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / "compressed.safetensors"
 
-    confirmer = "quantum_interference" if ctx.get("quantum_aware", False) else None
     validation = ValidationReport.from_json(report_path)
-    compressor_kwargs: dict[str, Any] = {
-        "validation_report": validation,
-        "sae_checkpoint": Path(ctx["current_sae_path"]),
-        "strategy": ctx.get("compression_strategy", "merge"),
-        "rep_selection": ctx.get("rep_selection", "scale_aware"),
-    }
-    if confirmer is not None:
-        compressor_kwargs["confirmer"] = confirmer
-    compressor = Compressor(**{k: v for k, v in compressor_kwargs.items() if k != "confirmer"})
+
+    # Reconstitute a CompressionConfig from ctx (serialised via .to_dict()
+    # by ForgePipeline._build_context). When the key is absent, build a
+    # default — its (strategy, rep_selection) defaults match what
+    # sae-forge has always passed explicitly.
+    compression_dict = ctx.get("compression")
+    base_config = (
+        CompressionConfig.from_dict(compression_dict)
+        if compression_dict is not None
+        else CompressionConfig()
+    )
+
+    # ``quantum_aware`` is an FSM-level toggle; it overrides the
+    # config's ``confirmer`` field when set so the FSM's quantum-aware
+    # decision is the source of truth on a per-run basis.
+    if ctx.get("quantum_aware", False):
+        from dataclasses import replace
+
+        config = replace(base_config, confirmer="quantum_interference")
+    else:
+        config = base_config
+
+    compressor = Compressor(
+        validation_report=validation,
+        sae_checkpoint=Path(ctx["current_sae_path"]),
+        config=config,
+    )
     result = compressor.run(output_path)
 
     report = result.report
@@ -101,26 +153,46 @@ def compress_with_polygram(ctx: dict, _payload: dict | None = None) -> dict:
 
 
 def perform_regrowth(ctx: dict, _payload: dict | None = None) -> dict:
-    """Regrow zeroed slots via Polygram's Regrower when a compression report and prompts are supplied."""
+    """Regrow zeroed slots via Polygram's Regrower when a compression report is supplied.
+
+    The ``regrow`` ctx key (a serialised :class:`polygram.RegrowConfig`)
+    is required whenever ``regrow_count > 0``. The pre-change
+    ``layer=10`` / ``model_name="gpt2"`` ctx fallbacks were a footgun on
+    non-GPT-2 hosts; polygram-tuning-config removed the corresponding
+    polygram-side defaults so callers must now declare them explicitly.
+    """
     if ctx.get("regrow_count", 0) == 0 or not ctx.get("compression_report_path"):
         _log(ctx, "perform_regrowth", {"mode": "passthrough"})
         return {"regrown_sae_path": ctx["compressed_sae_path"]}
 
-    from polygram import CompressionReport, Regrower
+    if ctx.get("regrow") is None:
+        raise ValueError(
+            "perform_regrowth: regrow_count > 0 requires ctx['regrow'] to be "
+            "set (a serialised polygram.RegrowConfig). Set "
+            "ForgePipeline(regrow=RegrowConfig(model_name=..., layer=...)) "
+            "or pass --regrow-layer / --regrow-strategy on the CLI."
+        )
+
+    CompressionReport, Regrower, RegrowConfig = _import_polygram_symbols(
+        "CompressionReport", "Regrower", "RegrowConfig"
+    )
 
     output_dir = Path(ctx["output_dir"])
     output_path = output_dir / "regrown.safetensors"
     report = CompressionReport.from_json(ctx["compression_report_path"])
-    prompts = ctx.get("regrow_prompts") or [""] * 16
+
+    config = RegrowConfig.from_dict(ctx["regrow"])
+    # ``prompts`` historically got a 16-empty-string fallback when omitted
+    # so the regrower could capture residuals without a prompt corpus.
+    # Honour that here when neither config.prompts nor a separate ctx
+    # entry supply one.
+    prompts = config.prompts if config.prompts is not None else tuple([""] * 16)
 
     regrower = Regrower.from_compression_report(
         report,
         sae_checkpoint=Path(ctx["compressed_sae_path"]),
-        strategy=ctx.get("regrow_strategy", "residual_kmeans"),
-        prompts=prompts,
-        layer=ctx.get("regrow_layer", 10),
-        model_name=ctx.get("host_model_id") or "gpt2",
-        seed=ctx.get("regrow_seed", 0),
+        config=config,
+        prompts=list(prompts),
     )
     result = regrower.run(output_path)
     _log(ctx, "perform_regrowth", {"mode": "polygram", "n_regrown": len(result.report.populations)})

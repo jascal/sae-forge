@@ -119,22 +119,32 @@ def main(
     # ---- Stage 3: run polygram EpochCompressor ---------------------
     print(f"[3/5] polygram EpochCompressor on {n_features} features, "
           f"{len(VALIDATE_PROMPTS)} prompts, layer {LAYER}, max_iter={max_iterations}")
-    from polygram import EpochCompressor
+    from polygram import EpochCompressionConfig, EpochCompressor, ValidationConfig
 
     compressed_path = output_dir / "sae_compressed.safetensors"
-    epoch = EpochCompressor(
+    # Iterative-loop tuning. EpochCompressor.fast() captures the matching
+    # defaults from polygram-tuning-config (`coverage_target=0.5`,
+    # `n_visits_per_feature=1`, `max_iterations=1`); we override
+    # `coverage_target` and `max_iterations` from the example's CLI args
+    # and pin a ValidationConfig with the GPT-2-small calibration so the
+    # numbers match prior runs.
+    epoch = EpochCompressor.fast(
         sae_checkpoint=sliced_path,
         prompts=VALIDATE_PROMPTS,
         layer=LAYER,
         model_name=HOST_MODEL,
-        strategy="zero",  # EpochCompressor v0.0.1 only supports 'zero'
+        strategy="zero",  # EpochCompressor only supports 'zero' strategy
         device=device,
-        coverage_target=coverage_target,
-        cosine_threshold=0.30,
-        n_visits_per_feature=1,
-        max_iterations=max_iterations,
-        polygram_overlap_threshold=0.7,
-        jaccard_threshold=0.3,
+        config=EpochCompressionConfig(
+            coverage_target=coverage_target,
+            cosine_threshold=0.30,
+            n_visits_per_feature=1,
+            max_iterations=max_iterations,
+            validation=ValidationConfig(
+                polygram_overlap_threshold=0.7,
+                jaccard_threshold=0.3,
+            ),
+        ),
     )
     t0 = time.monotonic()
     epoch_result = epoch.run(compressed_path)

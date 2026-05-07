@@ -105,23 +105,25 @@ def main(args) -> dict:
     # ---- Stage 3: polygram compression ---------------------------
     print(f"[3/5] polygram EpochCompressor on layer {args.layer}, "
           f"{args.n_features} features, {args.n_compress_prompts} prompts")
-    from polygram import EpochCompressor
+    from polygram import EpochCompressionConfig, EpochCompressor
 
     compressed_path = output_dir / "sae_compressed.safetensors"
     compress_prompts = _load_corpus_lines(args.corpus, n=args.n_compress_prompts) \
         if args.corpus and Path(args.corpus).exists() \
         else _default_compression_prompts(args.n_compress_prompts)
-    epoch = EpochCompressor(
+    epoch = EpochCompressor.fast(
         sae_checkpoint=sliced_path,
         prompts=compress_prompts,
         layer=args.layer,
         model_name=HOST_MODEL,
         strategy="zero",
         device=args.device,
-        coverage_target=args.coverage_target,
-        cosine_threshold=0.30,
-        n_visits_per_feature=1,
-        max_iterations=args.compress_max_iterations,
+        config=EpochCompressionConfig(
+            coverage_target=args.coverage_target,
+            cosine_threshold=0.30,
+            n_visits_per_feature=1,
+            max_iterations=args.compress_max_iterations,
+        ),
     )
     t0 = time.monotonic()
     epoch_result = epoch.run(compressed_path)
