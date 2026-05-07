@@ -67,6 +67,63 @@ x86_64 macOS works for everything except newer torch — PyTorch
 dropped x86_64 macOS wheels after 2.2.2, so Intel Macs install the
 2.2.2 line and miss recent MPS improvements.
 
+### Running on Linux + CUDA (NVIDIA)
+
+sae-forge has no CUDA-specific code; it picks up `device="cuda"` like
+any torch program. The `[torch]` extra installs whichever torch wheel
+matches the host (CUDA-enabled if CUDA libs are present, CPU-only
+otherwise). Standard install:
+
+```bash
+git clone https://github.com/jascal/sae-forge.git
+cd sae-forge
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev,torch,polygram,orca]"
+
+# Real-SAE forge with CUDA:
+python examples/forge_gpt2_real_sae.py /tmp/sae-forge-real-sae 32 cuda
+```
+
+If you need a specific CUDA build (e.g. CUDA 12.1 wheels for a system
+with older drivers), install torch from the PyTorch index *before* the
+sae-forge editable install:
+
+```bash
+pip install torch --index-url https://download.pytorch.org/whl/cu121
+pip install -e ".[dev,polygram,orca]"  # omit [torch] to keep your torch
+```
+
+Tier guidance for the workloads sae-forge can run today and the ones
+the v0.3 milestone unlocks:
+
+| GPU configuration              | What's comfortable today          | With v0.3 forge-finetune-recipe |
+|--------------------------------|-----------------------------------|---------------------------------|
+| Single 24GB (RTX 3090/4090)    | GPT-2-family + smoke fine-tune    | Gemma-2-2B forge + 1k-step ft   |
+| Single 40GB (A100-40)          | Gemma-2-2B comfortable            | Gemma-2-9B forward-only forge   |
+| Single 80GB (A100-80, H100)    | Gemma-2-9B forge + smoke ft       | Gemma-2-9B forge + 1k-step ft   |
+| 2×24GB or 2×48GB               | Same as single-card; v0 doesn't  | 8B-class with model parallel    |
+|                                | implement model parallelism yet   | (would need a separate change)  |
+
+Notes for first-run on a fresh CUDA host:
+
+- **Gemma / Llama license acceptance**: Google's Gemma checkpoints
+  and Meta's Llama checkpoints on HuggingFace are gated. Run
+  `huggingface-cli login` with a token from
+  https://huggingface.co/settings/tokens, then visit each model's HF
+  page and click "Agree and access" once.
+- **Disk**: keep at least 50GB free under `~/.cache/huggingface/`
+  if you plan to compare across SAE layers — Gemma Scope's full
+  release for one model is ~100GB across all layers, but a single
+  layer is ~3GB.
+- **CUDA driver version**: torch 2.4+ wheels assume CUDA ≥11.8. If
+  you're stuck on an older driver, pin torch to a matching wheel via
+  the `--index-url` trick above.
+- **v0 doesn't yet do model parallelism.** Single-GPU is the only
+  supported layout in v0.1; multi-GPU lands as a separate
+  `forge-multi-gpu` change once there's a workload that actually
+  needs it.
+
 ## Layout
 
 ```
