@@ -21,10 +21,21 @@ The v0 milestone is staged as five changes:
    (embed, QKV, MLP, unembed) with optional `scale_boost`.
 4. `native-model` — `NativeModel` HF-compatible small transformer
    skeleton; `from_host` constructor that consumes a `SubspaceProjector`.
-5. `forge-pipeline` — `ForgePipeline` orchestrator + faithfulness eval +
-   first worked example (`examples/forge_gpt2_toy.py`).
+5. `forge-pipeline` — `ForgePipeline` imperative orchestrator +
+   faithfulness eval + first worked example (`examples/forge_gpt2_toy.py`).
 
-Each change has `proposal.md` (why + scope), `tasks.md` (checklist), and
+The v0.1 milestone replaces the imperative orchestrator with an
+orca-lang FSM and expands sae-forge's scope to drive the full compress
+→ regrow → project → fine-tune → eval loop:
+
+6. `forge-outer-loop-fsm` — orca-lang FSM in
+   `saeforge/machines/sae_forge.orca.md` driving a nine-state machine;
+   `ForgePipeline` gains an `orchestrator="fsm"` opt-in; new `[orca]`
+   extra; CI gains `orca verify`. Polygram's `Compressor` and
+   `Regrower` become FSM actions, not externally-staged inputs.
+
+Each change has `proposal.md` (why + scope), optional `design.md`
+(rationale, alternatives, open questions), `tasks.md` (checklist), and
 `specs/<capability>/spec.md` (delta requirements + scenarios). Validate
 with `openspec validate <change-name>` before working on it; archive via
 `openspec archive` when done.
@@ -43,6 +54,26 @@ with `openspec validate <change-name>` before working on it; archive via
   the single canonical entry point.
 - Polygram is **not** vendored. If you need a fix in Polygram (new field
   on `CompressionReport`, new rep-selector, etc.), open it there.
+
+## orca-lang dependency contract
+
+- Pinned at `orca-lang>=0.5` behind the `[orca]` extra. Required only
+  for the FSM-driven forge path landing in v0.1
+  (`forge-outer-loop-fsm`). The default imperative `ForgePipeline.run`
+  from v0 does **not** require it.
+- Lazy-import `orca_lang.runtime` inside `saeforge.orchestrator`, never
+  at package import time. `import saeforge` MUST succeed without
+  `orca-lang` installed.
+- The canonical machine ships at `saeforge/machines/sae_forge.orca.md`
+  as package data. Load it via `importlib.resources.files`, never via
+  filesystem path resolution.
+- CI runs `orca verify` against the shipped machine. Static
+  verification failure blocks the merge — that is the whole reason we
+  chose an FSM here.
+- This is **classical** orca-lang. q-orca-lang (the quantum extension)
+  is never imported on the default forge path; `--quantum-aware` only
+  influences which Polygram `confirmer` is selected inside
+  `compress_with_polygram`.
 
 ## Torch dependency contract
 
