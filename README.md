@@ -288,9 +288,10 @@ sae-forge is a downstream consumer of Polygram, not a fork. The contract:
 
 - **Input**: a `.safetensors` file produced by `polygram compress` (or
   `polygram compress-epoch`) plus its companion `compression_report.json`.
-- **Required Polygram version**: `>=0.4`, the first release with
-  scale-aware merged norms in `CompressionReport.scale_compression_ratio`
-  and per-cluster `merged_norm`.
+- **Required Polygram version**: `>=0.1.0`, the polygram-tuning-config
+  release that ships the typed config dataclasses sae-forge plumbs
+  through (`CompressionConfig`, `EpochCompressionConfig`, `RegrowConfig`,
+  `ValidationConfig`).
 - **What sae-forge does not do**: it does not run validation, does not
   pick clusters, does not zero or merge — those are Polygram's job. It
   consumes the artifact and projects.
@@ -299,6 +300,62 @@ If you want to build a custom compression upstream (a different rep
 selector, a non-Polygram SAE format), hand-roll a dict matching
 `FeatureBasis`'s fields and call `FeatureBasis(**fields)` directly — the
 loader is one entry point among several.
+
+### Polygram tuning passthrough
+
+`ForgePipeline` exposes three typed polygram-tuning fields:
+
+| Field | Type | Drives |
+|---|---|---|
+| `compression` | `polygram.CompressionConfig` | `polygram.Compressor` (strategy / rep_selection / merge_mode / confirmer) |
+| `epoch_compression` | `polygram.EpochCompressionConfig` | `polygram.EpochCompressor` (coverage_target, cosine_threshold, max_iterations, embedded `ValidationConfig`) |
+| `regrow` | `polygram.RegrowConfig` | `polygram.Regrower.from_compression_report` (model_name, layer, strategy, prompts, seed) |
+
+When `regrow_count > 0`, `regrow=RegrowConfig(model_name=..., layer=...)`
+is **required** (`__post_init__` raises otherwise). The pre-change
+`layer=10` / `model_name="gpt2"` ctx fallbacks were removed in 0.1.0
+because they silently bound regrowth to GPT-2.
+
+Configs round-trip through the FSM context as JSON-friendly dicts —
+`ForgePipeline._build_context` calls `cfg.to_dict()` on each non-None
+field, and the polygram-driven actions (`compress_with_polygram`,
+`perform_regrowth`) reconstitute via `<Config>.from_dict(ctx[key])`
+before calling polygram. This keeps the orca-runtime trace tooling
+JSON-trivially-serialisable while end-to-end-typed at the Python API
+boundary.
+
+#### Loading from YAML/JSON
+
+`ForgePipeline.from_dict(data)` accepts a flat mapping where the
+`compression` / `epoch_compression` / `regrow` keys are nested dicts;
+unknown top-level keys emit a `UserWarning` and are dropped (matching
+polygram's forward-compat policy). One-shot YAML configs become a
+two-line bootstrap:
+
+```python
+import yaml
+from saeforge import ForgePipeline
+
+with open("forge_config.yaml") as f:
+    pipeline = ForgePipeline.from_dict(yaml.safe_load(f))
+```
+
+See `docs/forge_config_example.yaml` for an end-to-end example.
+
+#### CLI flags
+
+The five high-frequency knobs are reachable from the CLI:
+
+```bash
+sae-forge forge ckpt.safetensors --host-model gpt2 --output-dir out/ \
+  --coverage-target 0.6 \
+  --cosine-threshold 0.30 \
+  --max-compress-iterations 2 \
+  --regrow-count 2 --regrow-layer 4 --regrow-strategy residual_kmeans
+```
+
+Long-tail tuning (jaccard threshold, min_both_fire, etc.) lives behind
+`ForgePipeline.from_dict` — pass a YAML/JSON config there.
 
 ## Development
 

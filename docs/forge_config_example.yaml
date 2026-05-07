@@ -1,0 +1,56 @@
+# Example ForgePipeline config file.
+#
+# Usage:
+#   import yaml
+#   from saeforge import ForgePipeline
+#   pipeline = ForgePipeline.from_dict(yaml.safe_load(open("forge_config.yaml")))
+#
+# Note: ``basis`` and ``projector`` cannot be loaded from YAML — they
+# carry numpy arrays. Build them in code (e.g. via
+# ``FeatureBasis.from_polygram_checkpoint(...)``) and add them to the
+# dict before calling ``ForgePipeline.from_dict``.
+
+host_model_id: gpt2
+dtype: float32
+device: cpu
+attention_width: host
+
+# Outer-loop knobs
+iterations: 1
+regrow_count: 2
+
+# Polygram tuning bundles. Each becomes a typed
+# ``polygram.<Config>`` instance via ``<Config>.from_dict``.
+compression:
+  strategy: merge
+  rep_selection: scale_aware
+  merge_mode: freq_weighted
+
+epoch_compression:
+  coverage_target: 0.6
+  cosine_threshold: 0.30
+  n_visits_per_feature: 1
+  max_iterations: 2
+  validation:
+    polygram_overlap_threshold: 0.7
+    jaccard_threshold: 0.30
+    min_both_fire: 5
+
+# Required when regrow_count > 0. The pre-0.1.0 ``layer=10`` /
+# ``model_name="gpt2"`` defaults were removed because they silently
+# bound regrowth to GPT-2.
+regrow:
+  model_name: gpt2
+  layer: 10
+  strategy: residual_kmeans
+  seed: 0
+  n_init: 4
+
+# v0.3 finetune-recipe knobs (still flat — out of scope for the
+# polygram passthrough; finetune is sae-forge-internal training).
+finetune_corpus: null
+finetune_total_steps: 1000
+finetune_warmup_steps: 100
+finetune_peak_lr: 5.0e-5
+finetune_batch_size: 8
+finetune_seq_len: 512

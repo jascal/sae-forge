@@ -44,12 +44,15 @@ def test_compress_action_runs_polygram_when_validation_report_provided(
     output_dir = tmp_path / "out"
     output_dir.mkdir()
 
+    from polygram import CompressionConfig
+
     ctx = {
         "current_sae_path": str(sae_path),
         "output_dir": str(output_dir),
         "validation_report_path": str(synthetic_validation_report["path"]),
-        "compression_strategy": "merge",
-        "rep_selection": "n_fires",
+        "compression": CompressionConfig(
+            strategy="merge", rep_selection="n_fires"
+        ).to_dict(),
         "transitions_log": [],
     }
     delta = compress_with_polygram(ctx, None)
@@ -159,13 +162,14 @@ def test_full_compress_then_forge_via_fsm(
         original_norms=np.linalg.norm(placeholder_W, axis=1),
     )
     projector = SubspaceProjector(placeholder)
+    from polygram import CompressionConfig
+
     pipeline = ForgePipeline(
         basis=placeholder,
         projector=projector,
         orchestrator="fsm",
         validation_report_path=str(synthetic_validation_report["path"]),
-        compression_strategy="merge",
-        rep_selection="n_fires",
+        compression=CompressionConfig(strategy="merge", rep_selection="n_fires"),
     )
     eval_input_ids = torch.randint(0, tiny_gpt2.config.vocab_size, (1, 4))
     result = pipeline.run_synthetic(

@@ -3,14 +3,23 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+import warnings
+from dataclasses import dataclass, field, fields
 from pathlib import Path
+from typing import TYPE_CHECKING, Any, Mapping
 
 import numpy as np
 
 from saeforge.basis import FeatureBasis
 from saeforge.model import NativeModel, _config_from_host
 from saeforge.projector import SubspaceProjector
+
+if TYPE_CHECKING:  # pragma: no cover — type-only imports
+    from polygram import (  # noqa: F401
+        CompressionConfig,
+        EpochCompressionConfig,
+        RegrowConfig,
+    )
 
 
 @dataclass
@@ -52,8 +61,15 @@ class ForgePipeline:
     regrow_count: int = 0
     quantum_aware: bool = False
     validation_report_path: str | None = None
-    compression_strategy: str = "merge"
-    rep_selection: str = "scale_aware"
+    # Polygram tuning bundles (polygram>=0.1.0). Each is plumbed end-to-end
+    # via FSM context: serialised on the way in (``cfg.to_dict()`` →
+    # ``ctx[key]``) and reconstituted on the way out (in the action via
+    # ``<Config>.from_dict(ctx[key])``). When a field is ``None``, the
+    # corresponding polygram constructor is called without ``config=`` and
+    # falls back to polygram's own dataclass defaults.
+    compression: "CompressionConfig | None" = None
+    epoch_compression: "EpochCompressionConfig | None" = None
+    regrow: "RegrowConfig | None" = None
     finetune_steps: int = 0
     finetune_lr: float = 1e-3
     attention_width: str = "host"
@@ -72,6 +88,70 @@ class ForgePipeline:
     finetune_save_every: int = 250
     finetune_save_dir: Path | None = None
     finetune_log_every: int = 10
+
+    # ----------------------------------------------------------------
+    # Construction-time validation + dict round-trip
+    # ----------------------------------------------------------------
+
+    def __post_init__(self) -> None:
+        # ``regrow_count > 0`` requires an explicit RegrowConfig — the
+        # pre-change ``layer=10`` / ``model_name="gpt2"`` ctx fallbacks
+        # silently bound regrowth to GPT-2 and produced nonsense layer
+        # indices on other architectures. Polygram-tuning-config dropped
+        # the matching polygram-side defaults; mirroring that here at
+        # construction time keeps the failure mode loud and local.
+        if self.regrow_count > 0 and self.regrow is None:
+            raise ValueError(
+                "ForgePipeline: regrow_count > 0 requires regrow="
+                "RegrowConfig(model_name=..., layer=...). The pre-change "
+                "GPT-2 defaults were removed; pass an explicit RegrowConfig "
+                "(see polygram>=0.1.0) describing the host model's residual "
+                "stream."
+            )
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "ForgePipeline":
+        """Build a :class:`ForgePipeline` from a JSON/YAML-shaped mapping.
+
+        Pops ``compression`` / ``epoch_compression`` / ``regrow`` keys
+        (when present and non-None) and feeds each through the matching
+        polygram ``<Config>.from_dict``. Other keys are passed through
+        as constructor kwargs. Unknown top-level keys emit a
+        :class:`UserWarning` and are dropped — matching polygram's own
+        forward-compatibility policy.
+        """
+        from polygram import (
+            CompressionConfig,
+            EpochCompressionConfig,
+            RegrowConfig,
+        )
+
+        if not isinstance(data, Mapping):
+            raise TypeError(
+                f"ForgePipeline.from_dict expected a mapping, "
+                f"got {type(data).__name__}"
+            )
+
+        known = {f.name for f in fields(cls)}
+        kwargs: dict[str, Any] = {}
+        nested = {
+            "compression": CompressionConfig,
+            "epoch_compression": EpochCompressionConfig,
+            "regrow": RegrowConfig,
+        }
+        for key, value in data.items():
+            if key not in known:
+                warnings.warn(
+                    f"ForgePipeline.from_dict: ignoring unknown key {key!r}",
+                    UserWarning,
+                    stacklevel=2,
+                )
+                continue
+            if key in nested and isinstance(value, Mapping):
+                kwargs[key] = nested[key].from_dict(value)
+            else:
+                kwargs[key] = value
+        return cls(**kwargs)
 
     def run(self, output_dir: str | Path) -> ForgeResult:
         from saeforge.utils.lazy import require_extra
@@ -244,8 +324,25 @@ class ForgePipeline:
             "_finetune_input_ids": finetune_input_ids,
             "_finetune_iterator": finetune_iterator,
             "validation_report_path": self.validation_report_path,
-            "compression_strategy": self.compression_strategy,
-            "rep_selection": self.rep_selection,
+            # Polygram tuning bundles — serialised as JSON-friendly dicts
+            # so the orca-runtime trace tooling stays unchanged. Absent
+            # keys (rather than ``None`` values) signal "use polygram's
+            # own defaults" to the action layer.
+            **(
+                {"compression": self.compression.to_dict()}
+                if self.compression is not None
+                else {}
+            ),
+            **(
+                {"epoch_compression": self.epoch_compression.to_dict()}
+                if self.epoch_compression is not None
+                else {}
+            ),
+            **(
+                {"regrow": self.regrow.to_dict()}
+                if self.regrow is not None
+                else {}
+            ),
             "finetune_steps": self.finetune_steps,
             "finetune_lr": self.finetune_lr,
             "attention_width": self.attention_width,

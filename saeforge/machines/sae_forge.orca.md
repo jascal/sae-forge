@@ -32,6 +32,9 @@ trainer.
 | n_params | int | 0 |
 | transitions_log | list | [] |
 | should_continue | bool | false |
+| compression | dict |  |
+| epoch_compression | dict |  |
+| regrow | dict |  |
 
 ## state init [initial]
 ## state loaded
