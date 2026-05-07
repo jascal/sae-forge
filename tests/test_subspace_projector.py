@@ -105,6 +105,11 @@ def test_project_module_gpt2(tiny_gpt2, tiny_synthetic_basis):
 
 
 def test_project_module_unsupported_arch_raises(tiny_synthetic_basis):
+    # ``project_module`` imports transformers eagerly; gate the test on
+    # the [torch] extra so the no-extras install stays green.
+    pytest.importorskip("torch")
+    pytest.importorskip("transformers")
+
     projector = SubspaceProjector(tiny_synthetic_basis)
 
     class FakeBert:
