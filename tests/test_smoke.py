@@ -115,6 +115,13 @@ def test_from_polygram_checkpoint_missing_file_raises() -> None:
 
 
 def test_forge_pipeline_run_requires_host_model_id() -> None:
+    # ``pipeline.run()`` reaches the host_model_id ValueError only after
+    # touching transformers; without the [torch] extra installed, the
+    # import fails first. Pin the validation behaviour for torch-equipped
+    # runners and let the no-extras install skip cleanly.
+    pytest.importorskip("torch")
+    pytest.importorskip("transformers")
+
     from saeforge import ForgePipeline, SubspaceProjector
 
     basis = _make_basis()
