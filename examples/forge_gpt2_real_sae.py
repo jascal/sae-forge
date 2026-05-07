@@ -14,8 +14,20 @@ CPU-friendly defaults (16 features, 1 iteration, 8 prompts) target a
 2–5 minute wall time. For meaningful capability claims, raise the
 feature count and iteration budget and run on GPU.
 
+Device note: pass `device="cuda"` for NVIDIA, `device="mps"` for
+Apple/Intel-Mac Metal. CUDA gives the expected speedup. MPS on this
+workload (short sequences, few prompts) is roughly break-even with
+CPU because kernel-launch overhead beats the parallelism win — the
+MPS payoff lives in long fine-tune runs (hundreds of steps, batch
+≥16) and large host models, both of which are also constrained by
+VRAM (4GB on a Radeon Pro 5500M caps you near GPT-2-small).
+
 Run:
-    python examples/forge_gpt2_real_sae.py [output_dir] [n_features]
+    python examples/forge_gpt2_real_sae.py [output_dir] [n_features] [device]
+
+Example:
+    python examples/forge_gpt2_real_sae.py /tmp/run 32 cpu
+    python examples/forge_gpt2_real_sae.py /tmp/run 32 mps
 """
 
 from __future__ import annotations
@@ -82,6 +94,7 @@ def main(
     n_features: int = 16,
     max_iterations: int = 1,
     coverage_target: float = 0.5,
+    device: str = "cpu",
 ) -> dict:
     import torch  # noqa: F401  (lazy-imported below)
     from huggingface_hub import hf_hub_download
@@ -115,6 +128,7 @@ def main(
         layer=LAYER,
         model_name=HOST_MODEL,
         strategy="zero",  # EpochCompressor v0.0.1 only supports 'zero'
+        device=device,
         coverage_target=coverage_target,
         cosine_threshold=0.30,
         n_visits_per_feature=1,
@@ -143,7 +157,7 @@ def main(
         host_model_id=HOST_MODEL,
         eval_prompts=EVAL_PROMPTS,
         dtype="float32",
-        device="cpu",
+        device=device,
     )
     t0 = time.monotonic()
     result = pipeline.run(output_dir / "forge")
@@ -178,4 +192,5 @@ def main(
 if __name__ == "__main__":
     out = sys.argv[1] if len(sys.argv) > 1 else "examples/output/gpt2_real_sae/"
     n_features = int(sys.argv[2]) if len(sys.argv) > 2 else 16
-    main(out, n_features=n_features)
+    device = sys.argv[3] if len(sys.argv) > 3 else "cpu"
+    main(out, n_features=n_features, device=device)
