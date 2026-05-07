@@ -22,7 +22,7 @@ def _file_sha256(path) -> str:
 
 def test_config_default_is_host():
     config = NativeModelConfig(
-        hidden_size=8, qkv_inner_size=16, num_layers=2, num_heads=4,
+        family="gpt2", hidden_size=8, qkv_inner_size=16, num_layers=2, num_heads=4,
         head_dim=4, intermediate_size=32, vocab_size=100,
     )
     assert config.attention_width == "host"
@@ -31,7 +31,7 @@ def test_config_default_is_host():
 def test_config_feature_native_requires_qkv_inner_eq_hidden():
     with pytest.raises(ValueError, match="qkv_inner_size"):
         NativeModelConfig(
-            hidden_size=8, qkv_inner_size=16, num_layers=2, num_heads=4,
+            family="gpt2", hidden_size=8, qkv_inner_size=16, num_layers=2, num_heads=4,
             head_dim=4, intermediate_size=32, vocab_size=100,
             attention_width="feature_native",
         )
@@ -40,7 +40,7 @@ def test_config_feature_native_requires_qkv_inner_eq_hidden():
 def test_config_feature_native_requires_divisibility():
     with pytest.raises(ValueError, match="num_heads"):
         NativeModelConfig(
-            hidden_size=8, qkv_inner_size=8, num_layers=2, num_heads=3,
+            family="gpt2", hidden_size=8, qkv_inner_size=8, num_layers=2, num_heads=3,
             head_dim=2, intermediate_size=32, vocab_size=100,
             attention_width="feature_native",
         )
@@ -48,7 +48,7 @@ def test_config_feature_native_requires_divisibility():
 
 def test_config_feature_native_valid():
     config = NativeModelConfig(
-        hidden_size=8, qkv_inner_size=8, num_layers=2, num_heads=4,
+        family="gpt2", hidden_size=8, qkv_inner_size=8, num_layers=2, num_heads=4,
         head_dim=2, intermediate_size=32, vocab_size=100,
         attention_width="feature_native",
     )
@@ -59,7 +59,7 @@ def test_config_feature_native_valid():
 def test_config_rejects_unknown_attention_width():
     with pytest.raises(ValueError, match="attention_width"):
         NativeModelConfig(
-            hidden_size=8, qkv_inner_size=8, num_layers=2, num_heads=4,
+            family="gpt2", hidden_size=8, qkv_inner_size=8, num_layers=2, num_heads=4,
             head_dim=2, intermediate_size=32, vocab_size=100,
             attention_width="bogus",
         )

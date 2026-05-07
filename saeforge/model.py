@@ -21,6 +21,9 @@ from saeforge.projector import SubspaceProjector
 from saeforge.utils.lazy import require_extra
 
 
+_SUPPORTED_FAMILIES = ("gpt2", "llama", "gemma2")
+
+
 @dataclass
 class NativeModelConfig:
     """Architecture knobs for a forged native model.
@@ -30,8 +33,21 @@ class NativeModelConfig:
     when ``attention_width == "host"``. When ``attention_width ==
     "feature_native"`` (v0.2 opt-in), ``qkv_inner_size`` MUST equal
     ``hidden_size`` and ``num_heads * head_dim == hidden_size``.
+
+    ``family`` (required, no default) selects the native module shape:
+
+    - ``"gpt2"`` — Conv1D matrices, GeLU, LayerNorm, ``wpe`` position
+      embeddings, fused ``c_attn`` for Q/K/V.
+    - ``"llama"`` — Linear matrices, SwiGLU MLP (gate/up/down), RMSNorm,
+      no ``wpe``, separate ``q_proj``/``k_proj``/``v_proj``/``o_proj``
+      with optional GQA (``n_kv_heads``), optional tied lm_head.
+    - ``"gemma2"`` — Llama-shaped + four norms per block
+      (``input_layernorm``, ``post_attention_layernorm``,
+      ``pre_feedforward_layernorm``, ``post_feedforward_layernorm``)
+      and optional logit soft-capping post-``lm_head``.
     """
 
+    family: str
     hidden_size: int
     qkv_inner_size: int
     num_layers: int
@@ -43,8 +59,24 @@ class NativeModelConfig:
     layer_norm_epsilon: float = 1e-5
     activation: str = "gelu"
     attention_width: str = "host"
+    # Llama / Gemma-2 fields. ``n_kv_heads=None`` collapses to MHA where
+    # ``n_kv_heads == num_heads``. ``rms_norm_eps`` mirrors HF's
+    # ``LlamaConfig.rms_norm_eps`` / ``Gemma2Config.rms_norm_eps``.
+    n_kv_heads: int | None = None
+    tied_embeddings: bool = False
+    rms_norm_eps: float | None = None
+    # Gemma-2-specific. Applied as ``tanh(x / cap) * cap`` post-``lm_head``
+    # (``final_logit_softcap``) and post-attention scores
+    # (``attn_logit_softcap``); ``None`` is a no-op.
+    final_logit_softcap: float | None = None
+    attn_logit_softcap: float | None = None
 
     def __post_init__(self) -> None:
+        if self.family not in _SUPPORTED_FAMILIES:
+            raise ValueError(
+                f"family must be one of {_SUPPORTED_FAMILIES}; "
+                f"got {self.family!r}"
+            )
         if self.attention_width not in ("host", "feature_native"):
             raise ValueError(
                 f"attention_width must be 'host' or 'feature_native'; got {self.attention_width!r}"
@@ -53,6 +85,18 @@ class NativeModelConfig:
             raise ValueError(
                 f"qkv_inner_size {self.qkv_inner_size} must equal "
                 f"num_heads ({self.num_heads}) * head_dim ({self.head_dim})"
+            )
+        # GQA: default n_kv_heads = num_heads (collapses to MHA).
+        if self.n_kv_heads is None:
+            self.n_kv_heads = self.num_heads
+        if self.n_kv_heads <= 0:
+            raise ValueError(
+                f"n_kv_heads must be > 0; got {self.n_kv_heads}"
+            )
+        if self.num_heads % self.n_kv_heads != 0:
+            raise ValueError(
+                f"num_heads ({self.num_heads}) must be divisible by "
+                f"n_kv_heads ({self.n_kv_heads})"
             )
         if self.attention_width == "feature_native":
             if self.qkv_inner_size != self.hidden_size:
@@ -292,6 +336,7 @@ def _config_from_host(
         qkv_inner = cfg.n_embd
         head_dim = cfg.n_embd // cfg.n_head
     return NativeModelConfig(
+        family="gpt2",
         hidden_size=n_features,
         qkv_inner_size=qkv_inner,
         num_layers=cfg.n_layer,

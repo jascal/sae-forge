@@ -95,7 +95,7 @@ def test_native_model_config_constructs() -> None:
     from saeforge.model import NativeModelConfig
 
     config = NativeModelConfig(
-        hidden_size=64,
+        family="gpt2", hidden_size=64,
         qkv_inner_size=64,
         num_layers=2,
         num_heads=4,
