@@ -17,8 +17,11 @@ feature scales rather than a degenerated unit-norm basis.
 ## Status
 
 Pre-alpha. v0 milestone: working end-to-end on GPT-2-small + a toy
-compressed SAE, then Gemma-2-2B / 9B on a single 4090. New work is staged
-through OpenSpec changes — see `openspec/changes/`.
+compressed SAE. v0.2 (multi-architecture-support): Llama-3 and
+Gemma-2 host families now go through the same projection pipeline as
+GPT-2 via the ``saeforge.adapters`` registry. Pythia / GPT-NeoX
+deferred to a follow-up. New work is staged through OpenSpec changes —
+see ``openspec/changes/``.
 
 ## Install
 
@@ -121,9 +124,15 @@ Tier guidance for the workloads sae-forge currently ships:
 | Mac configuration            | What's comfortable                              |
 |------------------------------|-------------------------------------------------|
 | 16GB unified                 | GPT-2 family, real-SAE forge + smoke fine-tune  |
-| 24GB unified (M4 / M3 Pro)   | Gemma-2-2B forge + serious fine-tune (planned)  |
+| 24GB unified (M4 / M3 Pro)   | Gemma-2-2B / Llama-3-8B forge + serious fine-tune |
 | 36GB+ unified (M3/M4 Max)    | Gemma-2-2B comfortable, Gemma-2-9B forward-only |
 | 64GB+ unified (Max/Ultra)    | Gemma-2-9B forge + fine-tune territory          |
+
+Supported host families (post-multi-architecture-support):
+**GPT-2 family**, **Llama-3** (Llama-2 also works via the same
+adapter), and **Gemma-2**. Pythia / GPT-NeoX is deferred and will
+need a small upstream polygram addition for parallel Q/K/V — track
+on the [issue list](https://github.com/jascal/sae-forge/issues).
 
 **Intel Mac (x86_64) is supported but constrained.** PyTorch dropped
 x86_64 macOS wheels after 2.2.2, and 2.2.2 only ships for CPython

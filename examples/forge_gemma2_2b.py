@@ -22,6 +22,9 @@ Pre-conditions:
 - Accept the Gemma license at https://huggingface.co/google/gemma-2-2b
   and run `huggingface-cli login` with a token that has read access
 - ~10GB free under ~/.cache/huggingface/ for Gemma weights + SAE
+- ``polygram>=0.1.0`` and ``sae-forge[torch]`` installed.
+  multi-architecture-support landed in 0.2; older sae-forge silently
+  loaded Gemma weights into a GPT-2 config and produced random output
 - For the corpus: either pass --corpus /path/to/local.txt or accept
   the default streaming Fineweb-edu (lazy-imports `datasets`)
 
@@ -111,7 +114,13 @@ def main(args) -> dict:
     compress_prompts = _load_corpus_lines(args.corpus, n=args.n_compress_prompts) \
         if args.corpus and Path(args.corpus).exists() \
         else _default_compression_prompts(args.n_compress_prompts)
-    epoch = EpochCompressor.fast(
+    # ``EpochCompressor.fast()`` is a preset wrapper that supplies
+    # ``config=`` internally and forwards ``**overrides`` to the
+    # constructor; passing ``config=`` as an override collides
+    # (TypeError: got multiple values for keyword argument 'config').
+    # Use the constructor directly when carrying a custom
+    # EpochCompressionConfig.
+    epoch = EpochCompressor(
         sae_checkpoint=sliced_path,
         prompts=compress_prompts,
         layer=args.layer,

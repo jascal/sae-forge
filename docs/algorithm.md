@@ -248,3 +248,44 @@ back via `FeatureBasis.from_polygram_checkpoint`. Same data, slightly
 different API shape; tracked in the
 [`forge-outer-loop-fsm`](../openspec/changes/forge-outer-loop-fsm)
 OpenSpec change.
+
+### 10.4 Multi-architecture support — Llama-3 / Gemma-2 equivalents
+
+The projection algebra in §4 is architecture-agnostic; v0.2 (the
+`multi-architecture-support` OpenSpec change) extended sae-forge to
+cover Llama-3 and Gemma-2 hosts via the
+[`saeforge.adapters`](../saeforge/adapters/) registry. The
+projection identities translate as:
+
+- **GPT-2 fused `c_attn` (Q/K/V together)** ↔ **Llama-family
+  `q_proj`, `k_proj`, `v_proj` separately**. Each Llama matrix is a
+  residual-input matrix (HF stores `Linear.weight` as `(out, in)`);
+  the projection is `W_new = W_old @ E` and shapes track the per-head
+  output dimensions. GQA (`num_key_value_heads < num_attention_heads`)
+  is honoured naturally — `k_proj` and `v_proj` shrink along the
+  output axis.
+- **GPT-2 GeLU MLP `c_fc` / `c_proj`** ↔ **Llama / Gemma-2 SwiGLU
+  three-matrix MLP (`gate_proj`, `up_proj`, `down_proj`)**. `gate` and
+  `up` are residual-input matrices; `down` is residual-output. The
+  SwiGLU nonlinearity (`silu(gate(x)) * up(x)`) is `ε_nonlin`,
+  same category as GeLU.
+- **GPT-2 LayerNorm γ / β** ↔ **Llama / Gemma-2 RMSNorm γ (no β)**.
+  The same `project_residual_aligned` helper applies; RMSNorm has no
+  bias, so the walk emits no `*.bias` keys for any norm layer.
+- **Gemma-2 four-norm-per-block layout**
+  (`input_layernorm`, `post_attention_layernorm`,
+  `pre_feedforward_layernorm`, `post_feedforward_layernorm`) — all
+  four are residual-aligned RMSNorms; same projection helper,
+  different forward-pass topology in the native module.
+
+What is intentionally *not* replicated in v0.2:
+
+- **Gemma-2 final-logit / attention soft-capping** — surfaced on the
+  `NativeModelConfig` and applied at forward time as
+  `tanh(x / cap) * cap`, but the projection itself is unaffected. Any
+  drift between the post-cap host logits and the post-cap forged
+  logits is `ε_nonlin` and falls out at fine-tune.
+- **Gemma-2 alternating local/global attention** (sliding-window
+  mask). The forged native module uses the standard causal mask
+  everywhere; long-context drift is accepted as `ε_attn`. Replicating
+  the exact sliding-window mechanics is future work.

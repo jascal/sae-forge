@@ -168,3 +168,89 @@ def tiny_gpt2(monkeypatch):
     )
     model = GPT2LMHeadModel(config).eval()
     return model
+
+
+@pytest.fixture
+def tiny_llama():
+    """A tiny torch Llama — 128-dim residual, 2 layers, 4 heads, 2 KV heads (GQA), 1024 vocab."""
+    pytest.importorskip("torch")
+    pytest.importorskip("transformers")
+    from transformers import LlamaConfig, LlamaForCausalLM
+
+    config = LlamaConfig(
+        hidden_size=128,
+        num_hidden_layers=2,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        intermediate_size=256,
+        vocab_size=1024,
+        head_dim=32,
+        max_position_embeddings=64,
+        tie_word_embeddings=False,
+    )
+    model = LlamaForCausalLM(config).eval()
+    return model
+
+
+@pytest.fixture
+def tiny_llama_tied():
+    """A tiny torch Llama with tied lm_head weights."""
+    pytest.importorskip("torch")
+    pytest.importorskip("transformers")
+    from transformers import LlamaConfig, LlamaForCausalLM
+
+    config = LlamaConfig(
+        hidden_size=128,
+        num_hidden_layers=2,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        intermediate_size=256,
+        vocab_size=1024,
+        head_dim=32,
+        max_position_embeddings=64,
+        tie_word_embeddings=True,
+    )
+    model = LlamaForCausalLM(config).eval()
+    return model
+
+
+@pytest.fixture
+def tiny_gemma2():
+    """A tiny torch Gemma-2 with logit soft-capping enabled, GQA, 4-norms-per-block."""
+    pytest.importorskip("torch")
+    pytest.importorskip("transformers")
+    from transformers import Gemma2Config, Gemma2ForCausalLM
+
+    config = Gemma2Config(
+        hidden_size=128,
+        num_hidden_layers=2,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        intermediate_size=256,
+        vocab_size=1024,
+        head_dim=32,
+        max_position_embeddings=64,
+        final_logit_softcapping=30.0,
+        attn_logit_softcapping=50.0,
+    )
+    model = Gemma2ForCausalLM(config).eval()
+    return model
+
+
+@pytest.fixture
+def feature_basis_128_to_32():
+    """A 32-feature FeatureBasis over a 128-d residual (matches the
+    tiny_llama / tiny_gemma2 fixtures)."""
+    import numpy as np
+
+    from saeforge.basis import FeatureBasis
+
+    n = 32
+    rng = np.random.default_rng(0)
+    W = rng.standard_normal((n, 128)).astype(np.float32)
+    return FeatureBasis(
+        kept_ids=np.arange(n, dtype=np.int64),
+        W_dec=W,
+        merged_norms=np.linalg.norm(W, axis=1).astype(np.float32),
+        original_norms=np.linalg.norm(W, axis=1).astype(np.float32),
+    )

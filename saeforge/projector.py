@@ -125,95 +125,37 @@ class SubspaceProjector:
         return self.project_residual_output(W_out)
 
     def project_module(self, host_model, *, attention_width: str = "host") -> dict[str, np.ndarray]:
-        """Project every relevant weight of an HF GPT-2 host model into the basis.
+        """Project every relevant host-model weight into the basis.
 
-        Returns a dict keyed by HF parameter names, ready to feed
-        ``NativeModel.from_projected_weights``. Only GPT-2 architectures are
-        supported in v0; other families raise ``NotImplementedError``.
+        Dispatches via ``saeforge.adapters.adapter_for(host_model)``. The
+        v0.1 GPT-2 walker now lives in
+        :class:`saeforge.adapters.gpt2.GPT2Adapter`; Llama and Gemma-2
+        adapters are bundled too. Unregistered architectures raise
+        ``NotImplementedError`` naming the host's type and the
+        registered class set.
 
-        ``attention_width``:
-        - ``"host"`` (default): only the residual-touching sides of c_attn /
-          c_proj project. Attention internal width = host n_embd. Preserves
-          host attention mechanics byte-for-byte. v0 / v0.1 default.
-        - ``"feature_native"``: both sides of c_attn / c_proj project.
-          Attention internal width = n_features. Realizes the full
-          docs/algorithm.md §4 form. v0.2 opt-in.
+        ``attention_width`` is forwarded to the adapter; what each
+        adapter does with it depends on the architecture (the GPT-2
+        adapter's "feature_native" mode applies both-sides projection
+        to ``c_attn`` / ``c_proj``; Llama-family adapters currently
+        accept only ``"host"``).
         """
         if attention_width not in ("host", "feature_native"):
             raise ValueError(
                 f"attention_width must be 'host' or 'feature_native'; got {attention_width!r}"
             )
         try:
-            from transformers import GPT2LMHeadModel, GPT2Model
+            import transformers  # noqa: F401  — checked here for friendlier ImportError
         except ImportError as e:
             raise ImportError(
                 "SubspaceProjector.project_module needs the [torch] extra; "
                 "install it with `pip install sae-forge[torch]`."
             ) from e
 
-        if isinstance(host_model, GPT2LMHeadModel):
-            transformer = host_model.transformer
-            lm_head_weight = host_model.lm_head.weight
-        elif isinstance(host_model, GPT2Model):
-            transformer = host_model
-            lm_head_weight = None
-        else:
-            raise NotImplementedError(
-                f"project_module only supports HF GPT-2 in v0; got {type(host_model).__name__}"
-            )
+        from saeforge.adapters import adapter_for
 
-        out: dict[str, np.ndarray] = {}
-
-        out["transformer.wte.weight"] = self.project_embed(_to_numpy(transformer.wte.weight))
-        out["transformer.wpe.weight"] = self.project_embed(_to_numpy(transformer.wpe.weight))
-
-        for i, block in enumerate(transformer.h):
-            prefix = f"transformer.h.{i}"
-            out[f"{prefix}.ln_1.weight"] = self.project_residual_aligned(_to_numpy(block.ln_1.weight))
-            out[f"{prefix}.ln_1.bias"] = self.project_residual_aligned(_to_numpy(block.ln_1.bias))
-
-            c_attn_w = _to_numpy(block.attn.c_attn.weight)
-            c_attn_b = _to_numpy(block.attn.c_attn.bias)
-            c_proj_w = _to_numpy(block.attn.c_proj.weight)
-            c_proj_b = _to_numpy(block.attn.c_proj.bias)
-            if attention_width == "feature_native":
-                out[f"{prefix}.attn.c_attn.weight"] = self.project_qkv_full(c_attn_w)
-                # Bias: split into Q/K/V triples, project each as a residual bias
-                bq, bk, bv = np.split(c_attn_b, 3)
-                out[f"{prefix}.attn.c_attn.bias"] = np.concatenate(
-                    [
-                        self.project_residual_bias(bq),
-                        self.project_residual_bias(bk),
-                        self.project_residual_bias(bv),
-                    ]
-                )
-                out[f"{prefix}.attn.c_proj.weight"] = self.project_residual_full(c_proj_w)
-            else:
-                out[f"{prefix}.attn.c_attn.weight"] = self.project_residual_input(c_attn_w)
-                out[f"{prefix}.attn.c_attn.bias"] = c_attn_b.copy()
-                out[f"{prefix}.attn.c_proj.weight"] = self.project_residual_output(c_proj_w)
-            out[f"{prefix}.attn.c_proj.bias"] = self.project_residual_bias(c_proj_b)
-
-            out[f"{prefix}.ln_2.weight"] = self.project_residual_aligned(_to_numpy(block.ln_2.weight))
-            out[f"{prefix}.ln_2.bias"] = self.project_residual_aligned(_to_numpy(block.ln_2.bias))
-            out[f"{prefix}.mlp.c_fc.weight"] = self.project_residual_input(
-                _to_numpy(block.mlp.c_fc.weight)
-            )
-            out[f"{prefix}.mlp.c_fc.bias"] = _to_numpy(block.mlp.c_fc.bias).copy()
-            out[f"{prefix}.mlp.c_proj.weight"] = self.project_residual_output(
-                _to_numpy(block.mlp.c_proj.weight)
-            )
-            out[f"{prefix}.mlp.c_proj.bias"] = self.project_residual_bias(
-                _to_numpy(block.mlp.c_proj.bias)
-            )
-
-        out["transformer.ln_f.weight"] = self.project_residual_aligned(_to_numpy(transformer.ln_f.weight))
-        out["transformer.ln_f.bias"] = self.project_residual_aligned(_to_numpy(transformer.ln_f.bias))
-
-        if lm_head_weight is not None:
-            out["lm_head.weight"] = self.project_unembed(_to_numpy(lm_head_weight))
-
-        return out
+        adapter = adapter_for(host_model)
+        return adapter.walk(host_model, self, attention_width=attention_width)
 
 
 def _to_numpy(tensor) -> np.ndarray:
