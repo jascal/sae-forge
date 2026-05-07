@@ -52,11 +52,32 @@ def test_from_polygram_checkpoint_explicit_report_path(synthetic_compressed_sae,
     assert basis.n_features == 6
 
 
-def test_from_polygram_checkpoint_missing_report_falls_back_to_full_dictionary(
+def test_from_polygram_checkpoint_missing_report_detects_zero_rows(
     synthetic_compressed_sae,
 ):
+    """Without a report, zero-row detection still finds kept features.
+
+    The synthetic fixture zeros rows 5 and 7. The loader detects this
+    directly from W_dec norms even when no compression report is on
+    disk. This is what makes the loader compatible with EpochCompressor
+    output (whose EpochReport doesn't carry per-cluster zeroed lists).
+    """
     synthetic_compressed_sae["report_path"].unlink()
     basis = FeatureBasis.from_polygram_checkpoint(synthetic_compressed_sae["checkpoint"])
+    assert basis.kept_ids.tolist() == [0, 1, 2, 3, 4, 6]
+    assert basis.scale_compression_ratio == 1.0
+    assert basis.metadata["n_features_kept"] == 6
+
+
+def test_from_polygram_checkpoint_uncompressed_sae(tmp_path):
+    """A fully-nonzero W_dec (no compression applied) keeps every row."""
+    from safetensors.numpy import save_file
+
+    rng = np.random.default_rng(2)
+    W_dec = rng.standard_normal((8, 16)).astype(np.float32)
+    ckpt = tmp_path / "raw.safetensors"
+    save_file({"W_dec": W_dec}, str(ckpt))
+    basis = FeatureBasis.from_polygram_checkpoint(ckpt)
     assert basis.n_features == 8
     assert basis.scale_compression_ratio == 1.0
 

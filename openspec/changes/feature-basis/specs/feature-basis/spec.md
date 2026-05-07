@@ -11,21 +11,49 @@ no-extras install path stays usable.
 
 ## Requirements
 
-### Requirement: Kept ids are the complement of cluster `zeroed` lists
+### Requirement: Kept ids are detected from nonzero W_dec rows
 
 `from_polygram_checkpoint` SHALL set `basis.kept_ids` to the sorted
-ascending list of row indices in `W_dec` that do NOT appear in the
-union of every cluster's `zeroed` field. `basis.W_dec` SHALL be
-`W_dec_full[basis.kept_ids]` and `basis.n_features` SHALL equal
-`len(basis.kept_ids)`.
+ascending list of row indices in `W_dec` whose L2 norm exceeds a
+floating-point threshold (currently `1e-12`). The detection-from-data
+approach makes the loader uniform across:
 
-#### Scenario: 8-feature SAE, two clusters zero rows 5 and 7
+- `Compressor` outputs (zero strategy literally zeros non-rep rows;
+  merge strategy also zeros non-reps and only rescales the rep)
+- `EpochCompressor` outputs (whose `EpochReport` schema doesn't carry
+  per-cluster zeroed lists, so report-driven detection wouldn't work)
+- Uncompressed SAEs (every row nonzero → every feature kept)
 
-- **GIVEN** a checkpoint of shape `(8, 16)` with cluster A zeroing
-  feature 5 and cluster B zeroing feature 7
+When a `CompressionReport`-shaped report IS present and lists
+`zeroed` ids, those ids SHALL be additionally excluded from
+`kept_ids` as a belt-and-braces guard against future strategies that
+might leave zeroed rows at small but nonzero norm.
+
+`basis.W_dec` SHALL be `W_dec_full[basis.kept_ids]` and
+`basis.n_features` SHALL equal `len(basis.kept_ids)`.
+
+#### Scenario: 8-feature SAE with rows 5 and 7 zeroed
+
+- **GIVEN** a checkpoint of shape `(8, 16)` whose rows 5 and 7 have
+  L2 norm 0
 - **WHEN** `FeatureBasis.from_polygram_checkpoint(...)` is called
 - **THEN** `basis.kept_ids.tolist()` equals `[0, 1, 2, 3, 4, 6]`
 - **AND** `basis.W_dec.shape` equals `(6, 16)`
+
+#### Scenario: detection works without a compression report
+
+- **GIVEN** a checkpoint with rows 5 and 7 zeroed and no companion
+  compression report on disk
+- **WHEN** the loader is called with no `report_path`
+- **THEN** `basis.kept_ids.tolist()` equals `[0, 1, 2, 3, 4, 6]` —
+  zero-row detection finds the kept set without needing a report
+
+#### Scenario: uncompressed SAE keeps every row
+
+- **GIVEN** a checkpoint of shape `(8, 16)` with no rows zeroed and no
+  report
+- **WHEN** the loader is called
+- **THEN** `basis.kept_ids.tolist()` equals `[0, 1, 2, 3, 4, 5, 6, 7]`
 
 ### Requirement: Merged norm picked from representative when present
 
@@ -82,22 +110,24 @@ the first one that exists.
 - **THEN** the loader uses that file regardless of any default-suffix
   match
 
-### Requirement: Missing-report fallback yields full dictionary
+### Requirement: Missing-report fallback combines with zero-row detection
 
 When no `report_path` is supplied AND no candidate suffix matches on
-disk, the loader SHALL return a basis covering every row of the
-checkpoint (no rows zeroed), with `merged_norms == original_norms ==
+disk, the loader SHALL return a basis covering every nonzero-norm row
+of the checkpoint, with `merged_norms == original_norms ==
 row_l2_norms` and `scale_compression_ratio == 1.0`. This makes the
-loader work on uncompressed SAEs as a graceful no-op compression
-report.
+loader correct for both uncompressed SAEs and compressed-without-
+report cases (e.g. `EpochCompressor` output where the
+`EpochReport.json` next to the checkpoint doesn't have the
+`CompressionReport` cluster schema).
 
 When `report_path` IS supplied but the file is missing, the loader
 SHALL raise `FileNotFoundError`.
 
-#### Scenario: implicit fallback to full dictionary
+#### Scenario: uncompressed SAE → every row kept
 
-- **GIVEN** a `.safetensors` checkpoint with shape `(8, 16)` and no
-  companion report on disk
+- **GIVEN** a `.safetensors` checkpoint with shape `(8, 16)`, every
+  row nonzero, and no companion report on disk
 - **WHEN** the loader is called with no `report_path`
 - **THEN** `basis.n_features` equals `8` and
   `basis.scale_compression_ratio` equals `1.0`

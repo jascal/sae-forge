@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 
 _CANDIDATE_W_DEC_KEYS = ("W_dec", "decoder.weight", "dec")
+_ZERO_ROW_THRESHOLD = 1e-12
 _CANDIDATE_REPORT_SUFFIXES = (
     "_compression_report.json",
     ".compression_report.json",
@@ -89,9 +90,18 @@ class FeatureBasis:
         report = _load_report(report_path) if report_path is not None else {}
         W_dec_full = _load_w_dec(checkpoint_path)
 
-        zeroed_ids = _collect_zeroed_ids(report)
+        # kept_ids = rows with nonzero norm. Polygram's zero strategy literally
+        # zeros non-representative rows; merge strategy zeros them too (only
+        # the representative gets rescaled). Detecting from W_dec is uniform
+        # across Compressor and EpochCompressor outputs — the latter's
+        # EpochReport doesn't carry per-cluster zeroed lists.
         n_total = W_dec_full.shape[0]
-        kept_mask = np.ones(n_total, dtype=bool)
+        row_norms_full = np.linalg.norm(W_dec_full, axis=1)
+        kept_mask = row_norms_full > _ZERO_ROW_THRESHOLD
+        # Belt-and-braces: also exclude any rows the report explicitly lists
+        # as zeroed, in case a future strategy keeps them at small but
+        # nonzero norm.
+        zeroed_ids = _collect_zeroed_ids(report)
         if zeroed_ids:
             kept_mask[list(zeroed_ids)] = False
         kept_ids = np.flatnonzero(kept_mask).astype(np.int64)
