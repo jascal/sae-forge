@@ -3,6 +3,31 @@
 All notable changes to sae-forge are tracked here. v0 entries land as
 their corresponding OpenSpec change is archived.
 
+## [0.2.2] — 2026-05-07
+
+### Fixed
+
+- **Fine-tune recipe now runs on real-host `ForgePipeline.run()`**
+  ([PR #6](../../pull/6)). Since v0.3 forge-finetune-recipe landed,
+  `run()` against a real HF host (`host_model_id` set) silently
+  dropped every `finetune_*` field on the floor — the recipe was
+  wired into the FSM action only, but `run()` always took the
+  imperative path. The headline `examples/forge_gemma2_2b.py`
+  documented a 1k-step fine-tune flow that had never executed.
+  `run()` now branches on `self.orchestrator`:
+  `"fsm"` routes through a new `_run_real_fsm` mirroring the
+  synthetic FSM path; `"imperative"` (the default) emits a
+  `UserWarning` when `finetune_corpus` is set so the silent skip
+  cannot recur. `examples/forge_gemma2_2b.py` sets
+  `orchestrator="fsm"` when `--steps > 0`.
+
+### Added
+
+- **`ForgePipeline.run(finetune_iterator=...)`** ([PR #6](../../pull/6))
+  — pre-built iterator bypasses the `AutoTokenizer + datasets`
+  round-trip the recipe action would do via `finetune_corpus`.
+  Mirrors the existing `run_synthetic` kwarg.
+
 ## [0.2.1] — 2026-05-07
 
 ### Fixed

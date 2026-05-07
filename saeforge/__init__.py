@@ -5,7 +5,7 @@ from saeforge.forge import ForgePipeline, ForgeResult
 from saeforge.model import NativeModel
 from saeforge.projector import SubspaceProjector
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 
 __all__ = [
     "FeatureBasis",
