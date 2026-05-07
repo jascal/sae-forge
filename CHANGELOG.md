@@ -3,7 +3,7 @@
 All notable changes to sae-forge are tracked here. v0 entries land as
 their corresponding OpenSpec change is archived.
 
-## [Unreleased]
+## [0.2.0] — 2026-05-07
 
 ### Added (multi-architecture-support)
 
