@@ -148,14 +148,23 @@ def _autocast(device_type: str, dtype):
 def _enable_grad_checkpointing(module) -> None:
     """Wrap each transformer block in torch.utils.checkpoint.checkpoint.
 
-    We patch the block list's `forward` to route through `checkpoint`. This
-    halves activation memory at the cost of recompute on backward.
+    We patch each block's ``forward`` to route through ``checkpoint``,
+    halving activation memory at the cost of recompute on backward.
+
+    Family-aware: dispatches via ``adapter_for_family(module.config.family)``
+    to find the right block list and embedding parameter for the
+    architecture (GPT-2 uses ``module.transformer.{h, wte}``;
+    Llama / Gemma-2 use ``module.model.{layers, embed_tokens}``).
+    Pre-fix this hardcoded the GPT-2 layout and crashed inside the FSM
+    on Llama / Gemma-2 hosts, surfacing as a silent
+    ``final_state: failed`` in the run summary with KL=0.0.
     """
-    import torch
     from torch.utils.checkpoint import checkpoint
 
-    transformer = module.transformer
-    blocks = transformer.h
+    from saeforge.adapters import adapter_for_family
+
+    adapter = adapter_for_family(module.config.family)
+    blocks, embedding_param = adapter.grad_checkpoint_targets(module)
     for block in blocks:
         original_forward = block.forward
 
@@ -163,12 +172,11 @@ def _enable_grad_checkpointing(module) -> None:
             return checkpoint(_orig, x, use_reentrant=False)
 
         block.forward = checkpointed_forward
-    # Activation checkpointing requires inputs to require grad somewhere — the
-    # embedding output isn't a leaf tensor that requires grad on its own. Forcing
-    # `transformer.wte.weight.requires_grad_(True)` suffices since wte is part of
-    # the param set anyway.
-    transformer.wte.weight.requires_grad_(True)
-    _ = torch  # silence unused import if grad checkpointing is never enabled
+    # Activation checkpointing requires at least one input to require
+    # grad — the embedding output isn't itself a leaf tensor, so we mark
+    # the embedding *weight* as requires_grad. (It's already part of the
+    # param set; this just routes gradient through it.)
+    embedding_param.requires_grad_(True)
 
 
 def _eval_kl(forged_module, host, eval_input_ids, device) -> float:

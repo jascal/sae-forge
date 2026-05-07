@@ -164,6 +164,14 @@ class LlamaAdapter(ArchitectureAdapter):
     def native_module_class(self) -> type:
         return _get_forged_llama_class()
 
+    def grad_checkpoint_targets(self, module):
+        # ForgedLlama (also used by Gemma2Adapter): every block is at
+        # ``module.model.layers.{i}``; the input embedding is
+        # ``model.embed_tokens.weight``. Gemma-2 inherits this method
+        # via Gemma2Adapter(LlamaAdapter); the four-norm-per-block
+        # layout doesn't change the checkpoint targets.
+        return module.model.layers, module.model.embed_tokens.weight
+
 
 # ---------------------------------------------------------------------------
 # Native module factory — shared between Llama and Gemma-2.

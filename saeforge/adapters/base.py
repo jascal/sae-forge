@@ -81,6 +81,29 @@ class ArchitectureAdapter(ABC):
         models for this family. Lazy-imports torch.
         """
 
+    def grad_checkpoint_targets(self, module):
+        """Return ``(blocks, embedding_param)`` for activation checkpointing.
+
+        ``blocks`` is the iterable of transformer blocks whose ``forward``
+        should be wrapped in ``torch.utils.checkpoint.checkpoint``;
+        ``embedding_param`` is the input-side parameter that needs
+        ``requires_grad=True`` so the checkpointed graph has at least
+        one input requiring grad (the embedding output is not itself a
+        leaf tensor).
+
+        Default raises ``NotImplementedError`` so each family must opt
+        in. Pre-fix v0.3 ``_enable_grad_checkpointing`` hardcoded the
+        GPT-2 layout (``module.transformer.h``,
+        ``module.transformer.wte.weight``); reaching the GPT-2 branch
+        with a ForgedLlama instance crashed inside the FSM and looked
+        like a successful run with KL=0.0 to the caller.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement grad_checkpoint_targets. "
+            f"Add an override returning (blocks, embedding_param) for the "
+            f"family's native-module layout."
+        )
+
 
 def to_numpy(tensor) -> np.ndarray:
     """Convert a torch tensor to float64 numpy without requiring torch
