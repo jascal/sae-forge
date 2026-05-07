@@ -122,13 +122,14 @@ def main(
     from polygram import EpochCompressionConfig, EpochCompressor, ValidationConfig
 
     compressed_path = output_dir / "sae_compressed.safetensors"
-    # Iterative-loop tuning. EpochCompressor.fast() captures the matching
-    # defaults from polygram-tuning-config (`coverage_target=0.5`,
-    # `n_visits_per_feature=1`, `max_iterations=1`); we override
-    # `coverage_target` and `max_iterations` from the example's CLI args
-    # and pin a ValidationConfig with the GPT-2-small calibration so the
-    # numbers match prior runs.
-    epoch = EpochCompressor.fast(
+    # Iterative-loop tuning. We pass a fully custom EpochCompressionConfig
+    # (CLI-driven coverage_target / max_iterations + a pinned
+    # ValidationConfig matching GPT-2-small calibration), so call the
+    # constructor directly rather than the .fast() preset wrapper —
+    # .fast() supplies its own preset as `config=` and would collide with
+    # ours (polygram 0.1.0 raises TypeError: got multiple values for
+    # keyword argument 'config').
+    epoch = EpochCompressor(
         sae_checkpoint=sliced_path,
         prompts=VALIDATE_PROMPTS,
         layer=LAYER,
