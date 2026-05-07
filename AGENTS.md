@@ -42,12 +42,14 @@ with `openspec validate <change-name>` before working on it; archive via
 
 ## Polygram dependency contract
 
-- Pinned at `polygram>=0.4` — the first release with scale-aware
-  compression (PR #34: `rep_selection="scale_aware"`, `strategy="merge"`,
-  per-cluster `merged_norm`, roll-up `scale_compression_ratio`). Older
-  Polygram outputs are missing the merged-norm fields and would force
-  sae-forge to fall back to original-only norms; we treat that as
-  unsupported in v0 to keep the basis-fidelity story coherent.
+- Pinned at `polygram>=0.0.1`, the published distribution under the
+  `orcalang` user on PyPI. Bump the floor whenever a Polygram release
+  adds a field sae-forge depends on (the scale-aware compression work
+  from PR #34 is already in 0.0.1: `rep_selection="scale_aware"`,
+  `strategy="merge"`, per-cluster `merged_norm`, roll-up
+  `scale_compression_ratio`). Older outputs without merged-norm
+  fields fall back to row-norm — handled by `FeatureBasis`'s loader
+  but not encouraged in v0.
 - The stable input contract is the `.safetensors` checkpoint + companion
   `compression_report.json` produced by `polygram compress` /
   `polygram compress-epoch`. `FeatureBasis.from_polygram_checkpoint` is
@@ -73,13 +75,13 @@ with `openspec validate <change-name>` before working on it; archive via
 - The canonical machine ships at `saeforge/machines/sae_forge.orca.md`
   as package data. Load it via `importlib.resources.files`, never via
   filesystem path resolution.
-- Known parser limitation: orca-runtime-python <=0.1.27 silently
-  mis-parses arithmetic guard expressions
-  (`ctx.field + 1 < ctx.other`) as a null-check. The forge-outer-loop
-  FSM works around this by computing loop-termination logic in the
-  `evaluate_faithfulness` action and exposing a flat
-  `should_continue: bool` for the FSM guard. Track upstream fix in
-  the orca-lang issue tracker.
+- orca-lang's guard grammar is intentionally restricted to comparison
+  + boolean composition (`==`, `!=`, `<`, `>`, `<=`, `>=`, `and`,
+  `or`, `not`, parens, null checks). Arithmetic and complex
+  predicates belong in actions. The forge-outer-loop FSM follows the
+  idiomatic pattern: `evaluate_faithfulness` computes the loop
+  predicate in Python and writes a flat `should_continue: bool`; the
+  FSM guard is the trivial `ctx.should_continue == true`.
 - This is **classical** orca-lang. q-orca-lang (the quantum extension)
   is never imported on the default forge path; `--quantum-aware` only
   influences which Polygram `confirmer` is selected inside

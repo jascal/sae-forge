@@ -168,35 +168,35 @@ Polygram's `[behavioural]` extra, when and only when
 
 ## v0.1 implementation notes vs the original proposal
 
-Two surprises during implementation, both affecting the original spec:
+1. **PyPI package name correction.** The proposal said
+   `orca-lang>=0.5`. The actual published distribution is
+   `orca-runtime-python` (PyPI, owner `orcalang`); module name
+   `orca_runtime_python`. v0.1 pins `>=0.1.27`. (Earlier 0.1.x
+   releases that I briefly checked had stubbed action handlers; the
+   modern 0.1.27 line is the supported runtime.)
 
-1. **Dependency name.** The proposal called for `orca-lang>=0.5`. That
-   package does not exist on PyPI. The actual classical-orca Python
-   runtime is `orca-runtime-python` (PyPI), module name
-   `orca_runtime_python`. We pin `>=0.1.27` because earlier releases
-   ship stubbed `_evaluate_guard` (always-true) and `_execute_action`
-   (no-op). Both work in 0.1.27.
-
-2. **Guard arithmetic is not parsed.** orca-runtime-python's parser
-   silently mis-parses `ctx.field + 1 < ctx.other` as a null-check on
-   `ctx.field`, which always passes. The original design.md guard
-   `ctx.current_iter + 1 < ctx.iterations` would loop forever. The
-   v0.1 implementation moves the loop-condition logic into the
-   `evaluate_faithfulness` action, which writes a boolean
-   `should_continue` field, and the FSM guards become the trivial
-   `ctx.should_continue == true` / `== false`. This keeps the loop-
-   termination logic in Python where comparisons + arithmetic are
-   reliable, and the FSM only branches on a flat boolean. Update
-   upstream is tracked separately.
+2. **Loop-condition logic lives in actions, by language design.**
+   orca-lang's guard grammar is intentionally restricted to comparison
+   and boolean composition — `==`, `!=`, `<`, `>`, `<=`, `>=`, `and`,
+   `or`, `not`, parenthesization, null checks. Arithmetic and complex
+   predicates are not part of the guard surface; they live in actions
+   where Python is idiomatic. The v0.1 forge accordingly:
+   `evaluate_faithfulness` computes the loop predicate
+   (`current_iter + 1 < iterations and faithfulness >= min_faithfulness
+   and perplexity < best_perplexity`) and writes a boolean
+   `should_continue` into the context. The FSM guards are then the
+   trivial `ctx.should_continue == true` / `== false`. This is the
+   idiomatic orca-lang pattern, not a workaround.
 
 3. **Compress / regrow / fine-tune are no-op pass-throughs in v0.1.**
    The actions update `current_sae_path` bookkeeping but don't yet
-   call into Polygram's `Compressor` / `Regrower` (Polygram isn't on
-   PyPI; only editable installs work). v0.2 swaps these for real
-   calls. The byte-equivalence test holds because both orchestrators
-   currently exercise the same projection-only path; v0.2 will need a
-   weight-equivalence test that's tolerant to compression non-
-   determinism.
+   call into Polygram's `Compressor` / `Regrower`. Polygram is on
+   PyPI as of `polygram>=0.0.1` (orcalang user), so v0.2 can wire the
+   real calls without any dep work — it's purely an action-body
+   change. The byte-equivalence test holds today because both
+   orchestrators currently exercise the projection-only path; v0.2
+   will replace it with a compression-determinism-tolerant
+   weight-equivalence test.
 
 ## Why not Q-orca for this
 

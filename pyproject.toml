@@ -43,10 +43,10 @@ notebook = ["jupyter", "matplotlib"]
 # basis loader and projector math stay on the no-extras install.
 torch = ["torch>=2.2", "transformers>=4.40"]
 # Polygram bridge — the canonical producer of compressed SAE checkpoints
-# that sae-forge consumes. Pinned to the scale-aware-compression release
-# (Polygram PR #34) so merged decoder norms are available. Polygram is
-# not yet on PyPI; install editable from source until it ships.
-polygram = ["polygram>=0.4"]
+# that sae-forge consumes. Pinned to a release that ships scale-aware
+# merged decoder norms (Polygram PR #34). Published on PyPI by the
+# `orcalang` user; v0.0.1 is the first release.
+polygram = ["polygram>=0.0.1"]
 # orca-runtime-python — the classical orca-lang FSM runtime that drives
 # the v0.1 forge-outer-loop-fsm orchestrator. Required only for the
 # `--fsm` opt-in path; the default imperative ForgePipeline does not
@@ -59,7 +59,7 @@ all = [
     "jupyter",
     "torch>=2.2",
     "transformers>=4.40",
-    "polygram>=0.4",
+    "polygram>=0.0.1",
     "orca-runtime-python>=0.1.27",
 ]
 

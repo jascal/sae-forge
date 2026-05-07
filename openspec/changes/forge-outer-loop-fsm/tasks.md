@@ -1,6 +1,6 @@
 ## 1. Dependency + extras
 
-- [x] 1.1 Add `[orca]` extra to `pyproject.toml` pinning `orca-runtime-python>=0.1.27` (NOT `orca-lang>=0.5` — that package does not exist on PyPI); include it in `[all]`. Wire `saeforge/machines/sae_forge.orca.md` into `[tool.hatch.build.targets.wheel.shared-data]` so it ships with the wheel
+- [x] 1.1 Add `[orca]` extra to `pyproject.toml` pinning `orca-runtime-python>=0.1.27` (PyPI distribution under the `orcalang` user; module name `orca_runtime_python`); include it in `[all]`. Wire `saeforge/machines/sae_forge.orca.md` into `[tool.hatch.build.targets.wheel.shared-data]` so it ships with the wheel
 - [x] 1.2 Document the orca-runtime-python dep contract in `AGENTS.md` (parallel to the polygram and torch contracts)
 - [ ] 1.3 Add a CI matrix job that installs `[dev,torch,orca]` and runs the FSM test suite — deferred to a CI-only follow-up
 
@@ -13,7 +13,7 @@
 - [x] 2.5 `perform_regrowth` is a v0.1 pass-through; v0.2 swaps for `Regrower`
 - [x] 2.6 `project_to_subspace` does the real work: `FeatureBasis.from_polygram_checkpoint` → `SubspaceProjector.project_module` → `NativeModel.from_projected_weights` → `save_pretrained` to `output_dir/projected/`
 - [x] 2.7 `fine_tune_model` is a v0.1 pass-through; v0.2 wires HF Trainer
-- [x] 2.8 `evaluate_faithfulness` runs the existing `_kl_from_input_ids` against the carry-over host + native model; computes `perplexity = exp(kl)` and writes `should_continue` (the v0.1 loop predicate, computed in Python because orca-runtime-python's parser silently mis-parses arithmetic guards)
+- [x] 2.8 `evaluate_faithfulness` runs the existing `_kl_from_input_ids` against the carry-over host + native model; computes `perplexity = exp(kl)` and writes `should_continue` (the loop predicate, computed in Python — the idiomatic orca-lang pattern: guards stay flat boolean comparisons, complex predicates live in actions)
 - [x] 2.9 `rotate_for_next_iter` increments `current_iter`, rotates `current_sae_path`, updates `best_perplexity`
 - [x] 2.10 `save_final_model` writes the forged model to `output_dir/forged/` and a JSON summary to `forge_result.json`
 - [x] 2.11 `log_error` populates `error_message`

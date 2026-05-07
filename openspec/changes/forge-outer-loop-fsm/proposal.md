@@ -78,11 +78,9 @@ accepts a raw SAE checkpoint and runs the full pipeline.
 
 ### Optional dependency
 
-- New `[orca]` extra pinning `orca-runtime-python>=0.1.27` (the PyPI
-  distribution name; module name `orca_runtime_python`). 0.1.27 is the
-  first release with a working `register_action` driver and full guard
-  expression evaluation — earlier versions stub `_evaluate_guard` and
-  `_execute_action`. The default forge path does not require it;
+- New `[orca]` extra pinning `orca-runtime-python>=0.1.27` — the PyPI
+  distribution published under the `orcalang` user (module name
+  `orca_runtime_python`). The default forge path does not require it;
   importing `saeforge.orchestrator` does. Match the same lazy-import
   discipline as `[torch]` and `[polygram]`.
 
