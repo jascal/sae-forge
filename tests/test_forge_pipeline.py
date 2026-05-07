@@ -85,3 +85,128 @@ def test_toy_example_runs(tmp_path, monkeypatch):
     assert summary["n_features"] == 8
     assert summary["n_params"] > 0
     assert summary["faithfulness_kl"] is not None
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for the v0.3 fine-tune-recipe wiring fix.
+#
+# Before this fix, ForgePipeline.run() against a real HF host always
+# took the imperative path — fine-tune fields silently dropped on the
+# floor regardless of orchestrator. The example forge_gemma2_2b.py
+# (1k-step recipe documented in the script header) had never actually
+# trained anything end-to-end. The fix routes orchestrator="fsm" through
+# a new _run_real_fsm dispatcher that mirrors _run_synthetic_fsm, and
+# the imperative path now warns when finetune_corpus is set so the
+# silent skip never recurs.
+# ---------------------------------------------------------------------------
+
+
+def test_run_fsm_dispatches_through_recipe(
+    tiny_gpt2, tiny_synthetic_basis, tmp_path
+):
+    """orchestrator='fsm' on the real-host run() routes through
+    _run_real_fsm and the FSM's fine_tune_model action picks the recipe
+    path when a pre-built iterator is supplied. Mocks
+    AutoModelForCausalLM/AutoTokenizer so the test doesn't hit HF.
+    """
+    pytest.importorskip("orca_runtime_python")
+    from unittest.mock import patch
+
+    import torch
+
+    from saeforge import ForgePipeline, SubspaceProjector
+
+    pipeline = ForgePipeline(
+        basis=tiny_synthetic_basis,
+        projector=SubspaceProjector(tiny_synthetic_basis),
+        host_model_id="gpt2-stub",
+        orchestrator="fsm",
+        finetune_total_steps=4,
+        finetune_warmup_steps=1,
+        finetune_peak_lr=1e-3,
+        finetune_batch_size=2,
+        finetune_seq_len=8,
+        finetune_log_every=1,
+        finetune_eval_every=10000,
+        finetune_save_every=10000,
+        eval_prompts=["smoke prompt"],
+    )
+
+    def gen():
+        while True:
+            yield torch.randint(0, tiny_gpt2.config.vocab_size, (2, 8))
+
+    class _StubTokenizer:
+        # Minimal stand-in: emits a tiny tensor for any prompt list.
+        pad_token = "<pad>"
+        eos_token = "<eos>"
+
+        def __call__(self, prompts, return_tensors=None, padding=None, truncation=None):
+            return {"input_ids": torch.tensor([[1, 2, 3, 4]] * len(prompts))}
+
+    with patch(
+        "transformers.AutoModelForCausalLM.from_pretrained",
+        return_value=tiny_gpt2,
+    ), patch(
+        "transformers.AutoTokenizer.from_pretrained",
+        return_value=_StubTokenizer(),
+    ):
+        result = pipeline.run(
+            tmp_path / "fsm_run", finetune_iterator=gen()
+        )
+
+    # The recipe ran end-to-end: transitions log carries an action whose
+    # mode is "recipe" (vs "passthrough" or "v01_smoke").
+    log = result.extras["transitions_log"]
+    finetune_entry = next(
+        e for e in log if e.get("action") == "fine_tune_model"
+    )
+    assert finetune_entry["mode"] == "recipe"
+    assert finetune_entry["n_steps"] == 4
+    assert "final_loss" in finetune_entry
+
+    # Faithfulness was computed on the post-tune model (eval_prompts
+    # supplied → input_ids tokenised → FSM evaluate_faithfulness ran).
+    assert result.faithfulness_kl is not None
+
+
+def test_run_imperative_warns_when_finetune_corpus_set(
+    tiny_gpt2, tiny_synthetic_basis, tmp_path
+):
+    """Setting finetune_corpus on the imperative path is a silent no-op
+    (recipe only runs on the FSM path). The fix surfaces a UserWarning
+    so callers see the mismatch instead of getting a forge that looks
+    like it ran but didn't.
+    """
+    import warnings
+    from unittest.mock import patch
+
+    from saeforge import ForgePipeline, SubspaceProjector
+
+    pipeline = ForgePipeline(
+        basis=tiny_synthetic_basis,
+        projector=SubspaceProjector(tiny_synthetic_basis),
+        host_model_id="gpt2-stub",
+        # orchestrator defaults to "imperative" — that's the silent-skip path.
+        finetune_corpus="HuggingFaceFW/fineweb-edu",
+        finetune_total_steps=1000,
+    )
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        with patch(
+            "transformers.AutoModelForCausalLM.from_pretrained",
+            return_value=tiny_gpt2,
+        ):
+            pipeline.run(tmp_path / "imperative_run")
+
+    finetune_warnings = [
+        w for w in caught
+        if issubclass(w.category, UserWarning)
+        and "fine-tune recipe" in str(w.message)
+    ]
+    assert len(finetune_warnings) == 1, [str(w.message) for w in caught]
+    msg = str(finetune_warnings[0].message)
+    assert "imperative" in msg
+    assert "orchestrator='fsm'" in msg
+    assert "fineweb-edu" in msg

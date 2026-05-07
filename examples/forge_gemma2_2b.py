@@ -157,6 +157,12 @@ def main(args) -> dict:
     print(f"      basis: n_features={basis.n_features}, d_model={basis.d_model}")
 
     projector = SubspaceProjector(basis)
+    # orchestrator="fsm" routes through the recipe action; the imperative
+    # path (default) silently skips fine-tune. ``args.steps == 0`` is a
+    # forge-only smoke run, so leave orchestrator at the imperative
+    # default in that case to avoid the FSM's tokeniser/dataset round-trip
+    # for an already-stubbed corpus.
+    orchestrator = "fsm" if args.steps > 0 else "imperative"
     pipeline = ForgePipeline(
         basis=basis,
         projector=projector,
@@ -165,6 +171,7 @@ def main(args) -> dict:
         dtype=args.dtype,
         device=args.device,
         attention_width=args.attention_width,
+        orchestrator=orchestrator,
         finetune_corpus=args.corpus or "HuggingFaceFW/fineweb-edu",
         finetune_total_steps=args.steps,
         finetune_warmup_steps=max(1, args.steps // 10),
