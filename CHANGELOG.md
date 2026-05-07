@@ -3,6 +3,47 @@
 All notable changes to sae-forge are tracked here. v0 entries land as
 their corresponding OpenSpec change is archived.
 
+## [0.2.3] — 2026-05-07
+
+### Fixed
+
+- **Grad checkpointing crashed on Llama / Gemma-2 hosts**
+  ([PR #7](../../pull/7)). `saeforge/training/loop.py:_enable_grad_checkpointing`
+  hardcoded GPT-2 submodule names (`module.transformer.h`,
+  `module.transformer.wte.weight`); ForgedLlama (used by both
+  `family="llama"` and `family="gemma2"`) exposes
+  `module.model.layers` and `module.model.embed_tokens.weight`. Any
+  `--grad-checkpoint` run on a non-GPT-2 host raised
+  `'ForgedLlama' object has no attribute 'transformer'` inside the
+  FSM. Fix: adapter-driven layout via a new
+  `ArchitectureAdapter.grad_checkpoint_targets(module)` method with
+  per-family overrides; `_enable_grad_checkpointing` dispatches via
+  a new `adapter_for_family(family_str)` registry helper.
+
+- **FSM failures surfaced as silent KL=0.0 returns**
+  ([PR #7](../../pull/7)). When an FSM action raised, the failure was
+  swallowed into `final_state: "failed"` and `ForgePipeline.run()`
+  returned a `ForgeResult` with `n_params=0`, `faithfulness_kl=0.0`,
+  exit code 0 — no diagnostic signal. Fix: new
+  `saeforge.ForgeFailed` exception (subclass of `RuntimeError`) with
+  `error_message`, `transitions_log`, and `extras` attached; both
+  FSM dispatch paths (`_run_real_fsm`, `_run_synthetic_fsm`) raise
+  it after `run_machine` when the trailing transition is `log_error`.
+
+### Added
+
+- **`saeforge.ForgeFailed`** exception ([PR #7](../../pull/7)) —
+  re-exported from the top-level package; subclass of `RuntimeError`
+  so existing exception handlers don't change shape.
+- **`saeforge.adapters.adapter_for_family(family_str)`** helper —
+  for code paths that have only the `NativeModelConfig.family`
+  string in hand (e.g. inside the training loop, where the host
+  class is already gone).
+- **`ArchitectureAdapter.grad_checkpoint_targets(module)`** —
+  abstract-with-default-NotImplementedError on the ABC; per-family
+  overrides return `(blocks, embedding_param)` for activation
+  checkpointing.
+
 ## [0.2.2] — 2026-05-07
 
 ### Fixed
