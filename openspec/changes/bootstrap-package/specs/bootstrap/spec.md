@@ -59,11 +59,12 @@ This scenario applied while the loader was a stub. As of the
 `feature-basis` change, the implementation raises `FileNotFoundError`
 on a missing checkpoint instead of `NotImplementedError`.
 
-#### Scenario: ForgePipeline.run stub
+#### Scenario: ForgePipeline.run stub (superseded by forge-pipeline)
 
-- **WHEN** `ForgePipeline(basis=..., projector=...).run("out/")` is called
-- **THEN** it raises `NotImplementedError` whose message contains
-  `openspec/changes/forge-pipeline/proposal.md`
+This scenario applied while `ForgePipeline.run` was a stub. As of the
+`forge-pipeline` change, the method runs the full pipeline (load host
+→ project → assemble → optional KL eval → save) and raises
+`ValueError` only when `host_model_id is None`.
 
 ### Requirement: CLI uses verb-first style
 

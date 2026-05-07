@@ -114,13 +114,13 @@ def test_from_polygram_checkpoint_missing_file_raises() -> None:
         FeatureBasis.from_polygram_checkpoint("does-not-exist.safetensors")
 
 
-def test_forge_pipeline_run_stub_points_to_change() -> None:
+def test_forge_pipeline_run_requires_host_model_id() -> None:
     from saeforge import ForgePipeline, SubspaceProjector
 
     basis = _make_basis()
     projector = SubspaceProjector(basis)
     pipeline = ForgePipeline(basis=basis, projector=projector)
-    with pytest.raises(NotImplementedError, match="forge-pipeline"):
+    with pytest.raises(ValueError, match="host_model_id"):
         pipeline.run("does-not-matter/")
 
 
