@@ -63,6 +63,12 @@ to inspect the geometry, after `SubspaceProjector` to ship the projected
 weights to your own training stack, or run the full `ForgePipeline` for
 the turn-key path.
 
+> **Mathematical foundation.** The full projection algebra (notation,
+> projection rules, error model, theoretical guarantees, and the v0
+> implementation notes flagging where the shipped code diverges from
+> the canonical spec) lives in [`docs/algorithm.md`](docs/algorithm.md).
+> Read it before changing the projector or proposing a v1 architecture.
+
 ## Quickstart
 
 ```python
