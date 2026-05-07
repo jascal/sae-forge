@@ -58,6 +58,21 @@ class ForgePipeline:
     finetune_lr: float = 1e-3
     attention_width: str = "host"
 
+    # v0.3 forge-finetune-recipe knobs. Default to v0.1 behaviour (no recipe
+    # path activated) when finetune_corpus is None; opt in by setting it.
+    finetune_corpus: str | Path | None = None
+    finetune_total_steps: int = 1000
+    finetune_warmup_steps: int = 100
+    finetune_peak_lr: float = 5e-5
+    finetune_batch_size: int = 8
+    finetune_seq_len: int = 512
+    finetune_precision: str = "fp32"
+    finetune_grad_checkpoint: bool = False
+    finetune_eval_every: int = 100
+    finetune_save_every: int = 250
+    finetune_save_dir: Path | None = None
+    finetune_log_every: int = 10
+
     def run(self, output_dir: str | Path) -> ForgeResult:
         from saeforge.utils.lazy import require_extra
 
@@ -119,16 +134,25 @@ class ForgePipeline:
         eval_input_ids=None,
         sae_checkpoint: str | Path | None = None,
         finetune_input_ids=None,
+        finetune_iterator=None,
     ) -> ForgeResult:
         """Run the pipeline against an already-loaded host model.
 
         This skips the ``from_pretrained`` step — handy for tests and the
         toy example, where we build a tiny GPT-2 in memory rather than
         pulling the canonical 124M-param checkpoint.
+
+        ``finetune_iterator`` is a pre-tokenized iterable yielding
+        ``(batch_size, sequence_length)`` int64 tensors. When supplied (or
+        when ``finetune_corpus`` is set on the pipeline), the FSM
+        ``fine_tune_model`` action delegates to ``run_finetune``. Without
+        either, the action either runs the v0.1 4-step smoke loop (when
+        ``finetune_input_ids`` is supplied) or passes through entirely.
         """
         if self.orchestrator == "fsm":
             return self._run_synthetic_fsm(
-                host_model, output_dir, eval_input_ids, sae_checkpoint, finetune_input_ids
+                host_model, output_dir, eval_input_ids, sae_checkpoint,
+                finetune_input_ids, finetune_iterator,
             )
         return self._run_synthetic_imperative(host_model, output_dir, eval_input_ids)
 
@@ -179,6 +203,7 @@ class ForgePipeline:
         eval_input_ids,
         sae_checkpoint: str | Path | None,
         finetune_input_ids=None,
+        finetune_iterator=None,
     ) -> ForgeResult:
         from saeforge.orchestrator import run_machine
 
@@ -217,12 +242,25 @@ class ForgePipeline:
             "_host_model": host_model,
             "_eval_input_ids": eval_input_ids,
             "_finetune_input_ids": finetune_input_ids,
+            "_finetune_iterator": finetune_iterator,
             "validation_report_path": self.validation_report_path,
             "compression_strategy": self.compression_strategy,
             "rep_selection": self.rep_selection,
             "finetune_steps": self.finetune_steps,
             "finetune_lr": self.finetune_lr,
             "attention_width": self.attention_width,
+            "finetune_corpus": str(self.finetune_corpus) if self.finetune_corpus else None,
+            "finetune_total_steps": self.finetune_total_steps,
+            "finetune_warmup_steps": self.finetune_warmup_steps,
+            "finetune_peak_lr": self.finetune_peak_lr,
+            "finetune_batch_size": self.finetune_batch_size,
+            "finetune_seq_len": self.finetune_seq_len,
+            "finetune_precision": self.finetune_precision,
+            "finetune_grad_checkpoint": self.finetune_grad_checkpoint,
+            "finetune_eval_every": self.finetune_eval_every,
+            "finetune_save_every": self.finetune_save_every,
+            "finetune_save_dir": str(self.finetune_save_dir) if self.finetune_save_dir else None,
+            "finetune_log_every": self.finetune_log_every,
         }
         final = run_machine(ctx)
         model = final.get("_native_model")

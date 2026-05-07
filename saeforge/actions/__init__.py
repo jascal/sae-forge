@@ -163,17 +163,38 @@ def project_to_subspace(ctx: dict, _payload: dict | None = None) -> dict:
 
 
 def fine_tune_model(ctx: dict, _payload: dict | None = None) -> dict:
-    """Run N steps of LM cross-entropy training on the forged native model.
+    """Fine-tune the forged native model.
 
-    Gating: ``ctx["_finetune_input_ids"]`` must be a torch tensor of shape
-    ``(batch, seq)``. Without it the action is a pass-through.
+    Three modes:
+    - **Recipe**: when `ctx["finetune_corpus"]` or `ctx["_finetune_iterator"]`
+      is supplied, delegate to `saeforge.training.run_finetune` with the full
+      cosine-LR-with-warmup, gradient-clipping, optional grad-checkpointing,
+      optional mixed-precision recipe.
+    - **v0.1 fallback (smoke)**: when only `ctx["_finetune_input_ids"]` is
+      supplied, run the original 4-step single-batch loop. Preserves
+      byte-equivalence with v0.1 forged outputs for the safety-net test.
+    - **Pass-through**: when none of the above, no fine-tune happens.
     """
-    input_ids = ctx.get("_finetune_input_ids")
     model = ctx.get("_native_model")
-    if input_ids is None or model is None:
+    if model is None:
         _log(ctx, "fine_tune_model", {"mode": "passthrough"})
         return {"finetuned_model_path": ctx["projected_weights_path"]}
 
+    corpus = ctx.get("finetune_corpus")
+    iterator = ctx.get("_finetune_iterator")
+    if corpus is not None or iterator is not None:
+        return _run_recipe_fine_tune(ctx, model, corpus, iterator)
+
+    input_ids = ctx.get("_finetune_input_ids")
+    if input_ids is None:
+        _log(ctx, "fine_tune_model", {"mode": "passthrough"})
+        return {"finetuned_model_path": ctx["projected_weights_path"]}
+
+    return _run_v01_smoke_fine_tune(ctx, model, input_ids)
+
+
+def _run_v01_smoke_fine_tune(ctx: dict, model, input_ids) -> dict:
+    """v0.1 4-step smoke loop. Preserves the byte-equivalence safety net."""
     from saeforge.utils.lazy import require_extra
 
     torch = require_extra("torch", "torch")
@@ -206,9 +227,71 @@ def fine_tune_model(ctx: dict, _payload: dict | None = None) -> dict:
         "fine_tune_model",
         {"mode": "trained", "n_steps": n_steps, "loss_first": losses[0], "loss_last": losses[-1]},
     )
+    return {"finetuned_model_path": str(finetuned_dir), "_finetune_losses": losses}
+
+
+def _run_recipe_fine_tune(ctx: dict, model, corpus, iterator) -> dict:
+    """v0.3 recipe path: delegate to saeforge.training.run_finetune."""
+    from saeforge.training import TrainingConfig, build_iterator, run_finetune
+
+    output_dir = Path(ctx["output_dir"])
+    finetuned_dir = output_dir / "finetuned"
+
+    if iterator is None:
+        # Build iterator from corpus path or HF dataset name. We need a
+        # tokenizer; pull it from the host model's id when available.
+        from saeforge.utils.lazy import require_extra
+
+        transformers = require_extra("transformers", "torch")
+        host_id = ctx.get("host_model_id") or "gpt2"
+        tokenizer = transformers.AutoTokenizer.from_pretrained(
+            host_id if host_id != "<in-memory>" else "gpt2"
+        )
+        iterator = build_iterator(
+            corpus,
+            tokenizer,
+            batch_size=ctx.get("finetune_batch_size", 8),
+            sequence_length=ctx.get("finetune_seq_len", 512),
+        )
+
+    config = TrainingConfig(
+        total_steps=ctx.get("finetune_total_steps", ctx.get("finetune_steps", 1000)),
+        warmup_steps=ctx.get("finetune_warmup_steps", 100),
+        peak_lr=ctx.get("finetune_peak_lr", ctx.get("finetune_lr", 5e-5)),
+        weight_decay=ctx.get("finetune_weight_decay", 0.01),
+        batch_size=ctx.get("finetune_batch_size", 8),
+        sequence_length=ctx.get("finetune_seq_len", 512),
+        precision=ctx.get("finetune_precision", "fp32"),
+        gradient_checkpointing=ctx.get("finetune_grad_checkpoint", False),
+        eval_every_steps=ctx.get("finetune_eval_every", 100),
+        eval_input_ids=ctx.get("_eval_input_ids"),
+        save_every_steps=ctx.get("finetune_save_every", 250),
+        save_dir=ctx.get("finetune_save_dir") or finetuned_dir / "checkpoints",
+        log_every_steps=ctx.get("finetune_log_every", 10),
+    )
+
+    host = ctx.get("_host_model")
+    result = run_finetune(model, host, iterator, config)
+
+    model.save_pretrained(finetuned_dir)
+    _log(
+        ctx,
+        "fine_tune_model",
+        {
+            "mode": "recipe",
+            "n_steps": result.n_steps_completed,
+            "final_loss": result.final_loss,
+            "wall_seconds": result.wall_seconds,
+            "n_eval_samples": len(result.eval_history),
+            "n_saves": len(result.save_paths),
+            "converged": result.converged,
+            "oom_batch_halved": result.metadata.get("oom_batch_halved", False),
+        },
+    )
     return {
         "finetuned_model_path": str(finetuned_dir),
-        "_finetune_losses": losses,
+        "_finetune_losses": [loss for (_, loss) in result.loss_history],
+        "_finetune_eval_history": result.eval_history,
     }
 
 
