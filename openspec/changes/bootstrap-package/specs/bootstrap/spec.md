@@ -53,12 +53,11 @@ implementation is deferred to a later v0 change SHALL raise
 `NotImplementedError` whose message names the deferring change's
 OpenSpec proposal path.
 
-#### Scenario: FeatureBasis.from_polygram_checkpoint stub
+#### Scenario: FeatureBasis.from_polygram_checkpoint stub (superseded by feature-basis)
 
-- **WHEN** `FeatureBasis.from_polygram_checkpoint("missing.safetensors")`
-  is called
-- **THEN** it raises `NotImplementedError` whose message contains
-  `openspec/changes/feature-basis/proposal.md`
+This scenario applied while the loader was a stub. As of the
+`feature-basis` change, the implementation raises `FileNotFoundError`
+on a missing checkpoint instead of `NotImplementedError`.
 
 #### Scenario: ForgePipeline.run stub
 

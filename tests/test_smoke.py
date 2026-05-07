@@ -106,10 +106,10 @@ def test_native_model_config_constructs() -> None:
     assert config.num_heads * config.head_dim == config.hidden_size
 
 
-def test_from_polygram_checkpoint_stub_points_to_change() -> None:
+def test_from_polygram_checkpoint_missing_file_raises() -> None:
     from saeforge import FeatureBasis
 
-    with pytest.raises(NotImplementedError, match="feature-basis"):
+    with pytest.raises(FileNotFoundError):
         FeatureBasis.from_polygram_checkpoint("does-not-exist.safetensors")
 
 
