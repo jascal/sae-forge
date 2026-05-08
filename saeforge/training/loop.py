@@ -84,11 +84,20 @@ def run_finetune(model, host, iterator, config: TrainingConfig) -> TrainingResul
                 torch.nn.utils.clip_grad_norm_(module.parameters(), config.max_grad_norm)
                 optim.step()
             optim.zero_grad(set_to_none=True)
-        except torch.cuda.OutOfMemoryError:
+        except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
+            # MPS reports OOM as RuntimeError("MPS backend out of memory…");
+            # CUDA has its own subclass. Filter RuntimeError to OOM-only so we
+            # don't swallow unrelated failures.
+            if isinstance(e, RuntimeError) and not isinstance(e, torch.cuda.OutOfMemoryError):
+                if "out of memory" not in str(e).lower():
+                    raise
             if metadata["oom_batch_halved"]:
                 raise
             metadata["oom_batch_halved"] = True
-            torch.cuda.empty_cache()
+            if device.type == "cuda":
+                torch.cuda.empty_cache()
+            elif device.type == "mps" and hasattr(torch.mps, "empty_cache"):
+                torch.mps.empty_cache()
             optim.zero_grad(set_to_none=True)
             continue
 

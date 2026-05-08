@@ -238,7 +238,11 @@ class SubspaceProjector:
 
 
 def _to_numpy(tensor) -> np.ndarray:
-    """Convert a torch tensor to float64 numpy without requiring torch at import time."""
+    """Convert a torch tensor to float64 numpy without requiring torch at import time.
+
+    Goes via ``.float()`` because numpy has no native bfloat16 dtype — a direct
+    ``.numpy()`` on a bf16 tensor raises ``TypeError: Got unsupported ScalarType BFloat16``.
+    """
     if hasattr(tensor, "detach"):
-        return tensor.detach().cpu().numpy().astype(np.float64, copy=False)
+        return tensor.detach().cpu().float().numpy().astype(np.float64, copy=False)
     return np.asarray(tensor).astype(np.float64, copy=False)

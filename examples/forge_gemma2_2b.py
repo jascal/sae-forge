@@ -264,7 +264,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help="cpu / mps (Apple) / cuda (NVIDIA). cpu is not realistic for Gemma-2-2B.",
     )
     parser.add_argument(
-        "--dtype", default="float32", choices=("float32", "float16", "bfloat16"),
+        "--dtype", default="bfloat16", choices=("float32", "float16", "bfloat16"),
+        help="host + projected model dtype; bfloat16 default keeps Gemma-2-2B near 5GB",
     )
     parser.add_argument("--layer", type=int, default=DEFAULT_LAYER)
     parser.add_argument(
@@ -290,13 +291,19 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--steps", type=int, default=1000)
     parser.add_argument("--lr", type=float, default=5e-5)
-    parser.add_argument("--batch-size", type=int, default=8)
-    parser.add_argument("--seq-len", type=int, default=512)
+    parser.add_argument(
+        "--batch-size", type=int, default=1,
+        help="default 1 to fit Gemma-2-2B on 24GB unified memory; bump on bigger GPUs",
+    )
+    parser.add_argument("--seq-len", type=int, default=256)
     parser.add_argument(
         "--precision", default="bf16", choices=("fp32", "bf16", "fp16"),
         help="bf16 recommended on M-series and modern CUDA",
     )
-    parser.add_argument("--grad-checkpoint", action="store_true")
+    parser.add_argument(
+        "--grad-checkpoint", action=argparse.BooleanOptionalAction, default=True,
+        help="default on for Gemma-2-2B; pass --no-grad-checkpoint to disable on >40GB GPUs",
+    )
     parser.add_argument(
         "--scale-boost",
         default="auto",
