@@ -156,7 +156,7 @@ def main(args) -> dict:
         raise RuntimeError("compression zeroed every feature; raise --n-features or relax --coverage-target")
     print(f"      basis: n_features={basis.n_features}, d_model={basis.d_model}")
 
-    projector = SubspaceProjector(basis)
+    projector = SubspaceProjector(basis, scale_boost=_coerce_scale_boost(args.scale_boost))
     # orchestrator="fsm" routes through the recipe action; the imperative
     # path (default) silently skips fine-tune. ``args.steps == 0`` is a
     # forge-only smoke run, so leave orchestrator at the imperative
@@ -297,7 +297,25 @@ def _build_parser() -> argparse.ArgumentParser:
         help="bf16 recommended on M-series and modern CUDA",
     )
     parser.add_argument("--grad-checkpoint", action="store_true")
+    parser.add_argument(
+        "--scale-boost",
+        default="auto",
+        help=(
+            "SubspaceProjector scale_boost. Pass a float, or 'auto' "
+            "(default) which picks min(1.0, d_model/n_features) for "
+            "over-complete bases. Empirical anchor: GPT-2 (d=768) with "
+            "1024 features needed ~0.25; if your run produces NaNs / "
+            "saturated softmax / astronomical KL, hand-pick a value < 1.0."
+        ),
+    )
     return parser
+
+
+def _coerce_scale_boost(raw):
+    """Accept 'auto' or a numeric string from argparse."""
+    if isinstance(raw, str) and raw == "auto":
+        return "auto"
+    return float(raw)
 
 
 if __name__ == "__main__":

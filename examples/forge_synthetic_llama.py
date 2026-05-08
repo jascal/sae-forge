@@ -62,6 +62,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--vocab-size", type=int, default=1024)
     parser.add_argument("--n-features", type=int, default=32)
     parser.add_argument("--device", default="cpu")
+    parser.add_argument(
+        "--scale-boost",
+        default="auto",
+        help=(
+            "SubspaceProjector scale_boost (float or 'auto'). 'auto' "
+            "picks min(1.0, d_model/n_features) for over-complete bases."
+        ),
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -99,7 +107,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"[2/4] building synthetic FeatureBasis ({args.n_features} features over "
           f"d_model={args.hidden_size})")
     basis = _build_tiny_basis(args.hidden_size, args.n_features)
-    projector = SubspaceProjector(basis)
+    sb = args.scale_boost if args.scale_boost == "auto" else float(args.scale_boost)
+    projector = SubspaceProjector(basis, scale_boost=sb)
 
     print("[3/4] dispatching adapter + projecting weights ...")
     adapter = adapter_for(host)
