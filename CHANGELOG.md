@@ -3,6 +3,35 @@
 All notable changes to sae-forge are tracked here. v0 entries land as
 their corresponding OpenSpec change is archived.
 
+## [0.2.4] — 2026-05-07
+
+### Added
+
+- **`SubspaceProjector(scale_boost="auto")`** ([PR #8](../../pull/8))
+  resolves to `min(1.0, d_model / n_features)` — a defensible
+  starting heuristic for over-complete bases (`n_features > d_model`).
+  For under/equal-complete bases the heuristic returns `1.0`
+  (identity-preserving). Existing positive-float values are
+  unchanged; the default remains `1.0`.
+- **`--scale-boost` CLI flag** on `examples/forge_gemma2_2b.py` and
+  `examples/forge_synthetic_llama.py` (both default to `"auto"`).
+  `examples/forge_gpt2_real_sae.py` adds a `scale_boost` function
+  parameter (notebook-driven, no argparse).
+
+### Fixed
+
+- **Silent footgun on over-complete bases** ([PR #8](../../pull/8)).
+  Empirical anchor surfaced during a Gemma-2-2B forge attempt:
+  GPT-2 (`d_model=768`) with a 1024-feature basis required
+  `scale_boost ≈ 0.25` for stable training; the default `1.0` was
+  too large and silently produced NaNs / saturated softmax / KL
+  explosion. Construction now emits a `UserWarning` when
+  `n_features > d_model` and `scale_boost == 1.0`, naming the
+  empirical anchor and pointing at `"auto"` or a hand-picked
+  value as the next step. Suppressed when an explicit numeric
+  or `"auto"` is supplied — no scolding when the user acted
+  intentionally.
+
 ## [0.2.3] — 2026-05-07
 
 ### Fixed
