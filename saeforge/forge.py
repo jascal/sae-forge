@@ -15,6 +15,13 @@ from saeforge.model import NativeModel, _config_from_host
 from saeforge.projector import SubspaceProjector
 
 
+def _torch_dtype(name: str):
+    """Map our string dtype names to torch.dtype for ``from_pretrained``."""
+    import torch
+
+    return {"float32": torch.float32, "float16": torch.float16, "bfloat16": torch.bfloat16}[name]
+
+
 class ForgeFailed(RuntimeError):
     """The FSM ended in a ``failed`` state and the run could not produce
     a valid forged model.
@@ -314,7 +321,9 @@ class ForgePipeline:
         # arch v0.1 path called ``GPT2LMHeadModel.from_pretrained`` against
         # any host_model_id, which silently produced a randomly-initialised
         # GPT-2 for non-GPT-2 inputs (e.g. ``google/gemma-2-2b``).
-        host = transformers.AutoModelForCausalLM.from_pretrained(self.host_model_id).eval()
+        host = transformers.AutoModelForCausalLM.from_pretrained(
+            self.host_model_id, dtype=_torch_dtype(self.dtype)
+        ).eval()
         weights = self.projector.project_module(host, attention_width=self.attention_width)
         config = _config_from_host(
             host, self.basis.n_features, attention_width=self.attention_width
@@ -373,7 +382,9 @@ class ForgePipeline:
         sae_checkpoint = output_dir / "synth_basis.safetensors"
         _write_basis_as_checkpoint(self.basis, sae_checkpoint)
 
-        host = transformers.AutoModelForCausalLM.from_pretrained(self.host_model_id).eval()
+        host = transformers.AutoModelForCausalLM.from_pretrained(
+            self.host_model_id, dtype=_torch_dtype(self.dtype)
+        ).eval()
 
         # Pre-tokenise eval_prompts with the host's tokenizer so the FSM
         # ``evaluate_faithfulness`` action can compute KL via the existing
