@@ -95,6 +95,7 @@ def main(
     max_iterations: int = 1,
     coverage_target: float = 0.5,
     device: str = "cpu",
+    scale_boost: float | str = "auto",
 ) -> dict:
     import torch  # noqa: F401  (lazy-imported below)
     from huggingface_hub import hf_hub_download
@@ -161,7 +162,7 @@ def main(
     print(f"      basis: n_features={basis.n_features} (kept), d_model={basis.d_model}")
     if basis.n_features == 0:
         raise RuntimeError("compression zeroed every feature; raise n_features or relax thresholds")
-    projector = SubspaceProjector(basis)
+    projector = SubspaceProjector(basis, scale_boost=scale_boost)
     pipeline = ForgePipeline(
         basis=basis,
         projector=projector,

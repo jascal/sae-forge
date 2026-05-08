@@ -19,11 +19,38 @@ QKV projection (attention internal dimensions also become k-wide):
 Layer norm under linear projection is not equivariant; γ/β projection is
 the lossy v0 fallback. Faithfulness drops are expected and tracked by the
 forge-pipeline KL eval.
+
+scale_boost notes
+-----------------
+
+``scale_boost`` multiplies the ``encode`` output (``x @ E * scale_boost``).
+For a well-conditioned basis with ``n_features <= d_model``,
+``scale_boost=1.0`` is the identity-preserving default — every linear map
+is exactly preserved on the basis subspace. For *over-complete* bases
+(``n_features > d_model``, common when a Polygram-compressed SAE keeps
+more features than the host's residual width), the encode operation
+no longer round-trips to identity in the n-dim subspace and empirical
+activation magnitudes can blow up — overflowing bf16, saturating
+softmax, or producing astronomical initial KL.
+
+Empirical anchor: GPT-2 (d_model=768) with a 1024-feature basis
+required ``scale_boost ≈ 0.25`` to keep training stable; the default
+of 1.0 was too large.
+
+``scale_boost="auto"`` picks ``min(1.0, d_model / n_features)`` — a
+defensible starting heuristic for over-complete bases that scales
+inversely with the over-completeness ratio. For the GPT-2 + 1024
+case that gives ``768/1024 = 0.75``: directionally right (less than 1)
+but not the empirical optimum. Treat ``"auto"`` as a starting point
+and tune from there. A more principled per-basis calibrator is
+deferred to a follow-up.
 """
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
+from typing import Union
 
 import numpy as np
 
@@ -36,14 +63,66 @@ class SubspaceProjector:
 
     The projection math is pure-numpy. Real host models live behind the
     ``[torch]`` extra; ``project_module(...)`` lazy-imports torch on demand.
+
+    ``scale_boost`` accepts a positive float OR the string ``"auto"``.
+    When ``"auto"``, ``__post_init__`` resolves it to
+    ``min(1.0, d_model / n_features)`` — a heuristic for over-complete
+    bases (see module docstring for empirical context). When a literal
+    ``1.0`` (the default) is supplied with an over-complete basis, a
+    ``UserWarning`` surfaces so the silent activation-magnitude footgun
+    can't recur.
     """
 
     basis: FeatureBasis
-    scale_boost: float = 1.0
+    scale_boost: Union[float, str] = 1.0
 
     def __post_init__(self) -> None:
+        # Resolve "auto" first so the float invariants below see a numeric value.
+        if isinstance(self.scale_boost, str):
+            if self.scale_boost != "auto":
+                raise ValueError(
+                    f"scale_boost must be a positive float or 'auto'; "
+                    f"got {self.scale_boost!r}"
+                )
+            self.scale_boost = self._auto_scale_boost()
         if self.scale_boost <= 0.0:
             raise ValueError(f"scale_boost must be positive; got {self.scale_boost}")
+        # Footgun warning: the GPT-2 + 1024-feature anchor showed
+        # scale_boost=1.0 was too large on over-complete bases.
+        if (
+            self.basis.n_features > self.basis.d_model
+            and float(self.scale_boost) == 1.0
+        ):
+            warnings.warn(
+                f"SubspaceProjector: over-complete basis detected "
+                f"(n_features={self.basis.n_features} > d_model="
+                f"{self.basis.d_model}) with scale_boost=1.0. The default "
+                f"is often too large in this regime — empirically GPT-2 "
+                f"(d_model=768) with 1024 features needed scale_boost≈0.25 "
+                f"to train stably. Consider scale_boost='auto' or a "
+                f"hand-picked value < 1.0; tune from there if needed.",
+                UserWarning,
+                stacklevel=2,
+            )
+
+    def _auto_scale_boost(self) -> float:
+        """Heuristic default for over-complete bases.
+
+        For ``n_features <= d_model`` the basis can in principle represent
+        every direction in the residual stream and ``scale_boost=1.0``
+        preserves linear maps exactly — no down-scaling needed.
+
+        For ``n_features > d_model`` the encode-decode round-trip is a
+        rank-d projection in n-dim space; activations spread across more
+        coordinates and per-row magnitudes of ``pinv(W_dec)`` grow. We
+        return ``d_model / n_features`` as a defensible starting
+        heuristic that scales inversely with the over-completeness.
+        """
+        n = self.basis.n_features
+        d = self.basis.d_model
+        if n <= d:
+            return 1.0
+        return float(d) / float(n)
 
     def encode(self, x: np.ndarray) -> np.ndarray:
         """Project ``x`` (..., d_model) into the basis (..., n_features)."""

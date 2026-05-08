@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import pytest
 
 from saeforge import SubspaceProjector
+from saeforge.basis import FeatureBasis
 
 
 def test_encode_decode_roundtrip_full_rank(tiny_synthetic_basis):
@@ -125,3 +128,95 @@ def test_project_module_unsupported_arch_raises(tiny_synthetic_basis):
     # Whichever bundled adapters are loaded should appear in the list;
     # GPT2LMHeadModel is always there.
     assert "GPT2LMHeadModel" in msg
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for scale_boost='auto' + over-complete-basis warning.
+#
+# Empirical anchor: GPT-2 (d_model=768) with a 1024-feature Polygram-
+# compressed basis required scale_boost ~ 0.25 for stable training; the
+# default 1.0 produced activations that overflowed bf16 / saturated
+# softmax. The fix adds an "auto" mode that returns
+# min(1.0, d_model/n_features) for over-complete bases, plus a
+# UserWarning when n>d and scale_boost=1.0 (the default footgun).
+# ---------------------------------------------------------------------------
+
+
+def _basis(n: int, d: int):
+    rng = np.random.default_rng(0)
+    W = rng.standard_normal((n, d)).astype(np.float32)
+    return FeatureBasis(
+        kept_ids=np.arange(n, dtype=np.int64),
+        W_dec=W,
+        merged_norms=np.linalg.norm(W, axis=1).astype(np.float32),
+        original_norms=np.linalg.norm(W, axis=1).astype(np.float32),
+    )
+
+
+class TestScaleBoostAuto:
+    def test_auto_returns_one_when_n_lte_d(self):
+        # Under-complete or square basis: identity-preserving default.
+        proj = SubspaceProjector(_basis(8, 16), scale_boost="auto")
+        assert proj.scale_boost == 1.0
+
+    def test_auto_returns_d_over_n_when_overcomplete(self):
+        # GPT-2-shaped over-complete: 768 / 1024 = 0.75.
+        proj = SubspaceProjector(_basis(1024, 768), scale_boost="auto")
+        assert proj.scale_boost == 768 / 1024
+
+    def test_auto_at_exact_n_eq_d(self):
+        # Boundary: n == d collapses to the under-complete branch (1.0).
+        proj = SubspaceProjector(_basis(64, 64), scale_boost="auto")
+        assert proj.scale_boost == 1.0
+
+    def test_unknown_string_rejected(self):
+        with pytest.raises(ValueError, match="positive float or 'auto'"):
+            SubspaceProjector(_basis(8, 16), scale_boost="not-real")
+
+    def test_explicit_numeric_passes_through(self):
+        # Any positive float is accepted unchanged.
+        proj = SubspaceProjector(_basis(1024, 768), scale_boost=0.25)
+        assert proj.scale_boost == 0.25
+
+    def test_negative_still_rejected(self):
+        with pytest.raises(ValueError, match="must be positive"):
+            SubspaceProjector(_basis(8, 16), scale_boost=-1.0)
+
+
+class TestOverCompleteWarning:
+    def test_default_one_with_overcomplete_basis_warns(self):
+        # n=1024 > d=768 + scale_boost=1.0 default → footgun warning.
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            SubspaceProjector(_basis(1024, 768))
+        msgs = [str(w.message) for w in caught if "over-complete" in str(w.message)]
+        assert len(msgs) == 1
+        assert "n_features=1024" in msgs[0]
+        assert "d_model=768" in msgs[0]
+        assert "scale_boost" in msgs[0]
+        # Empirical anchor named so the user can act.
+        assert "0.25" in msgs[0]
+
+    def test_under_complete_basis_does_not_warn(self):
+        # n=8, d=16 + default 1.0 → no warning (this is the canonical
+        # well-behaved case).
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            SubspaceProjector(_basis(8, 16))
+        assert not any("over-complete" in str(w.message) for w in caught)
+
+    def test_overcomplete_basis_with_explicit_scale_does_not_warn(self):
+        # User picked an explicit value → they know what they're doing,
+        # no scolding.
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            SubspaceProjector(_basis(1024, 768), scale_boost=0.25)
+        assert not any("over-complete" in str(w.message) for w in caught)
+
+    def test_overcomplete_basis_with_auto_does_not_warn(self):
+        # "auto" resolved to 0.75 (< 1.0); not the default 1.0 so the
+        # warning shouldn't fire.
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            SubspaceProjector(_basis(1024, 768), scale_boost="auto")
+        assert not any("over-complete" in str(w.message) for w in caught)
