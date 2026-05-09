@@ -3,6 +3,103 @@
 All notable changes to sae-forge are tracked here. v0 entries land as
 their corresponding OpenSpec change is archived.
 
+## [0.3.0] — 2026-05-09
+
+### Added (forge-continual-learning-loop)
+
+- **Three-loop FSM topology** ([PR #11](../../pull/11)) layered on top
+  of the v0.1 single-shard pipeline:
+  - **Stream loop** — `evaluated → loaded` re-entry to consume the
+    next shard. Triggered by `task_trigger` (one of `labeled` /
+    `token_budget` / `loss_delta`).
+  - **Refine loop** — preserved v0.1 `evaluated → compressed`
+    re-entry for same-shard convergence.
+  - **Basis loop** — new `compressed ↔ regrown` self-loop for
+    `inner_refine_passes` rounds before exiting to `projected`.
+- **New `activations_scanned` state** between `loaded` and
+  `compressed`, hosting the `scan_activations` action that scores
+  features and selects a protected set when `protect_top_k > 0`. True
+  no-op (no basis load, no torch import) under the v0.2.0-default
+  `protect_top_k = 0`.
+- **Protected features** — structural EWC analogue at the basis
+  level. `compress_with_polygram` post-filters the
+  `ValidationReport` so protected indices cannot be merged or
+  removed by Polygram's Compressor. The do-not-remove kwarg is the
+  preferred long-term path; the workaround is documented in
+  `tasks.md` §10.4 and tracked for upstreaming.
+- **Replay buffer + MixedIterator** — new `saeforge.training.replay`
+  module exposing `ReplayBuffer` (three policies: `reservoir` /
+  `recent_window` / `per_task`) and `MixedIterator` with
+  deterministic 100-cycle replay scheduling. Pure Python, no torch
+  dependency at module import.
+- **TaskStream abstraction** — new `saeforge.training.task_stream`
+  module with `LabeledTaskStream`, `TokenBudgetTaskStream`,
+  `LossDriftTaskStream`, plus a process-local registry mapping
+  ``task_iterator_id`` strings to live stream instances.
+- **12 new `ForgePipeline` fields**: `n_tasks`, `task_trigger`,
+  `token_budget_per_task`, `loss_delta_threshold`,
+  `inner_refine_passes`, `protect_top_k`, `protect_score`,
+  `activation_buffer_size`, `replay_ratio`, `replay_buffer_size`,
+  `replay_policy`, `task_stream`. All default to v0.1-equivalent
+  values.
+- **Construction-time validation** for the new continual-learning
+  knobs — invalid combinations (e.g. `replay_ratio > 0` with
+  `replay_buffer_size = 0`, or `replay_policy="per_task"` with
+  `task_trigger != "labeled"`) raise `ValueError` at
+  `ForgePipeline(...)` time, not at run.
+- **`docs/advanced-fsm-options.md`** — user-facing reference covering
+  the three-loop topology, every new context field, every new CLI
+  flag, the three `task_trigger` modes, the three `protect_score`
+  strategies, the three `replay_policy` strategies, plus a worked
+  recipe per pattern (per-task / protected-features / drift-triggered).
+- **24 new tests** — `tests/test_replay_buffer.py` (11),
+  `tests/test_task_stream.py` (7), and
+  `tests/test_continual_learning_loop.py` (6 stub-driven FSM-level
+  tests covering basis-loop / stream-loop / refine-loop preservation
+  / stream-dominance contract).
+
+### Changed (forge-continual-learning-loop)
+
+- **FSM uses orca-runtime-python rich guard grammar directly**.
+  `refine_same_shard` is now the orca expression
+  `ctx.advance_stream == false and ctx.should_continue == true`
+  evaluated by the runtime; previously the v0.1 design called for
+  precomputing flat-bool flags in Python actions. Three ctx fields
+  (`next_basis_step`, `refine_same_shard`, `terminate_run`) and the
+  hardcoded `_NEXT_EVENT_FOR_STATE` map are gone — the runtime and
+  the parsed `MachineDef.transitions` are now the source of truth
+  for control flow.
+- **Machine state count: 9 → 10** (added `activations_scanned`).
+  Updated `test_machine_loads_and_has_nine_states` →
+  `test_machine_loads_and_has_ten_states` per the spec's MODIFIED
+  requirement.
+- **`README.md`** — Status section now lists the recent landed
+  openspec changes; new "Continual learning" Quickstart subsection
+  shows the knobs + `LabeledTaskStream` wiring; ambiguous v0.x
+  version labels dropped from the How-it-works callouts.
+- **`AGENTS.md`** — orca-lang dependency contract section updated
+  to document the rich-guard pattern and link to the
+  continual-learning advanced-options doc.
+
+### Backwards compatibility
+
+- **No breaking changes.** Defaults preserve v0.1 byte-identical
+  behavior. The `test_imperative_and_fsm_byte_equivalent` safety net
+  passes unchanged. All 20 existing FSM tests pass.
+
+### Out of scope (deferred follow-ups)
+
+- True activation-driven `protect_score` (current 0.3.0 ships a
+  direction-L2 stub; activation-driven scoring needs host-model
+  residual capture).
+- Polygram `do_not_remove` kwarg upstream — the
+  `ValidationReport` post-filter is the workaround until then.
+- Per-loop-level scan tuning, feature-axis sampling, raw trigger
+  signal exposure in ctx, basis-size growth across tasks, per-task
+  evaluation matrix, token-level replay buffer, and CLI flags for
+  the new continual knobs are tracked in
+  `openspec/changes/forge-continual-learning-loop/tasks.md` §12.
+
 ## [0.2.4] — 2026-05-07
 
 ### Added
