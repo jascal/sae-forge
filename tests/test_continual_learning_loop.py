@@ -173,11 +173,25 @@ def _drive_with_eval_advance(ctx, advance_predicate):
             if name == "evaluate_faithfulness":
                 return {"advance_stream": advance_predicate(c)}
             if name == "advance_to_next_task":
+                # Mirror the real action: reset current_iter on top of the
+                # other per-task counters. Without this, should_continue
+                # predicates that depend on current_iter never flip false
+                # on the second task and the FSM spins.
                 return {
                     "task_idx": c.get("task_idx", 0) + 1,
                     "inner_refine_idx": 0,
                     "tokens_seen_in_task": 0,
+                    "current_iter": 0,
                     "advance_stream": False,
+                }
+            if name == "rotate_for_next_iter":
+                # Real rotate_for_next_iter increments current_iter; the
+                # stub must too, otherwise the refine loop predicate
+                # (current_iter + 1 < iterations) never flips false and
+                # the FSM spins forever.
+                return {
+                    "current_iter": c.get("current_iter", 0) + 1,
+                    "inner_refine_idx": 0,
                 }
             return {}
         return action
@@ -220,17 +234,18 @@ def test_stream_advance_dominates_should_continue():
     ctx = _base_ctx(n_tasks=2, iterations=3, task_trigger="labeled")
 
     def advance(c):
-        # Set should_continue=true via the predicate side-effect.
-        c["should_continue"] = True
+        # Bound should_continue by iterations so the refine loop has a
+        # natural exit. The point of the test is the *first* eval where
+        # both flags are true: stream_advance must win that race.
+        c["should_continue"] = c.get("current_iter", 0) + 1 < c.get("iterations", 1)
         return c.get("task_idx", 0) + 1 < c.get("n_tasks", 1)
 
     transcript, final = _drive_with_eval_advance(ctx, advance)
     assert final == "done"
-    # Stream advances once, then on the second eval should_continue is still true
-    # but task budget exhausted, so we terminate (refine_same_shard would fire too,
-    # but stream_advance is false at task_idx=1 with n_tasks=2 → refine wins on
-    # the second eval). Allow either pattern; assert just the topology contract:
-    assert transcript.count("advance_to_next_task") >= 1
+    # On the first eval (task 0, current_iter 0), both predicates are true.
+    # Stream wins → advance_to_next_task fires, no rotate yet. On task 1
+    # the stream is exhausted so the refine loop runs current_iter -> iterations.
+    assert transcript.count("advance_to_next_task") == 1
     assert transcript.count("save_final_model") == 1
 
 
