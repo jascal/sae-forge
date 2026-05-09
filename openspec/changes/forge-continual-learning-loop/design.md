@@ -217,19 +217,31 @@ that the *transition log* under defaults contains the same `to_state`
 sequence as v0.1 modulo one extra `activations_scanned` entry —
 documenting the contract that defaults add at most one no-op hop.
 
-## Open questions
+## Open questions (with resolutions)
 
-- **Polygram API for protected features.** Whether Polygram's
-  `Compressor` accepts a `do_not_remove` argument is not yet
-  verified. If not, we either upstream that addition to Polygram
-  (preferred, small change) or post-filter the validation report to
-  mark protected features as confirmed in *all* validation pairs
-  (workaround, mildly hacky). Tracked in tasks.md §4.4.
+Reviewed in PR #10. Resolutions captured in `tasks.md` §12.
+
+- **Polygram API for protected features.** Resolution: **upstream the
+  `do_not_remove` argument to Polygram's `Compressor` as the long-term
+  path.** Ship the `ValidationReport` post-filter as a v0.2 workaround
+  if the upstream change has not landed in time, but file the upstream
+  issue *first* so the workaround is short-lived. Tracked in tasks.md
+  §4.4 and §12.7.
 - **`scan_activations` cost on large bases.** For `n_features >> 100k`
-  we may want a sampling strategy on the feature axis too. Out of
-  scope here; current default of 4096 tokens × n_features is fine
-  for the GPT-2 tier the user runs locally.
+  we may want feature-axis sampling. Out of scope here; tracked as
+  follow-up in tasks.md §12.2. Also tracked: per-loop-level scan
+  buffer config (§12.1) so users can run full scans on the first basis
+  pass and cheap scans on inner refinements.
 - **Replay sampling unit.** Token-level vs. sequence-level. We ship
-  sequence-level (one fine-tune step's input_ids) because that's what
-  the existing iterator produces. Switching to token-level reservoir
-  is a future refinement if memory becomes the constraint.
+  sequence-level; token-level is tracked in tasks.md §12.4.
+- **Basis-size growth across tasks.** Out of scope; tracked in
+  tasks.md §12.6 as a separate future change. Reshaping the projected
+  model mid-stream is non-trivial enough to deserve its own
+  capability spec.
+- **Per-task evaluation matrix.** Out of scope; tracked in tasks.md
+  §12.5 as the follow-up `forge-continual-eval-matrix` change.
+- **Custom triggers.** The `task_trigger` contract (single bool
+  written by Python, read by flat FSM guard) is closed. Promoting
+  the raw underlying signals (`recent_eval_losses`, `tokens_seen_in_task`,
+  `feature_usage`) to the public ctx contract for user-written
+  triggers without forking actions is tracked in tasks.md §12.3.

@@ -95,6 +95,29 @@ inner_refine_passes=2` runs *three* shards, *two* refine iterations
 each, with *two* compress↔regrow passes per refine iteration — twelve
 total project+fine-tune cycles.
 
+## Knob summary
+
+Every option here defaults to a value that recovers the v0.1
+single-shard pipeline. The "v0.1-equivalent effect" column is what
+each default *means* operationally — i.e., what the system does when
+you leave the knob alone.
+
+| CLI flag | Default | v0.1-equivalent effect |
+|----------|---------|------------------------|
+| `--n-tasks` | `1` | Stream loop disabled; one shard, one pass |
+| `--task-trigger` | `labeled` | Honored only when `n_tasks > 1` |
+| `--token-budget-per-task` | `0` | Inert under defaults |
+| `--loss-delta-threshold` | `0.0` | Inert under defaults |
+| `--inner-refine-passes` | `1` | Basis loop disabled; one compress, one optional regrow |
+| `--protect-top-k` | `0` | `scan_activations` runs as a no-op pass-through; nothing is protected |
+| `--protect-score` | `mean_act` | Honored only when `protect_top_k > 0` |
+| `--replay-ratio` | `0.0` | Replay disabled; fine-tune iterator unchanged |
+| `--replay-buffer-size` | `0` | Buffer never allocated; replay is a no-op even if `replay_ratio > 0` |
+| `--replay-policy` | `reservoir` | Honored only when both replay knobs are non-zero |
+
+Two knobs in conjunction: `--replay-ratio` and `--replay-buffer-size`
+must *both* be non-zero to enable replay. Either one zero is a no-op.
+
 ## Options reference
 
 ### Stream loop (outer)
@@ -122,6 +145,20 @@ total project+fine-tune cycles.
   mean of the prior two by more than `loss_delta_threshold`, the
   stream advances. Use this when you don't know in advance how much
   data each "task" needs.
+
+##### Choosing `task_trigger`: concrete scenarios
+
+| Your situation | Pick | Why |
+|----------------|------|-----|
+| Sequential fine-tune across labeled domain corpora (e.g. medical → legal → finance, each ~50M tokens, in that order) | `labeled` | Boundaries are external facts; you already have N shard files. Replay with `per_task` policy slots in cleanly |
+| Continual pre-training on a sliding web crawl (one ever-growing JSONL, no domain markers, you just want fixed-cadence updates) | `token_budget` | No labels available; "every N tokens, run compress/regrow/protect" is the cleanest contract. Pair with `--replay-policy reservoir` |
+| Single noisy stream where drift can happen at unpredictable cadence (e.g. user-conversation logs that shift topic without warning) | `loss_delta` | Wakes the loop only when held-out faithfulness actually degrades. Less wasted compute than `token_budget` if drift is rare |
+| Deterministic experiment for ablation (e.g. running the same data 5×N times to study basis convergence) | `labeled` with `n_tasks=N` and the same corpus path repeated | Avoids any non-determinism from drift heuristics. Reproducible |
+| Curriculum learning (you want stages to advance once the model "gets" the current stage) | `loss_delta` with a *negative* sense — you want to advance when loss *stops decreasing*, not when it climbs | `loss_delta` as shipped fires on regression; for "stopped improving" you need either custom Python (see tasks.md §12.3) or a stagnation post-processor on `recent_eval_losses` |
+
+The decision tree: **labels available → `labeled`. No labels but
+predictable cadence → `token_budget`. No labels and unpredictable
+cadence → `loss_delta`.**
 
 The three triggers all share one contract: the action
 `evaluate_task_advance` writes a single boolean
