@@ -80,6 +80,7 @@ if TYPE_CHECKING:  # pragma: no cover — type-only imports
         EpochCompressionConfig,
         RegrowConfig,
     )
+    from saeforge.training.task_stream import TaskStream  # noqa: F401
 
 
 @dataclass
@@ -157,6 +158,21 @@ class ForgePipeline:
     finetune_save_dir: Path | None = None
     finetune_log_every: int = 10
 
+    # v0.4 forge-continual-learning-loop knobs. All default to values that
+    # recover v0.1 single-shard byte-identical behavior.
+    n_tasks: int = 1
+    task_trigger: str = "labeled"
+    token_budget_per_task: int = 0
+    loss_delta_threshold: float = 0.0
+    inner_refine_passes: int = 1
+    protect_top_k: int = 0
+    protect_score: str = "mean_act"
+    activation_buffer_size: int = 4096
+    replay_ratio: float = 0.0
+    replay_buffer_size: int = 0
+    replay_policy: str = "reservoir"
+    task_stream: "TaskStream | None" = None  # forward ref; resolved lazily
+
     # ----------------------------------------------------------------
     # Construction-time validation + dict round-trip
     # ----------------------------------------------------------------
@@ -178,6 +194,30 @@ class ForgePipeline:
                 f"The pre-change layer=10 / model_name=\"gpt2\" fallbacks "
                 f"were removed in polygram 0.1.0 because they silently "
                 f"bound regrowth to GPT-2."
+            )
+        if self.task_trigger not in ("labeled", "token_budget", "loss_delta"):
+            raise ValueError(
+                f"ForgePipeline: task_trigger={self.task_trigger!r} must be one of "
+                "'labeled' | 'token_budget' | 'loss_delta'"
+            )
+        if self.task_trigger == "token_budget" and self.n_tasks > 1 and self.token_budget_per_task <= 0:
+            raise ValueError(
+                "ForgePipeline: task_trigger='token_budget' requires "
+                "token_budget_per_task > 0"
+            )
+        if self.task_trigger == "loss_delta" and self.n_tasks > 1 and self.loss_delta_threshold <= 0:
+            raise ValueError(
+                "ForgePipeline: task_trigger='loss_delta' requires "
+                "loss_delta_threshold > 0"
+            )
+        if self.replay_ratio > 0 and self.replay_buffer_size <= 0:
+            raise ValueError(
+                "ForgePipeline: replay_ratio > 0 requires replay_buffer_size > 0"
+            )
+        if self.replay_policy == "per_task" and self.task_trigger != "labeled":
+            raise ValueError(
+                "ForgePipeline: replay_policy='per_task' requires "
+                "task_trigger='labeled' (per-task slots need task boundaries)"
             )
 
     @classmethod
@@ -634,7 +674,52 @@ class ForgePipeline:
             "finetune_save_every": self.finetune_save_every,
             "finetune_save_dir": str(self.finetune_save_dir) if self.finetune_save_dir else None,
             "finetune_log_every": self.finetune_log_every,
+            **self._build_continual_ctx(),
         }
+
+    def _build_continual_ctx(self) -> dict:
+        """Continual-learning fields + replay/task-stream side effects.
+
+        Defaults preserve v0.1 byte-equivalence: when every continual
+        knob is at its default, no replay buffer is created and no
+        task stream is registered, so the FSM context is functionally
+        identical to v0.1 (modulo the always-present scalar fields).
+        """
+        from saeforge.training import ReplayBuffer
+        from saeforge.training import task_stream as ts_module
+
+        ctx: dict = {
+            "n_tasks": self.n_tasks,
+            "task_idx": 0,
+            "task_trigger": self.task_trigger,
+            "token_budget_per_task": self.token_budget_per_task,
+            "tokens_seen_in_task": 0,
+            "loss_delta_threshold": self.loss_delta_threshold,
+            "recent_eval_losses": [],
+            "advance_stream": False,
+            "inner_refine_passes": self.inner_refine_passes,
+            "inner_refine_idx": 0,
+            "protect_top_k": self.protect_top_k,
+            "protect_score": self.protect_score,
+            "protected_features": [],
+            "activation_buffer_size": self.activation_buffer_size,
+            "feature_usage": [],
+            "replay_ratio": self.replay_ratio,
+            "replay_policy": self.replay_policy,
+            "replay_buffer_size": self.replay_buffer_size,
+            "task_iterator_id": "",
+        }
+
+        if self.replay_buffer_size > 0:
+            buf = ReplayBuffer(size=self.replay_buffer_size, policy=self.replay_policy)
+            if self.replay_policy == "per_task":
+                buf.configure_per_task(self.n_tasks)
+            ctx["_replay_buffer"] = buf
+
+        if self.task_stream is not None:
+            ctx["task_iterator_id"] = ts_module.register(self.task_stream)
+
+        return ctx
 
 
 def _write_basis_as_checkpoint(basis: FeatureBasis, path: str | Path) -> None:

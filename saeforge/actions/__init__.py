@@ -75,6 +75,67 @@ def load_sae_and_corpus(ctx: dict, _payload: dict | None = None) -> dict:
     return {"current_sae_path": str(sae)}
 
 
+def scan_activations(ctx: dict, _payload: dict | None = None) -> dict:
+    """Score features and select a protected set; pass-through under v0.2 defaults.
+
+    True no-op (no basis load, no torch import) when ``protect_top_k == 0``
+    so the v0.1 byte-equivalence test continues to pass.
+
+    When ``protect_top_k > 0``, scores features against the SAE basis and
+    writes ``feature_usage`` + ``protected_features``. The v0.2.0 scorer
+    uses **direction L2 norms** as the importance proxy — this is
+    deterministic, fast, requires no host-model forward, and gives a
+    sensible per-feature ranking out of the box. Activation-driven
+    scoring (true ``mean_act`` against host residuals) is a refinement
+    tracked in tasks.md §12.2.
+    """
+    if ctx.get("protect_top_k", 0) == 0:
+        _log(ctx, "scan_activations", {"mode": "passthrough"})
+        return {}
+
+    score_strategy = ctx.get("protect_score", "mean_act")
+    if score_strategy not in ("mean_act", "usage", "grad_importance"):
+        raise ValueError(
+            f"unknown protect_score {score_strategy!r}; must be "
+            "'mean_act' | 'usage' | 'grad_importance'"
+        )
+
+    from saeforge import FeatureBasis
+    from saeforge.utils.lazy import require_extra
+
+    torch = require_extra("torch", "torch")
+
+    basis = FeatureBasis.from_polygram_checkpoint(ctx["current_sae_path"])
+    n_features = basis.n_features
+    top_k = min(int(ctx["protect_top_k"]), n_features)
+
+    directions = torch.as_tensor(basis.directions, dtype=torch.float32)
+    # All three strategies fall back to direction L2 in v0.2.0; the
+    # strategy is honored as a config knob so callers can request a
+    # different scorer once activation capture lands. Recording which
+    # strategy was *requested* is informative for follow-up debugging.
+    feature_usage = directions.norm(dim=1).tolist()
+
+    indexed = sorted(enumerate(feature_usage), key=lambda kv: -kv[1])
+    protected = [i for i, _ in indexed[:top_k]]
+
+    _log(
+        ctx,
+        "scan_activations",
+        {
+            "mode": "scored",
+            "n_features": n_features,
+            "n_protected": len(protected),
+            "score": score_strategy,
+            "scorer_impl": "direction_l2_v0_2",
+        },
+    )
+    return {
+        "feature_usage": feature_usage,
+        "protected_features": protected,
+    }
+
+
 def compress_with_polygram(ctx: dict, _payload: dict | None = None) -> dict:
     """Run Polygram's Compressor against the current SAE when a validation report is supplied.
 
@@ -86,10 +147,15 @@ def compress_with_polygram(ctx: dict, _payload: dict | None = None) -> dict:
     report_path = ctx.get("validation_report_path")
     if not report_path:
         _log(ctx, "compress_with_polygram", {"mode": "passthrough"})
-        return {
+        delta = {
             "compressed_sae_path": ctx["current_sae_path"],
             "current_feature_count": ctx.get("current_feature_count", 0),
         }
+        # Pass-through compress is still one basis-loop pass when no
+        # regrow follows. Increment so the basis_loop guards exit.
+        if ctx.get("regrow_count", 0) == 0:
+            delta["inner_refine_idx"] = ctx.get("inner_refine_idx", 0) + 1
+        return delta
 
     Compressor, ValidationReport, CompressionConfig = _import_polygram_symbols(
         "Compressor", "ValidationReport", "CompressionConfig"
@@ -100,6 +166,16 @@ def compress_with_polygram(ctx: dict, _payload: dict | None = None) -> dict:
     output_path = output_dir / "compressed.safetensors"
 
     validation = ValidationReport.from_json(report_path)
+
+    # Protected features (structural EWC). In v0.2.0 we ship the
+    # ValidationReport-postfilter workaround: any feature index in
+    # ctx["protected_features"] is marked as confirmed in every
+    # validation pair so Polygram's Compressor cannot drop it. The
+    # do_not_remove kwarg is the preferred long-term path; tracked
+    # in tasks.md §10.4.
+    protected = ctx.get("protected_features") or []
+    if protected:
+        _apply_protected_postfilter(validation, protected)
 
     # Reconstitute a CompressionConfig from ctx (serialised via .to_dict()
     # by ForgePipeline._build_context). When the key is absent, build a
@@ -145,11 +221,45 @@ def compress_with_polygram(ctx: dict, _payload: dict | None = None) -> dict:
     # `<stem>_compression_report.json` next to the checkpoint.
     compression_report_path = output_dir / "compressed_compression_report.json"
     report.to_json(compression_report_path)
-    return {
+    delta = {
         "compressed_sae_path": str(output_path),
         "current_feature_count": report.n_features_kept,
         "compression_report_path": str(compression_report_path),
     }
+    if ctx.get("regrow_count", 0) == 0:
+        delta["inner_refine_idx"] = ctx.get("inner_refine_idx", 0) + 1
+    return delta
+
+
+def _apply_protected_postfilter(validation, protected_indices: list[int]) -> None:
+    """Mark protected feature indices as confirmed in every validation pair.
+
+    **Mutates ``validation.pairs`` in place.** This is intentional —
+    Polygram's Compressor consumes the ValidationReport object directly,
+    so the mutation needs to be visible to the same call. Callers should
+    NOT persist the same ``validation`` object back to disk after this
+    runs without re-loading from JSON; the on-disk report should remain
+    the authoritative pre-protection record. The compress action follows
+    this contract by loading via ``ValidationReport.from_json`` (fresh
+    object every call), mutating, and discarding.
+
+    Tolerant of older ValidationReport schemas that lack a ``confirmed``
+    field per pair — skips silently if the schema doesn't match (the
+    protection is best-effort until the upstream ``do_not_remove`` kwarg
+    lands; tracked in tasks.md §10.4).
+    """
+    if not hasattr(validation, "pairs"):
+        return
+    proto_set = set(protected_indices)
+    for pair in validation.pairs:
+        # Common schema shapes: pair.confirmed (bool) or pair.feature_a /
+        # pair.feature_b indices. We pessimistically skip any pair that
+        # involves a protected index — that prevents the merge/removal.
+        feature_a = getattr(pair, "feature_a", None)
+        feature_b = getattr(pair, "feature_b", None)
+        if feature_a in proto_set or feature_b in proto_set:
+            if hasattr(pair, "confirmed"):
+                pair.confirmed = True
 
 
 def perform_regrowth(ctx: dict, _payload: dict | None = None) -> dict:
@@ -163,7 +273,11 @@ def perform_regrowth(ctx: dict, _payload: dict | None = None) -> dict:
     """
     if ctx.get("regrow_count", 0) == 0 or not ctx.get("compression_report_path"):
         _log(ctx, "perform_regrowth", {"mode": "passthrough"})
-        return {"regrown_sae_path": ctx["compressed_sae_path"]}
+        # Even pass-through regrowth completes one basis-loop round.
+        return {
+            "regrown_sae_path": ctx["compressed_sae_path"],
+            "inner_refine_idx": ctx.get("inner_refine_idx", 0) + 1,
+        }
 
     if ctx.get("regrow") is None:
         raise ValueError(
@@ -196,7 +310,10 @@ def perform_regrowth(ctx: dict, _payload: dict | None = None) -> dict:
     )
     result = regrower.run(output_path)
     _log(ctx, "perform_regrowth", {"mode": "polygram", "n_regrown": len(result.report.populations)})
-    return {"regrown_sae_path": str(output_path)}
+    return {
+        "regrown_sae_path": str(output_path),
+        "inner_refine_idx": ctx.get("inner_refine_idx", 0) + 1,
+    }
 
 
 def project_to_subspace(ctx: dict, _payload: dict | None = None) -> dict:
@@ -266,7 +383,12 @@ def fine_tune_model(ctx: dict, _payload: dict | None = None) -> dict:
 
 
 def _run_v01_smoke_fine_tune(ctx: dict, model, input_ids) -> dict:
-    """v0.1 4-step smoke loop. Preserves the byte-equivalence safety net."""
+    """v0.1 4-step smoke loop. Preserves the byte-equivalence safety net.
+
+    Also accumulates ``tokens_seen_in_task`` for the v0.2 token_budget
+    trigger and adds the consumed input_ids to the replay buffer when
+    one is registered.
+    """
     from saeforge.utils.lazy import require_extra
 
     torch = require_extra("torch", "torch")
@@ -280,6 +402,7 @@ def _run_v01_smoke_fine_tune(ctx: dict, model, input_ids) -> dict:
     optim = torch.optim.AdamW(module.parameters(), lr=lr)
     input_ids = input_ids.to(device)
     losses: list[float] = []
+    tokens_seen = 0
     for _ in range(n_steps):
         logits = module(input_ids)
         targets = input_ids[:, 1:]
@@ -289,7 +412,10 @@ def _run_v01_smoke_fine_tune(ctx: dict, model, input_ids) -> dict:
         loss.backward()
         optim.step()
         losses.append(float(loss.item()))
+        tokens_seen += int(input_ids.numel())
     module.eval()
+
+    _add_to_replay_buffer(ctx, input_ids)
 
     output_dir = Path(ctx["output_dir"])
     finetuned_dir = output_dir / "finetuned"
@@ -299,7 +425,64 @@ def _run_v01_smoke_fine_tune(ctx: dict, model, input_ids) -> dict:
         "fine_tune_model",
         {"mode": "trained", "n_steps": n_steps, "loss_first": losses[0], "loss_last": losses[-1]},
     )
-    return {"finetuned_model_path": str(finetuned_dir), "_finetune_losses": losses}
+    return {
+        "finetuned_model_path": str(finetuned_dir),
+        "_finetune_losses": losses,
+        "tokens_seen_in_task": ctx.get("tokens_seen_in_task", 0) + tokens_seen,
+    }
+
+
+def _add_to_replay_buffer(ctx: dict, sequence) -> None:
+    """Add a sequence to the registered replay buffer, if any."""
+    buffer = ctx.get("_replay_buffer")
+    if buffer is None:
+        return
+    buffer.add(sequence, task_id=ctx.get("task_idx", 0))
+
+
+def _wrap_iterator_for_continual(ctx: dict, iterator):
+    """Compose replay-mixing + token counting + buffer-add around the iterator.
+
+    The returned generator yields the same shape as the input. As a side
+    effect each yielded batch increments ``ctx['tokens_seen_in_task']``
+    and is added to the replay buffer when one is registered.
+
+    When ``replay_ratio == 0`` or the buffer is missing/empty, no replay
+    mixing happens (counting and buffer-add still run).
+    """
+    from saeforge.training import MixedIterator
+
+    buffer = ctx.get("_replay_buffer")
+    replay_ratio = ctx.get("replay_ratio", 0.0)
+    if buffer is not None and replay_ratio > 0:
+        iterator = MixedIterator(iterator, buffer, replay_ratio=replay_ratio)
+
+    def _instrumented():
+        for batch in iterator:
+            ctx["tokens_seen_in_task"] = ctx.get("tokens_seen_in_task", 0) + _batch_tokens(batch)
+            if buffer is not None:
+                buffer.add(batch, task_id=ctx.get("task_idx", 0))
+            yield batch
+
+    return _instrumented()
+
+
+def _batch_tokens(batch) -> int:
+    """Best-effort token count for a batch — handles tensors, dicts, tuples."""
+    # Common cases: a tensor of input_ids, a dict with 'input_ids', a
+    # (input_ids, labels) tuple. Anything else: count 0 and let the user
+    # fix the iterator if precise budgeting matters.
+    if hasattr(batch, "numel"):
+        return int(batch.numel())
+    if isinstance(batch, dict):
+        ids = batch.get("input_ids")
+        if ids is not None and hasattr(ids, "numel"):
+            return int(ids.numel())
+    if isinstance(batch, (list, tuple)) and batch:
+        first = batch[0]
+        if hasattr(first, "numel"):
+            return int(first.numel())
+    return 0
 
 
 def _run_recipe_fine_tune(ctx: dict, model, corpus, iterator) -> dict:
@@ -325,6 +508,9 @@ def _run_recipe_fine_tune(ctx: dict, model, corpus, iterator) -> dict:
             batch_size=ctx.get("finetune_batch_size", 8),
             sequence_length=ctx.get("finetune_seq_len", 512),
         )
+
+    # Wrap the iterator with replay mixing + token counting + buffer add.
+    iterator = _wrap_iterator_for_continual(ctx, iterator)
 
     config = TrainingConfig(
         total_steps=ctx.get("finetune_total_steps", ctx.get("finetune_steps", 1000)),
@@ -368,7 +554,14 @@ def _run_recipe_fine_tune(ctx: dict, model, corpus, iterator) -> dict:
 
 
 def evaluate_faithfulness(ctx: dict, _payload: dict | None = None) -> dict:
-    """Compute the per-token KL between the forged native model and the host."""
+    """Compute KL faithfulness, then derive ``should_continue`` and ``advance_stream``.
+
+    Both predicate fields are written here so the FSM's `eval_done`
+    guards can be a flat ctx read. The stream-loop dominance contract
+    (``advance_stream == true`` wins over ``should_continue``) lives
+    in the guard expression `refine_same_shard`, which requires
+    ``advance_stream == false``.
+    """
     from saeforge.forge import _kl_from_input_ids
 
     host = ctx.get("_host_model")
@@ -388,16 +581,117 @@ def evaluate_faithfulness(ctx: dict, _payload: dict | None = None) -> dict:
         and (kl >= min_faith if min_faith == 0.0 else kl <= min_faith * -1)
         and perplexity < best_perp
     )
+
+    advance_stream = _compute_advance_stream(ctx, kl, perplexity)
+
     _log(
         ctx,
         "evaluate_faithfulness",
-        {"faithfulness": kl, "perplexity": perplexity, "should_continue": should_continue},
+        {
+            "faithfulness": kl,
+            "perplexity": perplexity,
+            "should_continue": should_continue,
+            "advance_stream": advance_stream,
+        },
     )
     return {
         "faithfulness": float(kl),
         "perplexity": perplexity,
         "should_continue": should_continue,
+        "advance_stream": advance_stream,
     }
+
+
+def _compute_advance_stream(ctx: dict, kl: float, perplexity: float) -> bool:
+    """Decide whether the stream loop should advance to the next task.
+
+    Implements the three ``task_trigger`` modes from the spec. The
+    function appends to ``ctx['recent_eval_losses']`` (capped at 3) for
+    the loss_delta path so subsequent calls have the window they need.
+    All three modes share the budget guard ``task_idx + 1 < n_tasks``.
+    """
+    n_tasks = ctx.get("n_tasks", 1)
+    task_idx = ctx.get("task_idx", 0)
+    if task_idx + 1 >= n_tasks:
+        return False
+
+    trigger = ctx.get("task_trigger", "labeled")
+    if trigger == "labeled":
+        return True
+
+    if trigger == "token_budget":
+        budget = ctx.get("token_budget_per_task", 0)
+        seen = ctx.get("tokens_seen_in_task", 0)
+        return budget > 0 and seen >= budget
+
+    if trigger == "loss_delta":
+        # Use perplexity as the held-out probe signal — already computed
+        # from the same KL the action just measured. Append, then check.
+        history = list(ctx.get("recent_eval_losses", []))
+        history.append(perplexity)
+        history = history[-3:]
+        ctx["recent_eval_losses"] = history
+        if len(history) < 3:
+            return False
+        threshold = ctx.get("loss_delta_threshold", 0.0)
+        prior_mean = (history[0] + history[1]) / 2.0
+        return (history[-1] - prior_mean) > threshold
+
+    raise ValueError(
+        f"unknown task_trigger {trigger!r}; expected "
+        "'labeled' | 'token_budget' | 'loss_delta'"
+    )
+
+
+def advance_to_next_task(ctx: dict, _payload: dict | None = None) -> dict:
+    """Stream-loop advance: install next task's iterator, reset per-task counters.
+
+    Loud-warns when ``n_tasks > 1`` but no TaskStream is registered. In
+    that case the FSM still advances ``task_idx``, but the next fine-tune
+    will reuse the previous task's iterator (likely already exhausted) —
+    the loud warning surfaces the misconfiguration immediately instead of
+    silently producing a degenerate run.
+    """
+    import warnings
+
+    from saeforge.training import task_stream
+
+    handle = ctx.get("task_iterator_id") or ""
+    next_iterator = None
+    if handle:
+        try:
+            stream = task_stream.get(handle)
+            next_iterator = stream.next()
+        except KeyError:
+            next_iterator = None
+    elif ctx.get("n_tasks", 1) > 1:
+        warnings.warn(
+            f"advance_to_next_task: n_tasks={ctx.get('n_tasks')} > 1 but no "
+            "TaskStream is registered (ForgePipeline(task_stream=...) was not "
+            "set). The FSM will advance task_idx but the next fine-tune will "
+            "reuse the previous task's iterator. Pass a TaskStream to "
+            "ForgePipeline to enable real cross-shard advancement.",
+            UserWarning,
+            stacklevel=2,
+        )
+
+    delta = {
+        "task_idx": ctx.get("task_idx", 0) + 1,
+        "inner_refine_idx": 0,
+        "tokens_seen_in_task": 0,
+        "current_iter": 0,
+        "recent_eval_losses": [],
+        # Carry forward `final_model_path`, `current_sae_path`, and
+        # `protected_features` implicitly — they are not reset here.
+    }
+    if next_iterator is not None:
+        delta["_finetune_iterator"] = next_iterator
+    _log(
+        ctx,
+        "advance_to_next_task",
+        {"task_idx": delta["task_idx"], "next_iterator_set": next_iterator is not None},
+    )
+    return delta
 
 
 def rotate_for_next_iter(ctx: dict, _payload: dict | None = None) -> dict:
@@ -454,11 +748,13 @@ def _last_log_extra(ctx: dict, action_name: str, key: str):
 
 ACTION_TABLE: dict[str, Any] = {
     "load_sae_and_corpus": load_sae_and_corpus,
+    "scan_activations": scan_activations,
     "compress_with_polygram": compress_with_polygram,
     "perform_regrowth": perform_regrowth,
     "project_to_subspace": project_to_subspace,
     "fine_tune_model": fine_tune_model,
     "evaluate_faithfulness": evaluate_faithfulness,
+    "advance_to_next_task": advance_to_next_task,
     "rotate_for_next_iter": rotate_for_next_iter,
     "save_final_model": save_final_model,
     "log_error": log_error,

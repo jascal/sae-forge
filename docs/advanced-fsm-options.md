@@ -1,9 +1,8 @@
 # Advanced FSM options: continual-learning forge
 
-> **Status:** draft, pending implementation. This file is the
-> spec-aligned reference for the v0.2 continual-learning extension to
-> the SaeForge FSM. Once the implementation lands it will move from
-> `openspec/changes/forge-continual-learning-loop/docs/` to `docs/`.
+> **Status:** v0.2.0 (continual-learning extension). Every knob in this
+> document ships behind a default that preserves v0.1 byte-identical
+> behavior — set them explicitly to opt in.
 
 The default `sae-forge forge` command runs a single-shard pipeline:
 load → compress → optional regrow → project → fine-tune → evaluate

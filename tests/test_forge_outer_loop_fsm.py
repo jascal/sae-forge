@@ -11,7 +11,8 @@ def _file_sha256(path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def test_machine_loads_and_has_nine_states():
+def test_machine_loads_and_has_ten_states():
+    """v0.2 topology adds `activations_scanned` between loaded and compressed."""
     pytest.importorskip("orca_runtime_python")
     from saeforge.orchestrator import load_machine_definition
 
@@ -20,6 +21,7 @@ def test_machine_loads_and_has_nine_states():
     assert state_names == {
         "init",
         "loaded",
+        "activations_scanned",
         "compressed",
         "regrown",
         "projected",
@@ -35,13 +37,26 @@ def test_machine_loads_and_has_nine_states():
 
 
 def test_machine_has_required_guards():
+    """v0.2 replaces the v0.1 flat-bool guards with rich orca expressions.
+
+    The v0.1 names (`should_regrow`, `no_regrow`, `should_continue_loop`) are
+    superseded by the v0.2 set: basis-loop guards, stream-loop guards, and
+    refine-loop guards — all ctx-comparison expressions evaluated by orca.
+    """
     pytest.importorskip("orca_runtime_python")
     from saeforge.orchestrator import load_machine_definition
 
     m = load_machine_definition()
+    # Basis loop guards
     assert "should_regrow" in m.guards
-    assert "no_regrow" in m.guards
-    assert "should_continue_loop" in m.guards
+    assert "no_regrow_more_passes" in m.guards
+    assert "no_regrow_done" in m.guards
+    assert "basis_loop_continue" in m.guards
+    assert "basis_loop_done" in m.guards
+    # Stream / refine / terminate guards (rich `and` / `==` expressions)
+    assert "stream_advance" in m.guards
+    assert "refine_same_shard" in m.guards
+    assert "terminate_run" in m.guards
 
 
 def test_fsm_run_synthetic_end_to_end(tiny_gpt2, tiny_synthetic_basis, tmp_path):
@@ -86,6 +101,7 @@ def test_fsm_transitions_log_has_full_sequence(tiny_gpt2, tiny_synthetic_basis, 
     actions_in_order = [entry["action"] for entry in result.extras["transitions_log"]]
     expected = [
         "load_sae_and_corpus",
+        "scan_activations",  # v0.2 inserts a no-op pass-through here under defaults
         "compress_with_polygram",
         "project_to_subspace",
         "fine_tune_model",

@@ -6,9 +6,22 @@ eval / save, structured loss tracking).
 from saeforge.training.config import TrainingConfig, TrainingResult
 from saeforge.training.corpus import build_iterator, take
 from saeforge.training.loop import run_finetune
+from saeforge.training.replay import MixedIterator, ReplayBuffer
 from saeforge.training.schedules import cosine_with_warmup
+from saeforge.training.task_stream import (
+    LabeledTaskStream,
+    LossDriftTaskStream,
+    TaskStream,
+    TokenBudgetTaskStream,
+)
 
 __all__ = [
+    "LabeledTaskStream",
+    "LossDriftTaskStream",
+    "MixedIterator",
+    "ReplayBuffer",
+    "TaskStream",
+    "TokenBudgetTaskStream",
     "TrainingConfig",
     "TrainingResult",
     "build_iterator",
