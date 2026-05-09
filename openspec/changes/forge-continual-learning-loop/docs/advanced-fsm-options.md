@@ -1,0 +1,313 @@
+# Advanced FSM options: continual-learning forge
+
+> **Status:** draft, pending implementation. This file is the
+> spec-aligned reference for the v0.2 continual-learning extension to
+> the SaeForge FSM. Once the implementation lands it will move from
+> `openspec/changes/forge-continual-learning-loop/docs/` to `docs/`.
+
+The default `sae-forge forge` command runs a single-shard pipeline:
+load → compress → optional regrow → project → fine-tune → evaluate
+→ done. That is the v0.1 behavior and remains the default.
+
+This document covers the v0.2 extension: a configurable
+**continual-learning loop** built from three nested loops over the
+same FSM. Every option here defaults to a value that recovers the
+v0.1 single-shard pipeline byte-identically; you only pay for what
+you turn on.
+
+## The three loops
+
+```mermaid
+stateDiagram-v2
+    [*] --> init
+    init --> loaded: start / load_sae_and_corpus
+    loaded --> activations_scanned: load_done / scan_activations
+    activations_scanned --> compressed: scan_done / compress_with_polygram
+
+    compressed --> regrown: next_step_is_regrow / perform_regrowth
+    compressed --> compressed: next_step_is_compress / compress_with_polygram
+    compressed --> projected: next_step_is_project / project_to_subspace
+
+    regrown --> compressed: next_step_is_compress / compress_with_polygram
+    regrown --> projected: next_step_is_project / project_to_subspace
+
+    projected --> finetuned: projection_done / fine_tune_model
+    finetuned --> evaluated: finetune_done / evaluate_faithfulness
+
+    evaluated --> loaded: advance_stream / advance_to_next_task
+    evaluated --> compressed: refine_same_shard / rotate_for_next_iter
+    evaluated --> done: terminate_run / save_final_model
+
+    loaded --> failed: error / log_error
+    activations_scanned --> failed: error / log_error
+    compressed --> failed: error / log_error
+    regrown --> failed: error / log_error
+    projected --> failed: error / log_error
+    finetuned --> failed: error / log_error
+    evaluated --> failed: error / log_error
+
+    done --> [*]
+    failed --> [*]
+
+    note right of evaluated
+        Three exit guards (mutually exclusive,
+        jointly exhaustive):
+          advance_stream   → next shard (stream loop)
+          refine_same_shard → re-converge basis (refine loop)
+          terminate_run    → stop
+    end note
+
+    note right of compressed
+        Inner basis loop: compressed ↔ regrown
+        runs `inner_refine_passes` times before
+        next_step_is_project flips true.
+    end note
+```
+
+Plain ASCII version of the same diagram (renders without mermaid):
+
+```
+┌──────────── stream loop (per task / shard) ────────────┐
+│                                                        │
+│  loaded → activations_scanned → ┌── basis loop ──┐     │
+│                                 │ compressed ↔   │     │
+│                                 │   regrown      │     │
+│                                 └────────────────┘     │
+│            → projected → finetuned → evaluated         │
+│                                       │                │
+│   ┌───────────────────────────────────┘                │
+│   │ advance_stream  →  loaded (next shard) ────────────│ stream
+│   │                                                    │
+│   │ refine same    →  compressed                       │ refine
+│   │                                                    │
+│   └ terminate      →  done                             │
+└────────────────────────────────────────────────────────┘
+```
+
+| Loop | Counter | What it varies | When to use |
+|------|---------|----------------|-------------|
+| Stream (outer) | `task_idx` | Data shard | Continual learning, multi-domain training |
+| Refine (middle) | `current_iter` | Same shard, re-converge basis | Single-shard quality (existing v0.1) |
+| Basis (inner) | `inner_refine_idx` | Compress↔regrow refinement | Polish the basis before projecting |
+
+The loops compose. A run with `n_tasks=3, iterations=2,
+inner_refine_passes=2` runs *three* shards, *two* refine iterations
+each, with *two* compress↔regrow passes per refine iteration — twelve
+total project+fine-tune cycles.
+
+## Options reference
+
+### Stream loop (outer)
+
+| Option | Default | Range | Meaning |
+|--------|---------|-------|---------|
+| `--n-tasks` | 1 | ≥1 | Hard upper bound on shards consumed |
+| `--task-trigger` | `labeled` | `labeled \| token_budget \| loss_delta` | What advances the stream |
+| `--token-budget-per-task` | 0 | ≥0 | (token_budget) advance after this many tokens fine-tuned |
+| `--loss-delta-threshold` | 0.0 | ≥0.0 | (loss_delta) advance when held-out loss climbs by this much |
+
+#### `task_trigger` choices
+
+- **`labeled`** — the corpus is a finite list of explicit shards. The
+  stream advances after each shard's eval until `task_idx + 1 == n_tasks`.
+  Use this when your data is already partitioned (e.g. one shard per
+  domain, one per time period, one per language).
+- **`token_budget`** — there is one continuous data source, and you
+  want to chunk it by tokens processed. Advance after each fine-tune
+  whose `tokens_seen_in_task >= token_budget_per_task`. Use this for
+  *undifferentiated drift* — a continuous stream with no labels.
+- **`loss_delta`** — same continuous source, but advance on a *signal*
+  rather than a budget. The held-out probe loss is tracked in a
+  three-element sliding window; when the latest reading exceeds the
+  mean of the prior two by more than `loss_delta_threshold`, the
+  stream advances. Use this when you don't know in advance how much
+  data each "task" needs.
+
+The three triggers all share one contract: the action
+`evaluate_task_advance` writes a single boolean
+`ctx.advance_stream` based on the configured trigger. The FSM only
+ever reads that bool. Adding a fourth trigger is a Python change,
+not an FSM change.
+
+### Basis loop (inner)
+
+| Option | Default | Range | Meaning |
+|--------|---------|-------|---------|
+| `--inner-refine-passes` | 1 | ≥1 | Compress↔regrow rounds before projecting |
+| `--protect-top-k` | 0 | ≥0 | Number of features the compressor cannot remove |
+| `--protect-score` | `mean_act` | `mean_act \| usage \| grad_importance` | How protected features are ranked |
+
+`inner_refine_passes=1` (default) is single-pass: one compress, one
+optional regrow, exit to projected. `=2` adds a second compress
+that prunes anything dead in the regrowth output. `=3+` is rarely
+useful — diminishing returns and you are spending compress passes
+on increasingly tiny improvements.
+
+#### `protect_score` choices
+
+- **`mean_act`** (default) — score features by `mean over buffer of |z_i|`
+  where `z = SAE.encode(tokens)`. Picks features that fire *strongly*.
+  Cheap, no backward pass.
+- **`usage`** — score by activation frequency (`fraction of tokens
+  where z_i > 0`). Picks features that fire *often* but maybe weakly.
+  Useful if your downstream task cares about coverage, not magnitude.
+- **`grad_importance`** — score by `|z_i * dL/dz_i|` against
+  reconstruction loss. Closest to EWC's Fisher information; the most
+  expensive option (one backward per buffer) but the most principled
+  for catastrophic-forgetting prevention.
+
+### Replay (fine-tune)
+
+| Option | Default | Range | Meaning |
+|--------|---------|-------|---------|
+| `--replay-ratio` | 0.0 | [0.0, 1.0] | Fraction of fine-tune tokens drawn from the replay buffer |
+| `--replay-buffer-size` | 0 | ≥0 | Buffer capacity in sequences (0 disables) |
+| `--replay-policy` | `reservoir` | `reservoir \| recent_window \| per_task` | Buffer maintenance strategy |
+
+#### `replay_policy` choices
+
+- **`reservoir`** — classic reservoir sampling over the entire stream
+  history. Each new sequence has decreasing odds of being kept. Good
+  when you want unbiased coverage of the past.
+- **`recent_window`** — FIFO ring of the last `replay_buffer_size`
+  sequences. Cheap; biased toward recency. Good when "recent" is
+  what you care about (e.g. recent-domain drift).
+- **`per_task`** — stratified across `task_idx`, with
+  `replay_buffer_size / n_tasks` slots per task. **Best for
+  catastrophic forgetting**: every past task gets equal representation.
+  Requires `task_trigger == "labeled"`.
+
+`replay_ratio=0` or `replay_buffer_size=0` disables replay. They are
+both required nonzero to have any effect.
+
+## Recipes
+
+### Pattern 1: per-task compress/regrow with replay
+
+The cleanest continual-learning configuration. Each task gets one
+fresh compress+regrow on its own data, fine-tuned with a fraction
+of replay from prior tasks.
+
+```bash
+sae-forge forge \
+  --sae-checkpoint base.safetensors \
+  --host-model gpt2 \
+  --output-dir out/ \
+  --n-tasks 5 \
+  --task-trigger labeled \
+  --regrow-count 32 \
+  --replay-ratio 0.25 \
+  --replay-buffer-size 1024 \
+  --replay-policy per_task
+```
+
+Behavior: five labeled shards, on each shard the basis is
+recompressed and regrown (32 new feature slots), then the projected
+model is fine-tuned with 25% of every batch coming from the replay
+buffer. The buffer keeps ≈205 sequences per past task, stratified.
+
+### Pattern 2: protected-feature compression (structural EWC)
+
+Same as pattern 1, but freeze the top-32 features by usage so the
+compressor cannot remove what carried prior-task semantics.
+
+```bash
+sae-forge forge \
+  --sae-checkpoint base.safetensors \
+  --host-model gpt2 \
+  --output-dir out/ \
+  --n-tasks 5 \
+  --task-trigger labeled \
+  --regrow-count 32 \
+  --protect-top-k 32 \
+  --protect-score mean_act \
+  --replay-ratio 0.25 \
+  --replay-buffer-size 1024 \
+  --replay-policy per_task
+```
+
+Behavior: in addition to pattern 1, `scan_activations` runs before
+each compress and pins the 32 highest-mean-activation features. Those
+indices survive every subsequent compression. The protected set is
+*re-scored* each task, so the pinned features evolve with the data —
+they are not frozen for all time, only protected against the next
+compress.
+
+### Pattern 3: drift-triggered single-stream learning
+
+No labels, one continuous corpus. Detect drift via held-out loss,
+advance when it climbs.
+
+```bash
+sae-forge forge \
+  --sae-checkpoint base.safetensors \
+  --host-model gpt2 \
+  --output-dir out/ \
+  --n-tasks 20 \
+  --task-trigger loss_delta \
+  --loss-delta-threshold 0.05 \
+  --regrow-count 16 \
+  --inner-refine-passes 2 \
+  --protect-top-k 32 \
+  --replay-ratio 0.15 \
+  --replay-buffer-size 2048 \
+  --replay-policy reservoir
+```
+
+Behavior: up to 20 advances total. Each "task" runs until the
+held-out probe's loss exceeds its three-window mean by more than
+0.05. On each advance: scan_activations → compress (with 32
+protected) → regrow → compress again (the inner refinement) →
+project → fine-tune with 15% reservoir replay. `per_task` policy is
+not appropriate here because there are no labels.
+
+## Debugging
+
+The `transitions_log` field in the final context records every FSM
+transition. Reading it tells you exactly which loops fired:
+
+```python
+log = ctx["transitions_log"]
+# Stream loop count:
+n_stream_advances = sum(1 for e in log if e["from_state"] == "evaluated"
+                                       and e["to_state"] == "loaded")
+# Refine loop count (per task):
+n_refines = sum(1 for e in log if e["from_state"] == "evaluated"
+                                and e["to_state"] == "compressed")
+# Basis loop count (per task):
+n_basis_iter = sum(1 for e in log if e["from_state"] == "regrown"
+                                   and e["to_state"] == "compressed")
+```
+
+Each entry also carries `wall_clock_ms` so you can spot bottlenecks
+(typically `project_to_subspace` and `fine_tune_model`).
+
+If a run fails to terminate, check `ctx["_transition_count"]`. The
+orchestrator raises `RuntimeError` at 1000 transitions to protect
+against guard-write bugs (typically: an action forgot to advance
+`next_basis_step`).
+
+## Why three loops, not one
+
+A single counter could drive everything, but conflating the loops
+loses the information you need to diagnose what's happening:
+
+- Stream loop = data-driven (next shard).
+- Refine loop = convergence-driven (this shard's basis is not yet
+  settled).
+- Basis loop = structural (compress↔regrow has not yet settled).
+
+When a run stops improving, knowing *which* counter is at its limit
+tells you *why*. Mixing them would mean a single "should we keep
+going?" predicate hides what kind of progress (or stagnation) is
+happening.
+
+## Open question: Polygram do_not_remove
+
+The protected-features path requires Polygram's `Compressor` to
+honor a do-not-remove set. If Polygram does not yet expose that
+argument, sae-forge falls back to a workaround: post-filtering the
+`ValidationReport` to mark protected features as confirmed in every
+validation pair so the compressor cannot drop them. This workaround
+is correct but slightly indirect; an upstream Polygram addition is
+preferred. See `tasks.md` §10 for status.
