@@ -133,6 +133,10 @@
 - [ ] 8.17 `test_scan_activations_seeded_deterministic`: with `protect_top_k=4` and a fixed seed, two independent runs of `scan_activations` on the same buffer produce identical `feature_usage` vectors and identical `protected_features` lists
 - [ ] 8.18 `test_full_pipeline_seeded_two_runs_byte_identical`: end-to-end FSM run with `n_tasks=2, protect_top_k=4, replay_ratio=0.25`, fixed seeds — two runs produce SHA-256-identical `forged.safetensors`. Catches RNG leaks in any of the new actions (scan, replay sampling, task advance)
 
+### Integration smoke (token_budget + replay)
+
+- [ ] 8.19 `test_stream_token_budget_with_replay_smoke`: end-to-end synthetic run with `n_tasks=3, task_trigger="token_budget", token_budget_per_task=256, replay_ratio=0.25, replay_buffer_size=128, replay_policy="reservoir"`. Asserts: (a) FSM reaches `done` with `task_idx == 2`; (b) the replay buffer is non-empty after task 0 and contributes to fine-tune batches in tasks 1 and 2 (verified via a counter inside `MixedIterator`); (c) `tokens_seen_in_task` resets to 0 on each `advance_to_next_task`. Confirms the two new subsystems compose
+
 ## 9. Documentation
 
 - [x] 9.0 Draft `openspec/changes/forge-continual-learning-loop/docs/advanced-fsm-options.md` (the spec-aligned draft) so the proposal can be reviewed against the user-facing surface
@@ -156,6 +160,7 @@
 - [ ] 10.1 Audit Polygram's `Compressor` for an existing do-not-remove / pinned-feature API; if absent, file an upstream issue with a proposed signature: `Compressor(report, do_not_remove: set[int] | None = None)`
 - [ ] 10.2 Wire either the upstream addition or the post-filter workaround into `compress_with_polygram` per task 4.4
 - [ ] 10.3 If using the workaround, add a TODO with a link to the Polygram issue and a note in `docs/advanced-fsm-options.md` that the protected-features path uses a Polygram-side workaround pending upstream support
+- [ ] 10.4 **Pre-merge gate.** Before this change is moved out of `openspec/changes/` into `openspec/specs/` (i.e. before the implementation PR is merged), the Polygram upstream issue MUST be filed and its URL linked in: (a) `tasks.md` §10.1, (b) `docs/advanced-fsm-options.md` "Open question" footer, and (c) the in-code TODO in `compress_with_polygram`. This avoids the workaround lingering as the silent default. The proposal PR (this one) ships without the link because the issue is filed during implementation, not during spec review
 
 ## 11. OpenSpec scaffolding
 

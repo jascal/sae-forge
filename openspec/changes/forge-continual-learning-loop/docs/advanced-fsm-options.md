@@ -102,18 +102,18 @@ single-shard pipeline. The "v0.1-equivalent effect" column is what
 each default *means* operationally — i.e., what the system does when
 you leave the knob alone.
 
-| CLI flag | Default | v0.1-equivalent effect |
-|----------|---------|------------------------|
-| `--n-tasks` | `1` | Stream loop disabled; one shard, one pass |
-| `--task-trigger` | `labeled` | Honored only when `n_tasks > 1` |
-| `--token-budget-per-task` | `0` | Inert under defaults |
-| `--loss-delta-threshold` | `0.0` | Inert under defaults |
-| `--inner-refine-passes` | `1` | Basis loop disabled; one compress, one optional regrow |
-| `--protect-top-k` | `0` | `scan_activations` runs as a no-op pass-through; nothing is protected |
-| `--protect-score` | `mean_act` | Honored only when `protect_top_k > 0` |
-| `--replay-ratio` | `0.0` | Replay disabled; fine-tune iterator unchanged |
-| `--replay-buffer-size` | `0` | Buffer never allocated; replay is a no-op even if `replay_ratio > 0` |
-| `--replay-policy` | `reservoir` | Honored only when both replay knobs are non-zero |
+| CLI flag | Default | v0.1-equivalent effect | When to tune |
+|----------|---------|------------------------|--------------|
+| `--n-tasks` | `1` | Stream loop disabled; one shard, one pass | Set `>1` to enable continual learning across shards or chunks |
+| `--task-trigger` | `labeled` | Honored only when `n_tasks > 1` | Pick `labeled` for partitioned data, `token_budget` for fixed-cadence drift, `loss_delta` for adaptive drift |
+| `--token-budget-per-task` | `0` | Inert under defaults | Roughly one epoch per task; smaller = more frequent compress/regrow + more compute |
+| `--loss-delta-threshold` | `0.0` | Inert under defaults | Start at `0.05`; tune to your probe-loss noise floor (smaller = more sensitive) |
+| `--inner-refine-passes` | `1` | Basis loop disabled; one compress, one optional regrow | Increase to `2-3` if regrown features die quickly under the next compress. Rarely useful `>3` |
+| `--protect-top-k` | `0` | `scan_activations` is a no-op; nothing protected | Increase for stronger anti-forgetting on long streams. Rule of thumb: 5-15% of `n_features` |
+| `--protect-score` | `mean_act` | Honored only when `protect_top_k > 0` | `mean_act` cheap and strong, `usage` for coverage, `grad_importance` for principled-but-slow |
+| `--replay-ratio` | `0.0` | Replay disabled; fine-tune iterator unchanged | `0.1-0.3` typical; higher = more old-task fidelity, slower new-task learning |
+| `--replay-buffer-size` | `0` | Buffer never allocated; replay is a no-op even if `replay_ratio > 0` | Size to fit memory. Rule of thumb: 1024-8192 sequences for GPT-2-tier runs |
+| `--replay-policy` | `reservoir` | Honored only when both replay knobs are non-zero | `per_task` for catastrophic-forgetting prevention (needs labels); `reservoir` for unbiased; `recent_window` for recency-biased |
 
 Two knobs in conjunction: `--replay-ratio` and `--replay-buffer-size`
 must *both* be non-zero to enable replay. Either one zero is a no-op.
@@ -145,6 +145,14 @@ must *both* be non-zero to enable replay. Either one zero is a no-op.
   mean of the prior two by more than `loss_delta_threshold`, the
   stream advances. Use this when you don't know in advance how much
   data each "task" needs.
+
+  *Edge case — short runs:* the window requires three eval cycles
+  before it can fire. If a task produces fewer than three evals
+  (uncommon — most runs exceed this on a single shard), `loss_delta`
+  will never advance the stream and the run will exit naturally at
+  the `n_tasks` budget. This is **intentional conservatism**: better
+  to stay on the current task one extra cycle than to fire on a
+  two-point trend that's almost certainly noise.
 
 ##### Choosing `task_trigger`: concrete scenarios
 
