@@ -16,12 +16,23 @@ feature scales rather than a degenerated unit-norm basis.
 
 ## Status
 
-Pre-alpha. v0 milestone: working end-to-end on GPT-2-small + a toy
-compressed SAE. v0.2 (multi-architecture-support): Llama-3 and
-Gemma-2 host families now go through the same projection pipeline as
-GPT-2 via the ``saeforge.adapters`` registry. Pythia / GPT-NeoX
-deferred to a follow-up. New work is staged through OpenSpec changes —
-see ``openspec/changes/``.
+Pre-alpha. Working end-to-end on GPT-2-small + a toy compressed SAE.
+Recent landed work:
+
+- **multi-architecture-support** (0.2.0): Llama-3 and Gemma-2 host
+  families now project through the same pipeline as GPT-2 via the
+  ``saeforge.adapters`` registry. Pythia / GPT-NeoX deferred.
+- **forge-finetune-recipe**: cosine-LR + warmup, gradient clipping,
+  optional gradient checkpointing, optional bf16/fp16 autocast,
+  periodic eval/save, structured loss tracking. See
+  [`docs/finetune-recipe.md`](docs/finetune-recipe.md).
+- **forge-continual-learning-loop**: three-loop continual-learning
+  topology (stream / refine / basis), protected-feature compression
+  (structural EWC), replay buffer for fine-tune. All knobs default to
+  values that recover the single-shard pipeline byte-identically. See
+  [`docs/advanced-fsm-options.md`](docs/advanced-fsm-options.md).
+
+New work is staged through OpenSpec changes — see ``openspec/changes/``.
 
 ## Install
 
@@ -34,7 +45,8 @@ Optional extras: `[plot]` (matplotlib), `[notebook]` (jupyter +
 matplotlib), `[torch]` (torch + transformers — required for `NativeModel`
 construction, `SubspaceProjector` projection from a real source model, and
 fine-tuning), `[polygram]` (the upstream compressed-SAE producer),
-`[orca]` (`orca-runtime-python` for the v0.1 FSM orchestrator).
+`[orca]` (`orca-runtime-python` for the FSM orchestrator that drives the
+forge pipeline + the continual-learning extensions).
 
 ### Setting up `.venv`
 
@@ -233,7 +245,7 @@ the turn-key path.
 > the canonical spec) lives in [`docs/algorithm.md`](docs/algorithm.md).
 > Read it before changing the projector or proposing a v1 architecture.
 
-> **Fine-tune recipe (v0.3).** The training loop (cosine LR + warmup,
+> **Fine-tune recipe.** The training loop (cosine LR + warmup,
 > gradient clipping, optional gradient checkpointing, optional bf16/
 > fp16 autocast, periodic eval, periodic saves, structured loss
 > tracking) lives in [`docs/finetune-recipe.md`](docs/finetune-recipe.md).
@@ -241,13 +253,14 @@ the turn-key path.
 > data flows where nothing should leak to remote services. The
 > headline demo is [`examples/forge_gemma2_2b.py`](examples/forge_gemma2_2b.py).
 
-> **Continual-learning loop (v0.2).** The single-shard pipeline above
-> is the v0.1 default. v0.2 adds three nested loops on top of the same
-> FSM — *stream* (per shard), *refine* (per-shard convergence),
-> *basis* (compress↔regrow refinement) — plus protected-feature
-> compression (structural EWC) and a replay buffer for fine-tune. All
-> opt-in behind defaults that recover v0.1 byte-identical behavior.
-> See [`docs/advanced-fsm-options.md`](docs/advanced-fsm-options.md) for
+> **Continual-learning loop.** The single-shard pipeline above is the
+> default. The continual-learning extension adds three nested loops on
+> top of the same FSM — *stream* (per shard), *refine* (per-shard
+> convergence), *basis* (compress↔regrow refinement) — plus
+> protected-feature compression (structural EWC) and a replay buffer
+> for fine-tune. All opt-in behind defaults that recover the
+> single-shard pipeline byte-identically. See
+> [`docs/advanced-fsm-options.md`](docs/advanced-fsm-options.md) for
 > the full knob reference, the decision tree for choosing a
 > `task_trigger`, and worked recipes per pattern.
 
@@ -275,6 +288,41 @@ forge = ForgePipeline(
 result = forge.run(output_dir="forged/")
 print(result.faithfulness_kl, result.n_params)
 ```
+
+### Continual learning
+
+Opt in by setting any of `n_tasks > 1`, `inner_refine_passes > 1`,
+`protect_top_k > 0`, or `replay_ratio > 0`. Defaults are
+single-shard, byte-identical with the snippet above.
+
+```python
+from saeforge import ForgePipeline
+from saeforge.training import LabeledTaskStream
+
+forge = ForgePipeline(
+    basis=basis,
+    projector=projector,
+    orchestrator="fsm",
+    # Stream loop: five labeled task shards
+    n_tasks=5,
+    task_trigger="labeled",
+    task_stream=LabeledTaskStream([shard1, shard2, shard3, shard4, shard5]),
+    # Basis loop: one extra compress↔regrow refinement pass per shard
+    inner_refine_passes=2,
+    regrow_count=32,
+    # Structural EWC: pin the top-32 highest-magnitude features per shard
+    protect_top_k=32,
+    # Replay: 25% of fine-tune batches drawn from past tasks, stratified
+    replay_ratio=0.25,
+    replay_buffer_size=1024,
+    replay_policy="per_task",
+)
+result = forge.run(output_dir="forged/")
+```
+
+The full knob reference, decision tree for choosing a `task_trigger`,
+and worked recipes per pattern live in
+[`docs/advanced-fsm-options.md`](docs/advanced-fsm-options.md).
 
 ### CLI
 
