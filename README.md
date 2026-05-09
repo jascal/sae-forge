@@ -241,6 +241,16 @@ the turn-key path.
 > data flows where nothing should leak to remote services. The
 > headline demo is [`examples/forge_gemma2_2b.py`](examples/forge_gemma2_2b.py).
 
+> **Continual-learning loop (v0.2).** The single-shard pipeline above
+> is the v0.1 default. v0.2 adds three nested loops on top of the same
+> FSM — *stream* (per shard), *refine* (per-shard convergence),
+> *basis* (compress↔regrow refinement) — plus protected-feature
+> compression (structural EWC) and a replay buffer for fine-tune. All
+> opt-in behind defaults that recover v0.1 byte-identical behavior.
+> See [`docs/advanced-fsm-options.md`](docs/advanced-fsm-options.md) for
+> the full knob reference, the decision tree for choosing a
+> `task_trigger`, and worked recipes per pattern.
+
 ## Quickstart
 
 ```python

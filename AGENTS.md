@@ -91,11 +91,23 @@ with `openspec validate <change-name>` before working on it; archive via
   filesystem path resolution.
 - orca-lang's guard grammar is intentionally restricted to comparison
   + boolean composition (`==`, `!=`, `<`, `>`, `<=`, `>=`, `and`,
-  `or`, `not`, parens, null checks). Arithmetic and complex
-  predicates belong in actions. The forge-outer-loop FSM follows the
-  idiomatic pattern: `evaluate_faithfulness` computes the loop
-  predicate in Python and writes a flat `should_continue: bool`; the
-  FSM guard is the trivial `ctx.should_continue == true`.
+  `or`, `not`, parens, null checks, var-on-RHS). Arithmetic and
+  complex predicates belong in actions. The v0.2 FSM uses the rich
+  guard grammar directly — e.g. `refine_same_shard` is the orca
+  expression `ctx.advance_stream == false and ctx.should_continue
+  == true`, evaluated by the runtime — rather than precomputing
+  flat-bool flags in Python. Only predicates that genuinely need
+  Python (loss-window deltas, task-trigger dispatch) live in the
+  action layer.
+- **Continual learning** (v0.2): a three-loop topology layered onto
+  the same FSM — stream loop (per shard), refine loop (per-shard
+  convergence), basis loop (compress↔regrow refinement). All knobs
+  default to v0.1-equivalent values; opt in by setting any of
+  `n_tasks > 1`, `inner_refine_passes > 1`, `protect_top_k > 0`, or
+  `replay_ratio > 0` on `ForgePipeline`. See
+  [`docs/advanced-fsm-options.md`](docs/advanced-fsm-options.md) for
+  the full knob reference, decision-tree for picking a `task_trigger`,
+  and worked recipes per pattern.
 - This is **classical** orca-lang. q-orca-lang (the quantum extension)
   is never imported on the default forge path; `--quantum-aware` only
   influences which Polygram `confirmer` is selected inside
