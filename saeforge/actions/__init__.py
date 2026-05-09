@@ -234,11 +234,19 @@ def compress_with_polygram(ctx: dict, _payload: dict | None = None) -> dict:
 def _apply_protected_postfilter(validation, protected_indices: list[int]) -> None:
     """Mark protected feature indices as confirmed in every validation pair.
 
-    Mutates ``validation.pairs`` so Polygram's Compressor sees those
-    features as keep-don't-merge in every pair. Tolerant of older
-    ValidationReport schemas that lack a ``confirmed`` field per pair —
-    skips silently if the schema doesn't match (the protection is best-
-    effort until we move to a do_not_remove kwarg upstream).
+    **Mutates ``validation.pairs`` in place.** This is intentional —
+    Polygram's Compressor consumes the ValidationReport object directly,
+    so the mutation needs to be visible to the same call. Callers should
+    NOT persist the same ``validation`` object back to disk after this
+    runs without re-loading from JSON; the on-disk report should remain
+    the authoritative pre-protection record. The compress action follows
+    this contract by loading via ``ValidationReport.from_json`` (fresh
+    object every call), mutating, and discarding.
+
+    Tolerant of older ValidationReport schemas that lack a ``confirmed``
+    field per pair — skips silently if the schema doesn't match (the
+    protection is best-effort until the upstream ``do_not_remove`` kwarg
+    lands; tracked in tasks.md §10.4).
     """
     if not hasattr(validation, "pairs"):
         return
@@ -636,7 +644,16 @@ def _compute_advance_stream(ctx: dict, kl: float, perplexity: float) -> bool:
 
 
 def advance_to_next_task(ctx: dict, _payload: dict | None = None) -> dict:
-    """Stream-loop advance: install next task's iterator, reset per-task counters."""
+    """Stream-loop advance: install next task's iterator, reset per-task counters.
+
+    Loud-warns when ``n_tasks > 1`` but no TaskStream is registered. In
+    that case the FSM still advances ``task_idx``, but the next fine-tune
+    will reuse the previous task's iterator (likely already exhausted) —
+    the loud warning surfaces the misconfiguration immediately instead of
+    silently producing a degenerate run.
+    """
+    import warnings
+
     from saeforge.training import task_stream
 
     handle = ctx.get("task_iterator_id") or ""
@@ -647,6 +664,16 @@ def advance_to_next_task(ctx: dict, _payload: dict | None = None) -> dict:
             next_iterator = stream.next()
         except KeyError:
             next_iterator = None
+    elif ctx.get("n_tasks", 1) > 1:
+        warnings.warn(
+            f"advance_to_next_task: n_tasks={ctx.get('n_tasks')} > 1 but no "
+            "TaskStream is registered (ForgePipeline(task_stream=...) was not "
+            "set). The FSM will advance task_idx but the next fine-tune will "
+            "reuse the previous task's iterator. Pass a TaskStream to "
+            "ForgePipeline to enable real cross-shard advancement.",
+            UserWarning,
+            stacklevel=2,
+        )
 
     delta = {
         "task_idx": ctx.get("task_idx", 0) + 1,
