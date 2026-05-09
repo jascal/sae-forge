@@ -59,8 +59,11 @@ intel = ["torch==2.2.2", "transformers>=4.46,<4.50", "numpy<2"]
 # BehaviouralValidator / Cancellation / from_sae_lens. Polygram 0.1.0
 # also flipped the EpochCompressor defaults to the iterative preset and
 # made Regrower.from_compression_report require explicit model_name and
-# layer; this change adapts sae-forge to that surface.
-polygram = ["polygram>=0.1.0"]
+# layer; this change adapts sae-forge to that surface. Polygram 0.2.0
+# adds the GeometricProfile registry (clustered / uniform-sphere) and
+# the bf16 safetensors slice-path fix; the upgrade is non-breaking
+# (default profile="clustered" is byte-identical to the 0.1.0 path).
+polygram = ["polygram>=0.2.0"]
 # orca-runtime-python — the classical orca-lang FSM runtime that drives
 # the v0.1 forge-outer-loop-fsm orchestrator. Required only for the
 # `--fsm` opt-in path; the default imperative ForgePipeline does not
@@ -76,7 +79,7 @@ all = [
     "jupyter",
     "torch>=2.2",
     "transformers>=4.46",
-    "polygram>=0.0.1",
+    "polygram>=0.2.0",
     "orca-runtime-python>=0.1.27",
     "datasets>=2.16",
 ]
