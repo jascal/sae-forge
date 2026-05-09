@@ -81,6 +81,7 @@ fields directly — no precomputed flat-bool flags.
 ## guards
 
 | Name | Expression |
+|------|------------|
 | should_regrow | ctx.regrow_count > 0 |
 | no_regrow_more_passes | ctx.regrow_count == 0 and ctx.inner_refine_idx < ctx.inner_refine_passes |
 | no_regrow_done | ctx.regrow_count == 0 and ctx.inner_refine_idx >= ctx.inner_refine_passes |
@@ -93,6 +94,7 @@ fields directly — no precomputed flat-bool flags.
 ## transitions
 
 | Source | Event | Guard | Target | Action |
+|--------|-------|-------|--------|--------|
 | init | start |  | loaded | load_sae_and_corpus |
 | loaded | load_done |  | activations_scanned | scan_activations |
 | loaded | error |  | failed | log_error |
@@ -117,6 +119,7 @@ fields directly — no precomputed flat-bool flags.
 ## actions
 
 | Name | Signature |
+|------|-----------|
 | load_sae_and_corpus | (ctx) -> Context |
 | scan_activations | (ctx) -> Context |
 | compress_with_polygram | (ctx) -> Context |
