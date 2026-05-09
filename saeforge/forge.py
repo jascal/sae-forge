@@ -80,6 +80,7 @@ if TYPE_CHECKING:  # pragma: no cover — type-only imports
         EpochCompressionConfig,
         RegrowConfig,
     )
+    from saeforge.training.task_stream import TaskStream  # noqa: F401
 
 
 @dataclass
