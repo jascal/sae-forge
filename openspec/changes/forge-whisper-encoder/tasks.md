@@ -1,0 +1,109 @@
+## 1. NativeModelConfig extension
+
+- [ ] 1.1 Add `output_kind: str = "logits"` field to `NativeModelConfig` (saeforge/model.py); default preserves byte-equivalent v0.3 LM behavior
+- [ ] 1.2 Make `vocab_size` default to `0` (was required); the `__post_init__` invariant `vocab_size > 0` is gated by `output_kind == "logits"`
+- [ ] 1.3 Add `whisper_encoder` to `_SUPPORTED_FAMILIES`; assert that `family == "whisper_encoder"` implies `output_kind == "encoder_states"` and `vocab_size == 0`
+- [ ] 1.4 Update `to_dict` / `from_dict` to round-trip the new fields
+- [ ] 1.5 Add `_build_torch_module` dispatch branch for `whisper_encoder` → `saeforge.adapters.whisper.build_whisper_encoder_module(config)`
+- [ ] 1.6 Tests: NativeModelConfig invalid-combination matrix (vocab=0+logits, vocab>0+encoder_states, whisper_encoder+vocab>0)
+
+## 2. WhisperEncoderAdapter
+
+- [ ] 2.1 New module `saeforge/adapters/whisper.py` exposing `WhisperEncoderAdapter` (subclass of `ArchitectureAdapter`)
+- [ ] 2.2 `family = "whisper_encoder"`; `walk(host, projector)` produces a dict of every encoder weight (per design.md §"Native module shape" projected list)
+- [ ] 2.3 `_extract_encoder(host)` handles both `WhisperForConditionalGeneration` (`.model.encoder`) and `WhisperModel` (`.encoder`)
+- [ ] 2.4 Frozen-copy path for `conv1`, `conv2`, `embed_positions` (no projector call); document the ε_conv accounting in a docstring comment
+- [ ] 2.5 `build_native_config(host, n_features)` reads `host.config.encoder_layers / encoder_attention_heads / d_model / encoder_ffn_dim`; produces `NativeModelConfig(family="whisper_encoder", output_kind="encoder_states", vocab_size=0, ...)`
+- [ ] 2.6 `native_module_class()` returns `ForgedWhisperEncoder` (lazy torch import)
+- [ ] 2.7 `grad_checkpoint_targets(module)` returns `(module.layers, module.embed_positions.weight)` so the recipe path works on Whisper
+- [ ] 2.8 Register adapter at module import time for both `WhisperForConditionalGeneration` and `WhisperModel`
+- [ ] 2.9 Tests in `tests/test_whisper_encoder_adapter.py`: walker shape audit (every key + shape), MHA invariant (encoder is not GQA — `n_kv_heads == num_heads`), frozen-copy check (conv1/conv2/embed_positions match host bit-for-bit), no-randomly-initialized-weights invariant, registry dispatch test (both Whisper classes resolve to the same adapter)
+
+## 3. ForgedWhisperEncoder torch module
+
+- [ ] 3.1 New `nn.Module` `ForgedWhisperEncoder` in `saeforge/adapters/whisper.py` (or `saeforge/whisper_encoder.py` — pick by repo convention; the Llama family lives in adapters/, follow that)
+- [ ] 3.2 Block layout: `pre_layernorm → self_attn → residual → pre_layernorm → mlp → residual` (matches HF Whisper post-LN-ish pre-LN-via-LN-before-each-sublayer)
+- [ ] 3.3 Self-attn: separate `q_proj` / `k_proj` / `v_proj` / `out_proj` Linear layers (Whisper uses Linear, not GPT-2's fused Conv1d); MHA only (no GQA)
+- [ ] 3.4 MLP: `fc1 → gelu → fc2`; activation is GELU, not SiLU (Whisper diverges from Llama here)
+- [ ] 3.5 `forward(input_features)` matches HF's encoder forward signature: `(batch, n_mels, n_frames)` → `(batch, n_frames // 2, hidden_size)` after the conv stem
+- [ ] 3.6 `from_projected_weights(config, weights_dict)` classmethod loads the projected state dict via `load_state_dict(strict=True)`
+- [ ] 3.7 `save_pretrained(dir)` / `load_pretrained(dir)` mirror the existing GPT-2/Llama save patterns; persist a `config.json` derived from `config.to_dict()` and a `model.safetensors` from `state_dict()`
+- [ ] 3.8 Tests in `tests/test_whisper_encoder_module.py`: forward-shape sanity, save/load round-trip, conv-stem-frozen invariant (forging does not change `conv1.weight` etc.)
+
+## 4. Audio eval
+
+- [ ] 4.1 New module `saeforge/audio_eval.py` exposing `cosine_faithfulness(forged, host, audio_features, *, device="cpu") -> float`
+- [ ] 4.2 Computes per-frame cosine similarity between forged encoder output and pre-captured host encoder output; averages across the batch and time axis
+- [ ] 4.3 Returns a Python `float` in `[0.0, 1.0]` (or `[-1.0, 1.0]` if negative cosines surface — clamp to non-negative for the FSM contract since `min_faithfulness >= 0` in the existing predicate logic)
+- [ ] 4.4 Tests in `tests/test_audio_eval.py`: identical states → 1.0; orthogonal states → 0.0; monotone decreasing under additive Gaussian noise; batch axis correctly averaged; fp16/bf16 input handled (via `.float()` in the helper)
+- [ ] 4.5 Document the metric choice in a module-level docstring (cribbed from design.md §"Eval dispatch")
+
+## 5. evaluate_faithfulness dispatch
+
+- [ ] 5.1 In `saeforge/actions/__init__.py`, modify `evaluate_faithfulness` to dispatch on `forged.config.family`
+- [ ] 5.2 LM families (`"gpt2" | "llama" | "gemma2"`) use the existing `_kl_from_input_ids` path verbatim — no behavior change for v0.3 LM forges
+- [ ] 5.3 `"whisper_encoder"` reads `ctx["_eval_audio_features"]` and `ctx["_eval_encoder_states"]`, calls `cosine_faithfulness`, writes the result to the existing `faithfulness` ctx field
+- [ ] 5.4 The `should_continue` predicate logic is unchanged: `min_faithfulness` semantic is reinterpreted as "minimum cosine similarity" for the encoder family — document this in the action's docstring
+- [ ] 5.5 Tests in `tests/test_evaluate_faithfulness_dispatch.py`: LM family routes to KL path (mock `_kl_from_input_ids`, assert called); whisper_encoder routes to cosine (mock `cosine_faithfulness`, assert called); unknown family raises a clear error
+
+## 6. ForgePipeline + FSM context wiring
+
+- [ ] 6.1 Add `eval_audio_features: torch.Tensor | None = None` and `eval_encoder_states: torch.Tensor | None = None` to `ForgePipeline`
+- [ ] 6.2 `_build_fsm_ctx` populates `ctx["_eval_audio_features"]` and `ctx["_eval_encoder_states"]` from the new fields when set
+- [ ] 6.3 Construction-time validation: `eval_audio_features` requires the host to be a Whisper class (`adapter_for(host).family == "whisper_encoder"`); `eval_prompts` is mutually exclusive with `eval_audio_features`
+- [ ] 6.4 `run_synthetic` accepts the new audio-side kwargs alongside the existing text kwargs
+
+## 7. Audio data fixture
+
+- [ ] 7.1 New module `saeforge/audio_data.py` exposing `synthetic_mel_features(seed, batch=1, n_mels=80, n_frames=3000)` — pure-numpy mel-spectrogram synthesis (sine sweep + noise)
+- [ ] 7.2 `tests/conftest.py` gains a `tiny_synthetic_whisper` fixture (39M-class WhisperConfig with d_model=64, encoder_layers=2)
+- [ ] 7.3 Tests confirm the fixture produces a valid `WhisperModel` with `.encoder` accessible
+
+## 8. CLI
+
+- [ ] 8.1 `sae-forge forge --audio-features-path FILE.pt` flag; loads a torch tensor of shape `(batch, n_mels, n_frames)`
+- [ ] 8.2 Mutually exclusive with `--eval-prompts` (argparse-level)
+- [ ] 8.3 Tests in `tests/test_cli.py` for the new flag's argparse contract
+
+## 9. Examples
+
+- [ ] 9.1 New `examples/forge_whisper_synthetic.py` — full synthetic Whisper forge end-to-end (no HF download, no real audio)
+- [ ] 9.2 Add an `examples/test_examples_smoke.py` entry that runs the synthetic Whisper example with a 30s wall-clock budget
+
+## 10. CI / extras
+
+- [ ] 10.1 `pyproject.toml`: add `[audio]` extra pinning `librosa>=0.10` (optional — only the real-audio path needs it; the synthetic fixture path is pure-numpy)
+- [ ] 10.2 `[audio]` is included in the `[all]` extra
+- [ ] 10.3 Update CI matrix to install `[dev,intel,polygram,orca,audio]` so the Whisper smoke runs
+
+## 11. Polygram coordination
+
+- [ ] 11.1 Verify a polygram-compressed Whisper SAE (one of the five-SAE panel checkpoints) loads through `FeatureBasis.from_polygram_checkpoint` end-to-end. The Llama-Scope inspect verified the bf16 path; this confirms the same for Whisper specifically
+- [ ] 11.2 Note in `docs/advanced-fsm-options.md` (or a new `docs/audio-forge.md`) that audio SAE compressions tagged with `profile=uniform-sphere` are the recommended polygram-side setting; sae-forge does not consume the profile but flags the recommendation for users
+
+## 12. Documentation
+
+- [ ] 12.1 New `docs/audio-forge.md` — user-facing reference for forging audio encoders. Covers: when to use it, how to pre-extract mel features, recommended polygram profile, the cosine eval semantics, the conv-stem ε_conv accounting
+- [ ] 12.2 Update `AGENTS.md` "Adapter contract" subsection to mention the encoder-only audio scope and the LM-vs-encoder eval dispatch
+- [ ] 12.3 Update `README.md` Status section bullet for `forge-whisper-encoder`
+
+## 13. Tests (overall)
+
+- [ ] 13.1 The byte-equivalence safety net `test_imperative_and_fsm_byte_equivalent` continues to pass unchanged (LM family default behavior preserved)
+- [ ] 13.2 Total new test count target: ~25 tests across `test_whisper_encoder_adapter.py` (12), `test_whisper_encoder_module.py` (5), `test_audio_eval.py` (8), and `test_evaluate_faithfulness_dispatch.py` (3)
+- [ ] 13.3 No existing tests modified except where the dispatch branch in `evaluate_faithfulness` requires updating a stub return value (LM-path stubs unchanged)
+
+## 14. OpenSpec scaffolding
+
+- [x] 14.1 `openspec/changes/forge-whisper-encoder/proposal.md`
+- [x] 14.2 `openspec/changes/forge-whisper-encoder/design.md`
+- [x] 14.3 `openspec/changes/forge-whisper-encoder/tasks.md` (this file)
+- [x] 14.4 `openspec/changes/forge-whisper-encoder/specs/architecture-adapters/spec.md` (delta — adds `whisper_encoder` family)
+- [x] 14.5 `openspec/changes/forge-whisper-encoder/specs/whisper-encoder-eval/spec.md` (new capability — cosine faithfulness)
+
+## 15. Deferred follow-ups (out of scope for this change)
+
+- [ ] 15.1 **`forge-whisper-decoder`** — full Whisper decoder forge with cross-attention to encoder states. Separate change
+- [ ] 15.2 **Real audio data loaders** — `.wav` / `.flac` ingestion via `librosa`. The synthetic-mel and pre-extracted-features paths cover test + production needs in v0.4
+- [ ] 15.3 **Conv stem projection** — Whisper's `conv1` / `conv2` are frozen-copied today (ε_conv per `docs/algorithm.md` §5). A research follow-up
+- [ ] 15.4 **Whisper-large validation** — adapter is shape-agnostic; tested on tiny in this change. Production validation against a real `openai/whisper-tiny` SAE is a follow-up smoke
