@@ -134,7 +134,7 @@ def scan_activations(ctx: dict, _payload: dict | None = None) -> dict:
     n_features = basis.n_features
     top_k = min(int(ctx["protect_top_k"]), n_features)
 
-    directions = torch.as_tensor(basis.directions, dtype=torch.float32)
+    directions = torch.as_tensor(basis.W_dec, dtype=torch.float32)
     # All three strategies fall back to direction L2 in v0.2.0; the
     # strategy is honored as a config knob so callers can request a
     # different scorer once activation capture lands. Recording which

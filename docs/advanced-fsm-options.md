@@ -16,52 +16,60 @@ you turn on.
 
 ## The three loops
 
+The forge FSM is composed from three nested orca sub-machines —
+`StreamMachine` (outer, shard handling), `RefineMachine` (middle,
+per-shard convergence), and `BasisMachine` (innermost,
+compress/regrow loop). The diagram below is **auto-generated** from
+the parsed hierarchy by `saeforge.machines.visualize.to_mermaid`;
+a CI test (`tests/fsm/test_diagram_drift.py`) asserts this block
+matches the live emit, so it can never drift from the source of
+truth in `saeforge/machines/{stream,refine,basis}.orca.md`.
+
+To regenerate after editing the machine files:
+
+```bash
+sae-forge inspect --fsm-diagram
+```
+
+<!-- BEGIN AUTO-GENERATED FSM DIAGRAM -->
 ```mermaid
 stateDiagram-v2
-    [*] --> init
-    init --> loaded: start / load_sae_and_corpus
-    loaded --> activations_scanned: load_done / scan_activations
-    activations_scanned --> compressed: scan_done / compress_with_polygram
-
-    compressed --> regrown: next_step_is_regrow / perform_regrowth
-    compressed --> compressed: next_step_is_compress / compress_with_polygram
-    compressed --> projected: next_step_is_project / project_to_subspace
-
-    regrown --> compressed: next_step_is_compress / compress_with_polygram
-    regrown --> projected: next_step_is_project / project_to_subspace
-
-    projected --> finetuned: projection_done / fine_tune_model
-    finetuned --> evaluated: finetune_done / evaluate_faithfulness
-
-    evaluated --> loaded: advance_stream / advance_to_next_task
-    evaluated --> compressed: refine_same_shard / rotate_for_next_iter
-    evaluated --> done: terminate_run / save_final_model
-
-    loaded --> failed: error / log_error
-    activations_scanned --> failed: error / log_error
-    compressed --> failed: error / log_error
-    regrown --> failed: error / log_error
-    projected --> failed: error / log_error
-    finetuned --> failed: error / log_error
-    evaluated --> failed: error / log_error
-
-    done --> [*]
-    failed --> [*]
-
-    note right of evaluated
-        Three exit guards (mutually exclusive,
-        jointly exhaustive):
-          advance_stream   → next shard (stream loop)
-          refine_same_shard → re-converge basis (refine loop)
-          terminate_run    → stop
-    end note
-
-    note right of compressed
-        Inner basis loop: compressed ↔ regrown
-        runs `inner_refine_passes` times before
-        next_step_is_project flips true.
-    end note
+  [*] --> init
+  state "streaming" as streaming {
+    [*] --> entering
+    state "refining" as refining {
+      [*] --> starting
+      starting --> compressed : start / compress_with_polygram
+      starting --> [*] : error / log_error
+      compressed --> regrown : compress_done [should_regrow] / perform_regrowth
+      compressed --> compressed : compress_done [no_regrow_more_passes] / compress_with_polygram
+      compressed --> projected : compress_done [no_regrow_done] / project_to_subspace
+      compressed --> [*] : error / log_error
+      regrown --> compressed : regrowth_done [basis_loop_continue] / compress_with_polygram
+      regrown --> projected : regrowth_done [basis_loop_done] / project_to_subspace
+      regrown --> [*] : error / log_error
+      projected --> finetuned : projection_done / fine_tune_model
+      projected --> [*] : error / log_error
+      finetuned --> [*] : finetune_done
+      finetuned --> [*] : error / log_error
+    }
+    entering --> refining : start / load_and_scan
+    entering --> [*] : error / log_error
+    refining --> evaluating : basis_done / evaluate_faithfulness
+    refining --> [*] : error / log_error
+    evaluating --> refining : eval_done [refine_continue] / rotate_for_next_iter
+    evaluating --> [*] : eval_done [refine_exit]
+    evaluating --> [*] : error / log_error
+  }
+  init --> streaming : start
+  init --> [*] : error / log_error
+  streaming --> next_shard : refine_done [stream_advance] / advance_to_next_task
+  streaming --> [*] : refine_done [terminate_run] / save_final_model
+  streaming --> [*] : error / log_error
+  next_shard --> streaming : shard_loaded
+  next_shard --> [*] : error / log_error
 ```
+<!-- END AUTO-GENERATED FSM DIAGRAM -->
 
 Plain ASCII version of the same diagram (renders without mermaid):
 
