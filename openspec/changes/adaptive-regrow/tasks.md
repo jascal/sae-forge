@@ -47,13 +47,18 @@
 
 ## 8. Integration test (synthetic growth scenario)
 
-- [ ] 8.1 New test `test_adaptive_regrow_grows_toward_target` in `tests/fsm/test_adaptive_regrow.py`: drive `BasisMachine` through 5 cycles with synthetic compression results that always over-shrink (n_features_kept always far below n_features_target). Assert `effective_regrow_count` is non-decreasing, bounded above by `regrow_max`, and that the final `current_feature_count` approaches `n_features_target`
+- [ ] 8.1 New test `test_adaptive_regrow_grows_smoothly_toward_target` in `tests/fsm/test_adaptive_regrow.py`. Concrete scenario: start with `current_feature_count = 100`, `n_features_target = 300`, `regrow_count = 5`, `regrow_max = 64`, `regrow_damping = 0.5`, `inner_refine_passes = 6`. Drive `BasisMachine` through 6 cycles with synthetic compression results that always preserve the basis size (n_features_kept = previous count + previous regrow). Assert: (a) `effective_regrow_count` per cycle is in `[5, 64]`; (b) the sequence is monotone non-increasing as the gap closes (controller damps as it approaches target, no overshoot); (c) `current_feature_count` after cycle 6 is in `[260, 300]` (close to target but not exceeding it)
 - [ ] 8.2 New test `test_adaptive_regrow_respects_regrow_max`: synthetic scenario with `gap >> regrow_max`. Assert the controller never exceeds `regrow_max`
 - [ ] 8.3 New test `test_adaptive_regrow_falls_back_to_regrow_count_when_target_reached`: synthetic scenario where `n_features_kept >= n_features_target` from the first cycle. Assert `effective_regrow_count == regrow_count` for every cycle
 
 ## 9. Documentation
 
-- [ ] 9.1 New subsection "Adaptive regrow" under `### Basis loop (inner)` in `docs/advanced-fsm-options.md`. Covers: when to use it, the controller equation, signal source, tuning the damping factor, and the `protect_top_k` interaction caveat
+- [ ] 9.1 New subsection "Adaptive regrow" under `### Basis loop (inner)` in `docs/advanced-fsm-options.md`. Required content:
+  - **When to use it** (back-pressure on per-domain `regrow_count` tuning across multi-shard runs)
+  - **The controller equation** (verbatim from `design.md`, including the cold-start fallback)
+  - **Signal source** (`n_features_kept` from polygram `CompressionReport`; why not loss-based in v1)
+  - **Tuning guidelines** — concrete table of common knob combinations and their growth profiles. At minimum: "start conservative" defaults (damping 0.5, regrow_max ≈ 0.2×target), "hit target faster" (damping → 1.0), "hit target slower / smoother" (damping → 0.25). Tie each to the synthetic test scenario in §8.1 so users can run a tiny example to see the curve
+  - **The `protect_top_k` interaction caveat** (growing basis with fixed protected count shrinks protected fraction; reference the `protect-top-k-ratio` follow-up)
 - [ ] 9.2 The auto-regenerated Mermaid block from task 5.2 lands in this commit. The diagram-drift CI gates the doc update
 - [ ] 9.3 `CHANGELOG.md` `## [Unreleased]` `### Added` entry: "Adaptive regrow controller in BasisMachine. Opt-in via `--adaptive-regrow`. Defaults preserve byte-equivalence with v0.2 fixed-regrow path"
 - [ ] 9.4 New section "Adaptive regrow" in `AGENTS.md` under the FSM heading, pointing readers at `docs/advanced-fsm-options.md` and the controller code in `saeforge/basis.py`

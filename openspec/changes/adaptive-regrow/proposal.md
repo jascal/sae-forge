@@ -104,17 +104,45 @@ Mermaid-diagram regen needed.
 
 ### CLI surface
 
+Four new flags on `sae-forge forge`:
+
+| Flag | Type | Default | Purpose |
+|---|---|---|---|
+| `--adaptive-regrow` | bool | False | Master toggle. Activates the controller. |
+| `--n-features-target N` | int | 0 | Target basis size the controller grows toward. |
+| `--regrow-max N` | int | 0 | Per-cycle upper bound on `effective_regrow_count`. |
+| `--regrow-damping FLOAT` | float | 0.5 | Damping factor `∈ [0.0, 1.0]`. Lower = slower growth. |
+
+`--adaptive-regrow` is mutually-required with `--n-features-target`
+and `--regrow-max` — passing the toggle without both required
+flags raises an argparse error. The legacy `--regrow-count N`
+flag from `forge-continual-learning-loop` continues to work as
+the configured base / fallback.
+
+Typical usage (continual-learning run with adaptive growth toward
+a 300-feature basis, capped at 64 new features per cycle):
+
 ```
-sae-forge forge ... \
+sae-forge forge ./compressed.safetensors \
+  --host-model gpt2 \
+  --output-dir runs/adaptive \
+  --regrow-count 5 \
+  --regrow-layer transformer.h.8 \
   --adaptive-regrow \
+  --n-features-target 300 \
   --regrow-max 64 \
-  --n-features-target 256 \
   --regrow-damping 0.5
 ```
 
-The four flags are mutually-required: passing `--adaptive-regrow`
-without `--regrow-max` and `--n-features-target` raises an
-argparse error. `--regrow-damping` defaults to 0.5.
+Tuning guidance (full version in `docs/advanced-fsm-options.md`):
+
+- **Start conservative.** `--regrow-damping 0.5` and
+  `--regrow-max ≈ 0.2 × n_features_target` produces smooth
+  growth across the basis-loop's `inner_refine_passes` cycles.
+- **Hit the target faster.** Raise `--regrow-damping` toward
+  1.0 (no damping) and/or raise `--regrow-max`.
+- **Hit the target slower / smoother.** Lower damping toward
+  0.25; the controller asymptotes to target over many cycles.
 
 ### Out of scope (deferred)
 
