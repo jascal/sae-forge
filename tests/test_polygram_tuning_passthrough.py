@@ -294,8 +294,13 @@ class TestActionReconstitution:
             "transitions_log": [],
         }
         delta = perform_regrowth(ctx, None)
-        # passthrough returns the compressed path unchanged
-        assert delta == {"regrown_sae_path": "/tmp/whatever.safetensors"}
+        # passthrough returns the compressed path unchanged; v0.3 also
+        # advances the basis-loop counter so the FSM's basis_loop_done
+        # guard exits cleanly even on the no-regrow path.
+        assert delta == {
+            "regrown_sae_path": "/tmp/whatever.safetensors",
+            "inner_refine_idx": 1,
+        }
 
     def test_compress_passthrough_no_validation_report(self, tmp_path: Path):
         from saeforge.actions import compress_with_polygram
@@ -306,7 +311,10 @@ class TestActionReconstitution:
             "transitions_log": [],
         }
         delta = compress_with_polygram(ctx, None)
+        # v0.3 advances the basis-loop counter when regrow_count == 0
+        # (the no-regrow path); see saeforge.actions.compress_with_polygram.
         assert delta == {
             "compressed_sae_path": "/tmp/whatever.safetensors",
             "current_feature_count": 5,
+            "inner_refine_idx": 1,
         }
