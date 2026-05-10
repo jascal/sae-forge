@@ -80,7 +80,17 @@ def _build_parser() -> argparse.ArgumentParser:
         "inspect",
         help="Triage a compressed checkpoint without torch — basis stats only.",
     )
-    inspect.add_argument("checkpoint", help="Polygram-compressed .safetensors checkpoint.")
+    inspect_target = inspect.add_mutually_exclusive_group()
+    inspect_target.add_argument("checkpoint", nargs="?", help="Polygram-compressed .safetensors checkpoint.")
+    inspect_target.add_argument(
+        "--fsm-diagram",
+        action="store_true",
+        help=(
+            "Emit the auto-generated Mermaid diagram of the forge FSM "
+            "hierarchy to stdout. Mutually exclusive with the checkpoint "
+            "positional argument."
+        ),
+    )
     inspect.add_argument("--report", help="Write a markdown summary to this path.")
 
     return parser
@@ -142,6 +152,17 @@ def _cmd_forge(args: argparse.Namespace) -> int:
 
 
 def _cmd_inspect(args: argparse.Namespace) -> int:
+    if getattr(args, "fsm_diagram", False):
+        from saeforge.machines.visualize import to_mermaid
+        from saeforge.orchestrator import load_machine_hierarchy
+
+        print(to_mermaid(load_machine_hierarchy()), end="")
+        return 0
+
+    if not args.checkpoint:
+        print("error: pass either a checkpoint path or --fsm-diagram", file=sys.stderr)
+        return 2
+
     from saeforge import FeatureBasis
 
     basis = FeatureBasis.from_polygram_checkpoint(args.checkpoint)

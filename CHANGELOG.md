@@ -3,6 +3,50 @@
 All notable changes to sae-forge are tracked here. v0 entries land as
 their corresponding OpenSpec change is archived.
 
+## [Unreleased]
+
+### Changed (hierarchical-fsm)
+
+- **FSM refactored into a three-machine hierarchy** —
+  `saeforge/machines/sae_forge.orca.md` (the v0.2 flat ten-state
+  machine) is replaced with three composed sub-machines under the
+  same directory: `stream.orca.md` (outermost, shard handling),
+  `refine.orca.md` (middle, per-shard convergence), and
+  `basis.orca.md` (innermost, compress/regrow loop). Composition
+  uses `orca_runtime_python`'s native `- invoke:` directive +
+  `parse_orca_md_multi`. Internal-only refactor: no public API,
+  CLI, on-disk artifact, or runtime-behavior change. The
+  byte-equivalence acceptance gate
+  (`test_imperative_and_fsm_byte_equivalent`) is green.
+- `transitions_log` entries gain a `machine_path` field
+  (`"stream"` / `"stream/refine"` / `"stream/refine/basis"`) for
+  debugging — additive; existing readers that ignore unknown keys
+  are unaffected.
+- Failure propagation records a new `error_origin_machine` ctx
+  field (deepest origin wins) alongside the unchanged
+  `error_message` — additive; the byte-equivalence test filters it.
+
+### Added (hierarchical-fsm)
+
+- `saeforge.machines.visualize.to_mermaid` — auto-generates a
+  `stateDiagram-v2` block from the parsed hierarchy. Embedded in
+  `docs/advanced-fsm-options.md`; `tests/fsm/test_diagram_drift.py`
+  asserts the doc matches the live emit so drift can't land.
+- `sae-forge inspect --fsm-diagram` — CLI flag that emits the
+  Mermaid diagram to stdout. Mutually exclusive with the
+  `checkpoint` positional argument.
+- `tests/fsm/` test package with sub-machine topology checks,
+  multi-shard hierarchy integration, the runtime compound-state
+  probe, and the diagram-drift gate.
+
+### Fixed (hierarchical-fsm)
+
+- `saeforge.actions.scan_activations` referenced a non-existent
+  `basis.directions` attribute on the `protect_top_k > 0` path
+  (the attribute is `basis.W_dec`). Surfaced by the new
+  `tests/fsm/test_load_and_scan_ordering.py` — the only test that
+  exercises this path with a real basis. One-line correction.
+
 ## [0.3.0] — 2026-05-09
 
 ### Added (forge-continual-learning-loop)

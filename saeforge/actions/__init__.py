@@ -28,10 +28,35 @@ import numpy as np
 
 
 def _log(ctx: dict, name: str, extra: dict | None = None) -> None:
-    entry = {"action": name, "wall_clock_ms": int(time.monotonic() * 1000)}
+    entry = {
+        "action": name,
+        "wall_clock_ms": int(time.monotonic() * 1000),
+        "machine_path": ctx.get("_machine_path", "stream"),
+    }
     if extra:
         entry.update(extra)
     ctx.setdefault("transitions_log", []).append(entry)
+
+
+def load_and_scan(ctx: dict, payload: dict | None = None) -> dict:
+    """Composed RefineMachine entry action: load_sae_and_corpus + scan_activations.
+
+    Replaces the v0.2 two-state pair (``loaded`` + ``activations_scanned``)
+    with one transition action that runs both helpers in order. The
+    ``transitions_log`` records both inner action names — preserving the
+    v0.2 log shape and the byte-equivalence contract.
+
+    Each helper returns a ctx delta dict (or ``None``); we merge them in
+    order so later writes override earlier ones, matching the runtime's
+    standard ``ctx.update(result)`` behavior.
+    """
+    delta: dict = {}
+    for helper in (load_sae_and_corpus, scan_activations):
+        result = helper(ctx, payload)
+        if isinstance(result, dict):
+            delta.update(result)
+            ctx.update(result)  # let the second helper see the first's writes
+    return delta
 
 
 _POLYGRAM_VERSION_HINT = (
@@ -109,7 +134,7 @@ def scan_activations(ctx: dict, _payload: dict | None = None) -> dict:
     n_features = basis.n_features
     top_k = min(int(ctx["protect_top_k"]), n_features)
 
-    directions = torch.as_tensor(basis.directions, dtype=torch.float32)
+    directions = torch.as_tensor(basis.W_dec, dtype=torch.float32)
     # All three strategies fall back to direction L2 in v0.2.0; the
     # strategy is honored as a config knob so callers can request a
     # different scorer once activation capture lands. Recording which
@@ -736,7 +761,15 @@ def save_final_model(ctx: dict, _payload: dict | None = None) -> dict:
 def log_error(ctx: dict, payload: dict | None = None) -> dict:
     msg = (payload or {}).get("error", ctx.get("error_message", "unknown error"))
     _log(ctx, "log_error", {"error": msg})
-    return {"error_message": str(msg)}
+    delta: dict = {"error_message": str(msg)}
+    # error_origin_machine: the deepest sub-machine that originated the
+    # error wins. Each machine's log_error writes its own name as a
+    # fallback; once written, subsequent log_error calls (from machines
+    # higher up the bubble chain) preserve the existing value.
+    if not ctx.get("error_origin_machine"):
+        path = ctx.get("_machine_path", "stream")
+        delta["error_origin_machine"] = path.rsplit("/", 1)[-1]
+    return delta
 
 
 def _last_log_extra(ctx: dict, action_name: str, key: str):
@@ -749,6 +782,7 @@ def _last_log_extra(ctx: dict, action_name: str, key: str):
 ACTION_TABLE: dict[str, Any] = {
     "load_sae_and_corpus": load_sae_and_corpus,
     "scan_activations": scan_activations,
+    "load_and_scan": load_and_scan,
     "compress_with_polygram": compress_with_polygram,
     "perform_regrowth": perform_regrowth,
     "project_to_subspace": project_to_subspace,

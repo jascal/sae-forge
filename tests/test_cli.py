@@ -99,3 +99,26 @@ class TestRegrowLayerRequiredWhenRegrowCountSet:
         captured = capsys.readouterr()
         assert "--regrow-count" in captured.err
         assert "--regrow-layer" in captured.err
+
+
+class TestInspectFsmDiagram:
+    def test_fsm_diagram_emits_state_diagram_v2(self, capsys):
+        pytest.importorskip("orca_runtime_python")
+        from saeforge.cli import main
+
+        rc = main(["inspect", "--fsm-diagram"])
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert captured.out.startswith("stateDiagram-v2")
+        # The three sub-machines' compound states must be in the output.
+        assert 'state "streaming"' in captured.out
+        assert 'state "refining"' in captured.out
+        assert captured.err == ""
+
+    def test_inspect_with_no_args_errors_actionably(self, capsys):
+        from saeforge.cli import main
+
+        rc = main(["inspect"])
+        assert rc == 2
+        captured = capsys.readouterr()
+        assert "checkpoint" in captured.err and "--fsm-diagram" in captured.err
