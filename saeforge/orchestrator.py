@@ -1,5 +1,12 @@
 """FSM orchestrator — composes three orca sub-machines into one forge run.
 
+Single responsibility: parse the three forge ``.orca.md`` files into a
+composed hierarchy, drive it via ``orca_runtime_python.OrcaMachine``
+until the outermost machine reaches a final state, and return the
+shared context dict. All control-flow decisions (basis loop, refine
+loop, stream loop) live in the machine guard expressions; this file
+does not duplicate them.
+
 The hierarchical-fsm capability replaces the v0.2 flat ten-state machine
 with three composed orca sub-machines:
 

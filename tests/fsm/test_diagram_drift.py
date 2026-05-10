@@ -3,9 +3,29 @@
 The diagram embedded in ``docs/advanced-fsm-options.md`` is the
 auto-generated output of ``saeforge.machines.visualize.to_mermaid``.
 This test extracts the committed block and asserts it equals the
-live emit byte-for-byte. If it fails, regenerate the diagram by
-running ``sae-forge inspect --fsm-diagram`` and pasting the output
-into the doc between the BEGIN/END markers.
+live emit byte-for-byte.
+
+**Drift tolerance: zero.** The comparison is exact-string. We
+deliberately do not allow whitespace-tolerance, line-reordering
+tolerance, or label-format tolerance: the diagram is *generated*,
+not human-edited, so any drift means somebody hand-edited the
+committed block (likely accidentally, e.g. via doc-formatter
+auto-fix) or changed the machine files without regenerating. Both
+should fail loudly.
+
+If you need to update the diagram (because you legitimately edited
+the machine files), regenerate via:
+
+    sae-forge inspect --fsm-diagram
+
+and paste the output into ``docs/advanced-fsm-options.md`` between
+the ``<!-- BEGIN AUTO-GENERATED FSM DIAGRAM -->`` /
+``<!-- END AUTO-GENERATED FSM DIAGRAM -->`` markers.
+
+If `to_mermaid`'s output format itself changes (e.g. label format
+gets prettier), the regen-and-recommit flow is the same — the test
+asserts the committed block matches *current* visualizer output,
+not historical output, so format evolution is fine.
 """
 
 from __future__ import annotations
