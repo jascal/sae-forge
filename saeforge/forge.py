@@ -104,7 +104,8 @@ class ForgePipeline:
       eval -> save. The v0 stable surface.
     - ``fsm``: orca-runtime-python FSM driving the same stages plus optional
       regrow / fine-tune passes. Requires the ``[orca]`` extra; topology is
-      defined in ``saeforge/machines/sae_forge.orca.md``.
+      defined as a three-machine hierarchy under ``saeforge/machines/``
+      (``stream.orca.md`` / ``refine.orca.md`` / ``basis.orca.md``).
 
     Both orchestrators MUST produce byte-identical forged weights for the
     same inputs and seeds — that equivalence is the migration safety net

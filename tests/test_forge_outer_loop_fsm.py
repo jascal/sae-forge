@@ -11,52 +11,72 @@ def _file_sha256(path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def test_machine_loads_and_has_ten_states():
-    """v0.2 topology adds `activations_scanned` between loaded and compressed."""
-    pytest.importorskip("orca_runtime_python")
-    from saeforge.orchestrator import load_machine_definition
+def test_hierarchy_has_three_machines_with_v02_state_distribution():
+    """The hierarchy distributes the v0.2 ten states across three sub-machines.
 
-    m = load_machine_definition()
-    state_names = {s.name for s in m.states}
-    assert state_names == {
-        "init",
-        "loaded",
-        "activations_scanned",
-        "compressed",
-        "regrown",
-        "projected",
-        "finetuned",
-        "evaluated",
-        "done",
-        "failed",
-    }
-    initial = [s for s in m.states if s.is_initial]
-    assert [s.name for s in initial] == ["init"]
-    finals = sorted(s.name for s in m.states if s.is_final)
-    assert finals == ["done", "failed"]
+    The flat ten states map as follows:
 
-
-def test_machine_has_required_guards():
-    """v0.2 replaces the v0.1 flat-bool guards with rich orca expressions.
-
-    The v0.1 names (`should_regrow`, `no_regrow`, `should_continue_loop`) are
-    superseded by the v0.2 set: basis-loop guards, stream-loop guards, and
-    refine-loop guards — all ctx-comparison expressions evaluated by orca.
+    - StreamMachine: ``init`` (initial), ``streaming`` (compound),
+      ``next_shard``, ``done`` (final), ``failed`` (final)
+    - RefineMachine: ``entering`` (collapses v0.2 ``loaded`` +
+      ``activations_scanned``), ``refining`` (compound), ``evaluating``
+      (renamed from v0.2 ``evaluated``), ``exiting`` (final), ``failed``
+    - BasisMachine: ``starting`` (initial), ``compressed``, ``regrown``,
+      ``projected``, ``finetuned``, ``done`` (final), ``failed``
     """
     pytest.importorskip("orca_runtime_python")
-    from saeforge.orchestrator import load_machine_definition
+    from saeforge.orchestrator import load_machine_hierarchy
 
-    m = load_machine_definition()
-    # Basis loop guards
-    assert "should_regrow" in m.guards
-    assert "no_regrow_more_passes" in m.guards
-    assert "no_regrow_done" in m.guards
-    assert "basis_loop_continue" in m.guards
-    assert "basis_loop_done" in m.guards
-    # Stream / refine / terminate guards (rich `and` / `==` expressions)
-    assert "stream_advance" in m.guards
-    assert "refine_same_shard" in m.guards
-    assert "terminate_run" in m.guards
+    defs = load_machine_hierarchy()
+    by_name = {d.name: d for d in defs}
+    assert set(by_name) == {"StreamMachine", "RefineMachine", "BasisMachine"}
+    assert {s.name for s in by_name["StreamMachine"].states} == {
+        "init", "streaming", "next_shard", "done", "failed",
+    }
+    assert {s.name for s in by_name["RefineMachine"].states} == {
+        "entering", "refining", "evaluating", "exiting", "failed",
+    }
+    assert {s.name for s in by_name["BasisMachine"].states} == {
+        "starting", "compressed", "regrown", "projected", "finetuned",
+        "done", "failed",
+    }
+
+
+def test_compound_states_invoke_their_children():
+    """``StreamMachine.streaming`` invokes ``RefineMachine``; ``RefineMachine.refining`` invokes ``BasisMachine``."""
+    pytest.importorskip("orca_runtime_python")
+    from saeforge.orchestrator import load_machine_hierarchy
+
+    by_name = {d.name: d for d in load_machine_hierarchy()}
+    streaming = next(s for s in by_name["StreamMachine"].states if s.name == "streaming")
+    assert streaming.invoke is not None
+    assert streaming.invoke.machine == "RefineMachine"
+    assert streaming.invoke.on_done == "refine_done"
+
+    refining = next(s for s in by_name["RefineMachine"].states if s.name == "refining")
+    assert refining.invoke is not None
+    assert refining.invoke.machine == "BasisMachine"
+    assert refining.invoke.on_done == "basis_done"
+
+    assert all(s.invoke is None for s in by_name["BasisMachine"].states)
+
+
+def test_hierarchy_has_required_guards_per_machine():
+    """Guards are scoped to the sub-machine that owns the state they protect.
+
+    Basis-loop guards live in ``BasisMachine``; refine-loop guards live in
+    ``RefineMachine``; stream-loop guards live in ``StreamMachine``. The
+    v0.2 ``refine_same_shard`` is renamed ``refine_continue`` because the
+    "same shard" semantic is internalized inside ``RefineMachine``.
+    """
+    pytest.importorskip("orca_runtime_python")
+    from saeforge.orchestrator import load_machine_hierarchy
+
+    by_name = {d.name: d for d in load_machine_hierarchy()}
+    assert {"should_regrow", "no_regrow_more_passes", "no_regrow_done",
+            "basis_loop_continue", "basis_loop_done"} <= set(by_name["BasisMachine"].guards)
+    assert {"refine_continue", "refine_exit"} <= set(by_name["RefineMachine"].guards)
+    assert {"stream_advance", "terminate_run"} <= set(by_name["StreamMachine"].guards)
 
 
 def test_fsm_run_synthetic_end_to_end(tiny_gpt2, tiny_synthetic_basis, tmp_path):
