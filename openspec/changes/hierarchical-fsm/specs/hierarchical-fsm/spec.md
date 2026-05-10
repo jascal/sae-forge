@@ -103,6 +103,23 @@ byte-equivalence with the imperative reference path.
 - **AND** this sequence equals the sequence produced by the
   imperative reference path on the same seed
 
+#### Scenario: load_and_scan preserves protect_top_k gating
+
+- **GIVEN** a forge run with `protect_top_k = 0` (the v0.2 default)
+- **WHEN** the FSM enters `RefineMachine.entering`
+- **THEN** `transitions_log` records two consecutive entries with
+  actions `load_sae_and_corpus` and `scan_activations` in that
+  order
+- **AND** the `scan_activations` action's returned delta is empty
+  (the pass-through gating semantics from v0.2 are preserved)
+
+- **GIVEN** a forge run with `protect_top_k = 5`
+- **WHEN** the FSM enters `RefineMachine.entering`
+- **THEN** `transitions_log` records the same two-entry sequence
+- **AND** `ctx["protected_features"]` is non-empty after the
+  entering state completes (the protected-set computation runs
+  exactly as it did in the v0.2 `activations_scanned` state)
+
 ### Requirement: Runtime tracks current machine path on ctx
 
 The orca runtime, while traversing compound states, SHALL update
@@ -241,15 +258,24 @@ error inside `BasisMachine` SHALL propagate as follows:
 
 1. The action raises; the orchestrator's `_step` helper catches
    and writes `error_message` to ctx.
-2. `BasisMachine` enters its local `failed` state.
+2. `BasisMachine` enters its local `failed` state and its
+   `log_error` action writes `error_origin_machine = "basis"` to
+   ctx.
 3. `RefineMachine` observes the child reaching a final state and,
    because `error_message` is non-empty, fires its own `error`
-   event and enters `RefineMachine.failed`.
-4. `StreamMachine` does the same and enters `StreamMachine.failed`.
+   event and enters `RefineMachine.failed`. Its `log_error` action
+   SHALL preserve the existing `error_origin_machine` value if
+   present (i.e. the deepest origin wins) and otherwise write
+   `"refine"`.
+4. `StreamMachine` does the same with `"stream"` as the fallback.
 
 The final ctx after this propagation SHALL contain the same
 `error_message` that the v0.2 flat machine produced for the same
-underlying action error.
+underlying action error. The additional `error_origin_machine`
+field SHALL be present and SHALL name the deepest sub-machine in
+the propagation chain. Consumers that ignore unknown ctx keys
+(including the byte-equivalence test, which filters this field
+before comparison) SHALL be unaffected.
 
 #### Scenario: error in compress_with_polygram reaches the outermost failed state
 
@@ -260,3 +286,14 @@ underlying action error.
 - **AND** `ctx["error_message"] == "RuntimeError: synthetic error"`
 - **AND** the value of `error_message` matches what the v0.2 flat
   machine produced for the same forced error
+- **AND** `ctx["error_origin_machine"] == "basis"` (the deepest
+  sub-machine that originated the error)
+
+#### Scenario: error in load_and_scan attributes to refine
+
+- **GIVEN** a forge run where `load_sae_and_corpus` raises
+  `FileNotFoundError("missing.sae")`
+- **WHEN** the run completes
+- **THEN** the final state is `StreamMachine.failed`
+- **AND** `ctx["error_origin_machine"] == "refine"` (the action
+  ran inside `RefineMachine.entering`, not inside `BasisMachine`)

@@ -40,11 +40,38 @@ This is the right place to *lean on orca-runtime-python* (per the
 "lean on orca-lang" note) rather than building a Python composition
 layer. If the runtime turns out to lack a feature this design
 needs (e.g. ctx scoping at the sub-machine boundary), that gap is
-a runtime PR, not a sae-forge workaround. **Open question**: the
-orchestrator currently expects exactly one `.orca.md` resource;
-the loader extension to read three and concatenate them is a
-fifteen-line change, but if the runtime offers a `parse_orca_files`
-helper directly we should use that. Verified during implementation.
+a runtime PR, not a sae-forge workaround.
+
+**Loader API decision (resolved during implementation, task §1.3):**
+The orchestrator's loader currently expects exactly one `.orca.md`
+resource. Two implementation paths exist:
+
+1. **Preferred — runtime helper.** If `orca_runtime_python` exposes
+   a `parse_orca_files(paths)` (or equivalent multi-file) helper,
+   use it directly. This keeps the orchestrator thinner and lets
+   the runtime own multi-file semantics (resource resolution,
+   error messages on duplicate machine names, etc.).
+2. **Fallback — string concatenation.** If the runtime only exposes
+   `parse_orca_md(text)`, the loader reads the three files via
+   `importlib.resources` and joins them with `\n---\n` before
+   parsing. This is a ~15-line change and is the path the spec
+   delta describes as the lower bound of compatibility.
+
+Task §1.3 explicitly probes the runtime API and pins the choice
+in a one-line comment in `saeforge/orchestrator.py` so future
+readers see *which* path was taken and why. The capability spec
+allows either path — both produce the same composed definition.
+
+### Filename convention
+
+Sub-machine files use short lowercase names (`stream.orca.md` /
+`refine.orca.md` / `basis.orca.md`) matching the existing v0.2
+file `sae_forge.orca.md`. The longer `StreamMachine.orca.md` form
+was considered for symmetry with the `# machine StreamMachine`
+header inside, but rejected — short filenames match repo
+convention and stay readable in path strings (e.g. error
+messages, resource lookups). The `# machine X` header inside
+each file is the canonical machine identifier the runtime uses.
 
 ## Sub-machine definitions
 
@@ -249,6 +276,30 @@ and StreamMachine does the same.
 same `error_message` ctx field as today. The byte-equivalence test
 covers a forced-error case to verify the propagation path produces
 the same final ctx as the v0.2 single-failed-state machine.
+
+### Richer error context (additive, behind the bubble path)
+
+`error_message` itself is unchanged for byte-equivalence — the same
+`f"{type(e).__name__}: {e}"` string the v0.2 orchestrator's `_step`
+helper produces. The hierarchy adds *additive* context at each
+bubble step:
+
+- BasisMachine's `log_error` writes `error_origin_machine = "basis"`
+  to ctx alongside `error_message`.
+- RefineMachine's `log_error` reads `error_origin_machine` if
+  present (preserving the deepest origin) and otherwise writes
+  `"refine"`.
+- StreamMachine's `log_error` does the same with `"stream"` as the
+  fallback.
+
+The result: `ctx["error_origin_machine"]` after a failed run names
+the deepest sub-machine that originated the error. This is the
+debug payload the reviewer flagged as a nice-to-have — it costs
+one extra ctx field, no behavior change, and only rich-error
+consumers read it. The byte-equivalence test ignores
+`error_origin_machine` (it's a hierarchy-only field with no v0.2
+counterpart). Documented as the per-machine error contract in
+the `hierarchical-fsm` spec's failure-propagation requirement.
 
 ## Migration mechanics
 
