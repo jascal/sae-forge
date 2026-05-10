@@ -12,7 +12,7 @@
 - [ ] 2.1 New module `saeforge/adapters/whisper.py` exposing `WhisperEncoderAdapter` (subclass of `ArchitectureAdapter`)
 - [ ] 2.2 `family = "whisper_encoder"`; `walk(host, projector)` produces a dict of every encoder weight (per design.md §"Native module shape" projected list)
 - [ ] 2.3 `_extract_encoder(host)` handles both `WhisperForConditionalGeneration` (`.model.encoder`) and `WhisperModel` (`.encoder`)
-- [ ] 2.4 Frozen-copy path for `conv1`, `conv2`, `embed_positions` (no projector call); document the ε_conv accounting in a docstring comment
+- [ ] 2.4 Frozen-copy path for `conv1`, `conv2`, `embed_positions` (no projector call); add an explicit in-code comment block stating that this path is the ε_conv accounting per `docs/algorithm.md` §5 and naming the known limitation for real-audio use ("the unprojected conv stem feeds non-basis-aligned features into the first encoder block; bounded but not zero error in the forged encoder's outputs vs the host"). Comment is load-bearing for future readers, not vestigial
 - [ ] 2.5 `build_native_config(host, n_features)` reads `host.config.encoder_layers / encoder_attention_heads / d_model / encoder_ffn_dim`; produces `NativeModelConfig(family="whisper_encoder", output_kind="encoder_states", vocab_size=0, ...)`
 - [ ] 2.6 `native_module_class()` returns `ForgedWhisperEncoder` (lazy torch import)
 - [ ] 2.7 `grad_checkpoint_targets(module)` returns `(module.layers, module.embed_positions.weight)` so the recipe path works on Whisper
@@ -86,6 +86,8 @@
 - [ ] 12.1 New `docs/audio-forge.md` — user-facing reference for forging audio encoders. Covers: when to use it, how to pre-extract mel features, recommended polygram profile, the cosine eval semantics, the conv-stem ε_conv accounting
 - [ ] 12.2 Update `AGENTS.md` "Adapter contract" subsection to mention the encoder-only audio scope and the LM-vs-encoder eval dispatch
 - [ ] 12.3 Update `README.md` Status section bullet for `forge-whisper-encoder`
+- [ ] 12.4 Document the new `NativeModelConfig.output_kind` and the `vocab_size = 0` semantics in `docs/algorithm.md` §"Native model shape" (or equivalent section). The math foundation doc is the canonical reference for how the projection algebra sees the native model — adding a non-LM family is the kind of change that needs to land there, not just the user-facing audio doc
+- [ ] 12.5 Add a `## [Unreleased]` section to `CHANGELOG.md` (the repo currently lands entries at archive time per the file's preamble; this change introduces the Unreleased convention so the implementation PR has a place to drop notes incrementally). The Unreleased entry SHALL list the four artefacts this change introduces (adapter, native module, eval, audio-forge doc) so reviewers can see the surface area at a glance before the release-bump commit lands
 
 ## 13. Tests (overall)
 
@@ -107,3 +109,4 @@
 - [ ] 15.2 **Real audio data loaders** — `.wav` / `.flac` ingestion via `librosa`. The synthetic-mel and pre-extracted-features paths cover test + production needs in v0.4
 - [ ] 15.3 **Conv stem projection** — Whisper's `conv1` / `conv2` are frozen-copied today (ε_conv per `docs/algorithm.md` §5). A research follow-up
 - [ ] 15.4 **Whisper-large validation** — adapter is shape-agnostic; tested on tiny in this change. Production validation against a real `openai/whisper-tiny` SAE is a follow-up smoke
+- [ ] 15.5 **Compressed-basis cosine eval** — the v0.4 cosine_faithfulness projects host states *into* the SAE basis via the same projector used to build the forged model, then compares forged states to projected host states in basis-space. A future variant could compare in the *compressed* basis (post-Polygram-`Compressor` index space) to disentangle compression error from forge error. Out of scope here; tracked because Grok flagged it as a worthwhile follow-up
