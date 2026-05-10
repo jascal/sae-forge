@@ -23,7 +23,6 @@ def test_emitted_mermaid_contains_every_state_in_the_hierarchy():
 
     defs = load_machine_hierarchy()
     out = to_mermaid(defs)
-    expected_names = {s.name for d in defs for s in d.states}
     # Final states render as `[*]` rather than by name. Collect non-final
     # state names explicitly.
     non_final = {s.name for d in defs for s in d.states if not s.is_final}
