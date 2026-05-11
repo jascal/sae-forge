@@ -117,8 +117,6 @@ def _build_forged_module(pipeline, host):
 
 class TestT0TinyGpt2Smoke:
     def test_hybrid_forge_constructs_with_bridges(self, tiny_gpt2_untied_4layer):
-        import torch
-
         pipeline = _hybrid_pipeline(tiny_gpt2_untied_4layer)
         model = _build_forged_module(pipeline, tiny_gpt2_untied_4layer)
         # Bridge submodules exist on the transformer.
@@ -278,8 +276,6 @@ class TestByteEquivalenceWhenDisabled:
         self, tiny_gpt2_untied_4layer
     ):
         """Forging without the bridge flag MUST produce the same nn.Module shape as before this change."""
-        import torch
-
         from saeforge.forge import ForgePipeline
         from saeforge.model import NativeModel, _config_from_host
         from saeforge.projector import SubspaceProjector

@@ -33,7 +33,8 @@ class BridgeConfig:
 
 
 def _build_bridge_class():
-    torch = require_extra("torch", "torch")
+    # Lazy-import triggers the friendly ImportError when [torch] is missing.
+    require_extra("torch", "torch")
     import torch.nn as nn
 
     class BridgeModule(nn.Module):
