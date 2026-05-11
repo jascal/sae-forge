@@ -238,6 +238,30 @@ def tiny_gemma2():
 
 
 @pytest.fixture
+def tiny_qwen2():
+    """A tiny torch Qwen2 — 128-dim residual, 2 layers, 4 heads, 2 KV heads (GQA), 1024 vocab.
+
+    Q/K/V biases ON (Qwen2 default), untied embeddings.
+    """
+    pytest.importorskip("torch")
+    pytest.importorskip("transformers")
+    from transformers import Qwen2Config, Qwen2ForCausalLM
+
+    config = Qwen2Config(
+        hidden_size=128,
+        num_hidden_layers=2,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        intermediate_size=256,
+        vocab_size=1024,
+        head_dim=32,
+        max_position_embeddings=64,
+        tie_word_embeddings=False,
+    )
+    return Qwen2ForCausalLM(config).eval()
+
+
+@pytest.fixture
 def feature_basis_128_to_32():
     """A 32-feature FeatureBasis over a 128-d residual (matches the
     tiny_llama / tiny_gemma2 fixtures)."""

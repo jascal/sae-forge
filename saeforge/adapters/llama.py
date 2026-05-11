@@ -90,6 +90,13 @@ class LlamaAdapter(ArchitectureAdapter):
             out[f"{prefix}.self_attn.v_proj.weight"] = projector.project_residual_output(
                 to_numpy(block.self_attn.v_proj.weight)
             )
+            # Qwen2 has biases on Q/K/V; Llama and Gemma-2 don't. The bias
+            # lives in head_dim space (not residual space), so it passes
+            # through unprojected.
+            for qkv in ("q_proj", "k_proj", "v_proj"):
+                b = getattr(block.self_attn, qkv).bias
+                if b is not None:
+                    out[f"{prefix}.self_attn.{qkv}.bias"] = to_numpy(b)
             # o_proj is (hidden, n_q_heads * head_dim); the *first* axis
             # is the residual one, so project_residual_input applies.
             out[f"{prefix}.self_attn.o_proj.weight"] = projector.project_residual_input(
@@ -144,6 +151,13 @@ class LlamaAdapter(ArchitectureAdapter):
         head_dim = getattr(cfg, "head_dim", None) or (
             cfg.hidden_size // cfg.num_attention_heads
         )
+        # Detect Q/K/V bias on host's first block. Llama/Gemma-2 don't have
+        # them; Qwen2 does. Tested on the actual nn.Linear so we work even
+        # for variants that don't expose a bias flag on the HF config.
+        qkv_bias = (
+            len(host.model.layers) > 0
+            and host.model.layers[0].self_attn.q_proj.bias is not None
+        )
         return NativeModelConfig(
             family=self.family,
             hidden_size=n_features,
@@ -159,6 +173,7 @@ class LlamaAdapter(ArchitectureAdapter):
             n_kv_heads=getattr(cfg, "num_key_value_heads", cfg.num_attention_heads),
             tied_embeddings=getattr(cfg, "tie_word_embeddings", False),
             rms_norm_eps=getattr(cfg, "rms_norm_eps", 1e-6),
+            qkv_bias=qkv_bias,
         )
 
     def native_module_class(self) -> type:
@@ -212,9 +227,10 @@ def _get_forged_llama_class():
             self.num_heads = cfg.num_heads
             self.n_kv_heads = cfg.n_kv_heads
             self.head_dim = cfg.head_dim
-            self.q_proj = nn.Linear(cfg.hidden_size, cfg.num_heads * cfg.head_dim, bias=False)
-            self.k_proj = nn.Linear(cfg.hidden_size, cfg.n_kv_heads * cfg.head_dim, bias=False)
-            self.v_proj = nn.Linear(cfg.hidden_size, cfg.n_kv_heads * cfg.head_dim, bias=False)
+            qkv_bias = getattr(cfg, "qkv_bias", False)
+            self.q_proj = nn.Linear(cfg.hidden_size, cfg.num_heads * cfg.head_dim, bias=qkv_bias)
+            self.k_proj = nn.Linear(cfg.hidden_size, cfg.n_kv_heads * cfg.head_dim, bias=qkv_bias)
+            self.v_proj = nn.Linear(cfg.hidden_size, cfg.n_kv_heads * cfg.head_dim, bias=qkv_bias)
             self.o_proj = nn.Linear(cfg.num_heads * cfg.head_dim, cfg.hidden_size, bias=False)
             self.attn_logit_softcap = cfg.attn_logit_softcap
 
