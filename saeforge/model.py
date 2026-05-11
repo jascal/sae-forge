@@ -20,7 +20,7 @@ from saeforge.projector import SubspaceProjector
 from saeforge.utils.lazy import require_extra
 
 
-_SUPPORTED_FAMILIES = ("gpt2", "llama", "gemma2")
+_SUPPORTED_FAMILIES = ("gpt2", "llama", "gemma2", "qwen2")
 
 
 @dataclass
@@ -69,6 +69,20 @@ class NativeModelConfig:
     # (``attn_logit_softcap``); ``None`` is a no-op.
     final_logit_softcap: float | None = None
     attn_logit_softcap: float | None = None
+    # Qwen2-specific (Llama-shaped but with Q/K/V biases). False for Llama
+    # and Gemma-2 (no biases on attention projections). The o_proj remains
+    # bias-free across all families.
+    qkv_bias: bool = False
+    # Hybrid-bridge knobs. When ``bridges=True``, the native module
+    # constructs and registers two ``BridgeModule`` instances on the
+    # forward path between the embed/mid and mid/lm-head regions.
+    # See ``saeforge.bridges`` and the ``hybrid-bridge-forge`` capability spec.
+    # v1 ships GPT-2 only; Llama/Gemma-2 honor ``bridges=False`` and ignore
+    # the related knobs (will raise when ``bridges=True`` until T3 lands).
+    bridges: bool = False
+    bridge_init: str = "orthogonal"
+    bridge_nonlin: str = "none"
+    bridge_pre_layernorm: bool = True
 
     def __post_init__(self) -> None:
         if self.family not in _SUPPORTED_FAMILIES:
@@ -131,7 +145,7 @@ def _build_torch_module(config: NativeModelConfig):
         from saeforge.adapters.gpt2 import build_gpt2_module
 
         return build_gpt2_module(config)
-    if config.family in ("llama", "gemma2"):
+    if config.family in ("llama", "gemma2", "qwen2"):
         from saeforge.adapters.llama import build_llama_family_module
 
         return build_llama_family_module(config)

@@ -43,11 +43,16 @@ class TestRegistryDispatch:
         adapter = adapter_for(tiny_gemma2)
         assert adapter.family == "gemma2"
 
-    def test_registered_classes_contains_all_three_families(self):
+    def test_qwen2_dispatches_to_qwen2_adapter(self, tiny_qwen2):
+        adapter = adapter_for(tiny_qwen2)
+        assert adapter.family == "qwen2"
+
+    def test_registered_classes_contains_all_four_families(self):
         names = [c.__name__ for c in registered_classes()]
         assert "GPT2LMHeadModel" in names
         assert "LlamaForCausalLM" in names
         assert "Gemma2ForCausalLM" in names
+        assert "Qwen2ForCausalLM" in names
 
     def test_unregistered_architecture_raises_with_actionable_message(self):
         class FakeBert:
@@ -128,6 +133,30 @@ class TestLlamaWalker:
             tiny_llama_tied, feature_basis_128_to_32.n_features
         )
         assert config.tied_embeddings is True
+
+    def test_qwen2_walker_emits_qkv_biases(self, tiny_qwen2, feature_basis_128_to_32):
+        """Qwen2 has Q/K/V biases (Llama/Gemma-2 don't); walker passes them through unprojected."""
+        projector = SubspaceProjector(feature_basis_128_to_32)
+        walk = adapter_for(tiny_qwen2).walk(tiny_qwen2, projector)
+        for i in range(tiny_qwen2.config.num_hidden_layers):
+            for qkv in ("q_proj", "k_proj", "v_proj"):
+                key = f"model.layers.{i}.self_attn.{qkv}.bias"
+                assert key in walk, f"missing {key}"
+
+    def test_qwen2_native_config_sets_qkv_bias_true(self, tiny_qwen2, feature_basis_128_to_32):
+        """Auto-detection from host's first-block q_proj.bias flips ``NativeModelConfig.qkv_bias`` on."""
+        config = adapter_for(tiny_qwen2).build_native_config(
+            tiny_qwen2, feature_basis_128_to_32.n_features
+        )
+        assert config.family == "qwen2"
+        assert config.qkv_bias is True
+
+    def test_llama_native_config_keeps_qkv_bias_false(self, tiny_llama, feature_basis_128_to_32):
+        """Llama has no Q/K/V biases; auto-detection should leave the field False (backward compat)."""
+        config = adapter_for(tiny_llama).build_native_config(
+            tiny_llama, feature_basis_128_to_32.n_features
+        )
+        assert config.qkv_bias is False
 
 
 # ---------------------------------------------------------------------------
