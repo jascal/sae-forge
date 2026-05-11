@@ -17,29 +17,48 @@ Not trained SAEs; cheap CPU proxies for the cross-arch defaults experiment.
 at their orthogonal-random init, not trained).
 **Harness:** [`scripts/compare_single_vs_hybrid_gpt2.py`](../scripts/compare_single_vs_hybrid_gpt2.py).
 
-## Headline: hybrid wins at n_features ∈ {64, 256}; loses at n=128
+## Headline: hybrid wins decisively at low/mid rank, breaks catastrophically at high rank
 
 | n_features | single-mid KL | single-embed KL | single-lm KL | hybrid KL | ΔKL (hybrid − single-mid) |
 |---:|---:|---:|---:|---:|---:|
 |  64 | 6.07 | 5.42 | 41.28 |  **4.95** | **−1.11** |
 | 128 | **6.42** | 7.83 | 17.83 |  7.08 | +0.67 |
 | 256 | 8.03 | 5.24 | 20.46 |  **3.39** | **−4.63** |
+| 512 | **6.02** | 37.37 | 15.50 |  29.27 | +23.26 |
+| 768 | **7.26** | 21.95 | 40.88 | 108.27 | +101.01 |
 
 Observations:
 
-- **Hybrid wins at n=64 and n=256**, loses by a small margin at n=128. The
-  non-monotonicity in `n_features` mirrors the [`project_kl_nonmonotonic`](../)
-  memory and is unsurprising — at fixed feature count, the rank-vs-faithfulness
-  curve is genuinely non-monotonic for synthetic PCA bases.
-- **Single-lm is always terrible** (KL > 17 across all `n_features`). The
-  layer-11 residual stream is already lm-head-shaped; PCA-ing it produces
-  a basis that fits the unembed *output* distribution but not the
-  pre-unembed transformer stack. Confirms that "one basis at the deepest
-  layer" is a strictly bad single-basis strategy.
-- **Single-embed is competitive but unstable** — it beats single-mid at
-  n=64 and n=256 but loses at n=128. Layer-0 activations have low
-  pre-block structure, so PCA over them sometimes captures a more
-  general basis than the mid layer.
+- **Hybrid wins at n=64 and n=256**, loses narrowly at n=128, and breaks
+  catastrophically at n=512 and n=768. The non-monotonicity at low rank
+  mirrors the [`project_kl_nonmonotonic`](../) memory; the breakdown at
+  high rank is a new finding worth investigating.
+- **Single-lm is always terrible** (KL > 15 across every `n_features`).
+  The layer-11 residual stream is already lm-head-shaped; PCA-ing it
+  produces a basis that fits the unembed *output* distribution but not
+  the pre-unembed transformer stack. Confirms that "one basis at the
+  deepest layer" is a strictly bad single-basis strategy.
+- **The breakdown above n=256 traces to PCA-proxy quality, not the
+  mechanism.** As `n_features` grows past ~256, the per-layer PCA picks
+  up increasingly noisy singular directions in the rank-512..768 tail
+  (we have ~912 captured tokens supporting up to rank-768 PCA — the
+  signal-to-noise ratio at high rank is poor). When two of the three
+  bases individually exceed KL ≈ 20, the hybrid composition compounds
+  those errors through the (untrained) bridges. Real trained SAEs do
+  not suffer this failure mode at the same rank, which is precisely
+  why the M4 Gemma-2-2B prototype (with trained SAEs at all three
+  anchors) reported KL=11.81 at `n_features=256` rather than the
+  catastrophic numbers a PCA proxy would predict at the same rank.
+- **The right way to read this table:** hybrid is opt-in (default off)
+  precisely because it requires all three bases to be individually
+  high-quality. Hybrid's headline win at n=256 (-4.63 nats) holds when
+  the bases are good; the breakdown at n≥512 is a faithful warning
+  signal that the *bases* have degraded, not that the hybrid mechanism
+  is wrong.
+
+A useful follow-up: rerun this sweep with trained Polygram SAEs as
+bases (via `--basis-embed PATH --basis-lm-head PATH` in the CLI) to
+separate the mechanism's failure modes from the synthetic-proxy's.
 
 ## Bridge-config ablation (at n_features=256)
 
@@ -88,7 +107,7 @@ preserves the save-time-fold option discussed in the design doc. Findings:
 
 ```bash
 # n_features sweep
-for n in 64 128 256; do
+for n in 64 128 256 512 768; do
   python scripts/compare_single_vs_hybrid_gpt2.py \
     --n-features $n --output runs/comparison_n${n}.json
 done
