@@ -282,13 +282,39 @@ def _get_forged_gpt2_class():
             self.wpe = nn.Embedding(cfg.max_position_embeddings, cfg.hidden_size)
             self.h = nn.ModuleList([Block(cfg) for _ in range(cfg.num_layers)])
             self.ln_f = nn.LayerNorm(cfg.hidden_size, eps=cfg.layer_norm_epsilon)
+            self.bridges = self._build_bridges(cfg)
+
+        @staticmethod
+        def _build_bridges(cfg):
+            if not getattr(cfg, "bridges", False):
+                return None
+            from saeforge.bridges import BridgeConfig, make_bridge
+
+            bcfg = BridgeConfig(
+                init=cfg.bridge_init,
+                nonlin=cfg.bridge_nonlin,
+                pre_layernorm=cfg.bridge_pre_layernorm,
+                train=True,
+            )
+            return nn.ModuleDict(
+                {
+                    "emb_mid": make_bridge(cfg.hidden_size, bcfg),
+                    "mid_lm": make_bridge(cfg.hidden_size, bcfg),
+                }
+            )
 
         def forward(self, input_ids):
             seq = input_ids.size(-1)
             pos = torch.arange(seq, device=input_ids.device).unsqueeze(0).expand_as(input_ids)
             x = self.wte(input_ids) + self.wpe(pos)
-            for block in self.h:
+            n = len(self.h)
+            for i, block in enumerate(self.h):
                 x = block(x)
+                if self.bridges is not None:
+                    if i == 0 and n >= 3:
+                        x = self.bridges["emb_mid"](x)
+                    elif i == n - 2 and n >= 3:
+                        x = self.bridges["mid_lm"](x)
             return self.ln_f(x)
 
     class ForgedGPT2(nn.Module):

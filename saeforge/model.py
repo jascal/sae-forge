@@ -69,6 +69,16 @@ class NativeModelConfig:
     # (``attn_logit_softcap``); ``None`` is a no-op.
     final_logit_softcap: float | None = None
     attn_logit_softcap: float | None = None
+    # Hybrid-bridge knobs. When ``bridges=True``, the native module
+    # constructs and registers two ``BridgeModule`` instances on the
+    # forward path between the embed/mid and mid/lm-head regions.
+    # See ``saeforge.bridges`` and the ``hybrid-bridge-forge`` capability spec.
+    # v1 ships GPT-2 only; Llama/Gemma-2 honor ``bridges=False`` and ignore
+    # the related knobs (will raise when ``bridges=True`` until T3 lands).
+    bridges: bool = False
+    bridge_init: str = "orthogonal"
+    bridge_nonlin: str = "none"
+    bridge_pre_layernorm: bool = True
 
     def __post_init__(self) -> None:
         if self.family not in _SUPPORTED_FAMILIES:

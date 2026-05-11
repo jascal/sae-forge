@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING, Any, Mapping
 import numpy as np
 
 from saeforge.basis import FeatureBasis
+from saeforge.bridges import BridgeConfig
+from saeforge.hybrid_basis import HybridBasisBundle
 from saeforge.model import NativeModel, _config_from_host
 from saeforge.projector import SubspaceProjector
 
@@ -174,6 +176,14 @@ class ForgePipeline:
     replay_policy: str = "reservoir"
     task_stream: "TaskStream | None" = None  # forward ref; resolved lazily
 
+    # v0.5 hybrid-bridge-forge knobs. All default to v0.4 single-basis behavior
+    # (no extra bases, no bridges). See
+    # ``openspec/changes/hybrid-bridge-forge`` for the full design.
+    hybrid_bridge: bool = False
+    basis_embed: FeatureBasis | None = None
+    basis_lm_head: FeatureBasis | None = None
+    bridge_config: BridgeConfig = field(default_factory=BridgeConfig)
+
     # ----------------------------------------------------------------
     # Construction-time validation + dict round-trip
     # ----------------------------------------------------------------
@@ -220,6 +230,36 @@ class ForgePipeline:
                 "ForgePipeline: replay_policy='per_task' requires "
                 "task_trigger='labeled' (per-task slots need task boundaries)"
             )
+        if self.hybrid_bridge:
+            if self.basis_embed is None or self.basis_lm_head is None:
+                raise ValueError(
+                    "ForgePipeline: hybrid_bridge=True requires both "
+                    "basis_embed and basis_lm_head; got "
+                    f"basis_embed={'set' if self.basis_embed is not None else 'None'}, "
+                    f"basis_lm_head={'set' if self.basis_lm_head is not None else 'None'}"
+                )
+            n_features = self.basis.n_features
+            d_model = self.basis.d_model
+            if (
+                self.basis_embed.n_features != n_features
+                or self.basis_lm_head.n_features != n_features
+            ):
+                raise ValueError(
+                    f"ForgePipeline: hybrid_bridge=True requires all three bases to share "
+                    f"n_features; got basis_embed.n_features={self.basis_embed.n_features}, "
+                    f"basis.n_features={n_features}, "
+                    f"basis_lm_head.n_features={self.basis_lm_head.n_features}"
+                )
+            if (
+                self.basis_embed.d_model != d_model
+                or self.basis_lm_head.d_model != d_model
+            ):
+                raise ValueError(
+                    f"ForgePipeline: hybrid_bridge=True requires all three bases to share "
+                    f"d_model; got basis_embed.d_model={self.basis_embed.d_model}, "
+                    f"basis.d_model={d_model}, "
+                    f"basis_lm_head.d_model={self.basis_lm_head.d_model}"
+                )
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "ForgePipeline":
@@ -331,6 +371,40 @@ class ForgePipeline:
             )
         return self._run_real_imperative(output_dir)
 
+    def _build_hybrid_bundle(self, host) -> "HybridBasisBundle | None":
+        """Return a hybrid bundle when enabled, else None. Enforces tied-embedding refusal.
+
+        Tied embeddings (GPT-2 default, Llama-family) make the embed and lm-head
+        bases algebraically constrained — the same weight matrix would have to
+        project through two different feature spaces. v1 refuses; the principled
+        fix is tracked as ``hybrid-bridge-tied-embeddings``.
+        """
+        if not self.hybrid_bridge:
+            return None
+        if getattr(host.config, "tie_word_embeddings", False):
+            raise ValueError(
+                "ForgePipeline: hybrid_bridge=True is incompatible with hosts "
+                "where config.tie_word_embeddings=True. Embed and lm_head would "
+                "have to project the same matrix through two different feature "
+                "spaces. Either disable hybrid_bridge or reload the host with "
+                "tie_word_embeddings=False. Tracked as follow-up "
+                "`hybrid-bridge-tied-embeddings`."
+            )
+        n_layer = getattr(host.config, "n_layer", None) or getattr(
+            host.config, "num_hidden_layers", None
+        )
+        if n_layer is None:
+            raise ValueError(
+                f"ForgePipeline: cannot derive n_layer from {type(host).__name__}.config "
+                "(no n_layer or num_hidden_layers attribute)"
+            )
+        return HybridBasisBundle(
+            basis_embed=self.basis_embed,
+            basis_mid=self.basis,
+            basis_lm_head=self.basis_lm_head,
+            n_layer=int(n_layer),
+        )
+
     def _run_real_imperative(self, output_dir: Path) -> ForgeResult:
         """Pre-recipe forge path: load → project → eval → save. No fine-tune."""
         import warnings
@@ -365,10 +439,18 @@ class ForgePipeline:
         host = transformers.AutoModelForCausalLM.from_pretrained(
             self.host_model_id, dtype=_torch_dtype(self.dtype)
         ).eval()
-        weights = self.projector.project_module(host, attention_width=self.attention_width)
+        bundle = self._build_hybrid_bundle(host)
+        weights = self.projector.project_module(
+            host, attention_width=self.attention_width, hybrid=bundle
+        )
         config = _config_from_host(
             host, self.basis.n_features, attention_width=self.attention_width
         )
+        if bundle is not None:
+            config.bridges = True
+            config.bridge_init = self.bridge_config.init
+            config.bridge_nonlin = self.bridge_config.nonlin
+            config.bridge_pre_layernorm = self.bridge_config.pre_layernorm
         model = NativeModel.from_projected_weights(config, weights)
         model._move(dtype=self.dtype, device=self.device)
 

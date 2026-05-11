@@ -75,6 +75,46 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="RegrowConfig.strategy (default: residual_kmeans).",
     )
+    # Hybrid-bridge-forge knobs. See openspec/specs/hybrid-bridge-forge.
+    forge.add_argument(
+        "--hybrid-bridge",
+        action="store_true",
+        help=(
+            "Opt-in three-basis (embed/mid/lm_head) forge with learnable bridges. "
+            "Requires --basis-embed and --basis-lm-head. v1 refuses tied-embedding hosts."
+        ),
+    )
+    forge.add_argument(
+        "--basis-embed",
+        type=str,
+        default=None,
+        help="Path to the embed-anchored compressed SAE checkpoint. Required with --hybrid-bridge.",
+    )
+    forge.add_argument(
+        "--basis-lm-head",
+        type=str,
+        default=None,
+        help="Path to the lm-head-anchored compressed SAE checkpoint. Required with --hybrid-bridge.",
+    )
+    forge.add_argument(
+        "--bridge-init",
+        type=str,
+        default="orthogonal",
+        choices=("orthogonal", "identity", "zero"),
+        help="BridgeModule linear-weight init (default: orthogonal).",
+    )
+    forge.add_argument(
+        "--bridge-nonlin",
+        type=str,
+        default="none",
+        choices=("none", "relu", "gelu"),
+        help="BridgeModule activation (default: none — linear bridge).",
+    )
+    forge.add_argument(
+        "--bridge-no-pre-ln",
+        action="store_true",
+        help="Disable the pre-LayerNorm in BridgeModule (default: enabled).",
+    )
 
     inspect = sub.add_parser(
         "inspect",
@@ -133,6 +173,36 @@ def _cmd_forge(args: argparse.Namespace) -> int:
 
     basis = FeatureBasis.from_polygram_checkpoint(args.checkpoint)
     projector = SubspaceProjector(basis)
+
+    # Hybrid-bridge wiring. The mutually-required check is here (not argparse-level)
+    # so we can produce a clear actionable message naming both missing flags at once.
+    hybrid_kwargs = {}
+    if args.hybrid_bridge:
+        missing = []
+        if args.basis_embed is None:
+            missing.append("--basis-embed")
+        if args.basis_lm_head is None:
+            missing.append("--basis-lm-head")
+        if missing:
+            print(
+                f"sae-forge forge: --hybrid-bridge requires {' and '.join(missing)}.",
+                file=sys.stderr,
+            )
+            return 2
+        from saeforge.bridges import BridgeConfig
+
+        hybrid_kwargs = dict(
+            hybrid_bridge=True,
+            basis_embed=FeatureBasis.from_polygram_checkpoint(args.basis_embed),
+            basis_lm_head=FeatureBasis.from_polygram_checkpoint(args.basis_lm_head),
+            bridge_config=BridgeConfig(
+                init=args.bridge_init,
+                nonlin=args.bridge_nonlin,
+                pre_layernorm=not args.bridge_no_pre_ln,
+                train=True,
+            ),
+        )
+
     pipeline = ForgePipeline(
         basis=basis,
         projector=projector,
@@ -143,6 +213,7 @@ def _cmd_forge(args: argparse.Namespace) -> int:
         epoch_compression=epoch_compression,
         regrow=regrow,
         regrow_count=args.regrow_count,
+        **hybrid_kwargs,
     )
     result = pipeline.run(args.output_dir)
     print(f"forged: {result.output_dir} ({result.n_params} params)")

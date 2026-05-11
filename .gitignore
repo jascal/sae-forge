@@ -18,5 +18,6 @@ htmlcov/
 examples/output/
 scratch/
 checkpoints/
+runs/
 *.safetensors
 *.pt

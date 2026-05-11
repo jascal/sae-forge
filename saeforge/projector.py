@@ -50,11 +50,14 @@ from __future__ import annotations
 
 import warnings
 from dataclasses import dataclass
-from typing import Union
+from typing import TYPE_CHECKING, Union
 
 import numpy as np
 
 from saeforge.basis import FeatureBasis
+
+if TYPE_CHECKING:  # pragma: no cover — type-only import
+    from saeforge.hybrid_basis import HybridBasisBundle
 
 
 @dataclass
@@ -203,7 +206,13 @@ class SubspaceProjector:
         """(d_ff, d_model) -> (d_ff, n_features). HF GPT-2 mlp.c_proj weight."""
         return self.project_residual_output(W_out)
 
-    def project_module(self, host_model, *, attention_width: str = "host") -> dict[str, np.ndarray]:
+    def project_module(
+        self,
+        host_model,
+        *,
+        attention_width: str = "host",
+        hybrid: "HybridBasisBundle | None" = None,
+    ) -> dict[str, np.ndarray]:
         """Project every relevant host-model weight into the basis.
 
         Dispatches via ``saeforge.adapters.adapter_for(host_model)``. The
@@ -218,6 +227,14 @@ class SubspaceProjector:
         adapter's "feature_native" mode applies both-sides projection
         to ``c_attn`` / ``c_proj``; Llama-family adapters currently
         accept only ``"host"``).
+
+        When ``hybrid`` is a :class:`~saeforge.hybrid_basis.HybridBasisBundle`,
+        dispatch is routed through ``saeforge.adapters._hybrid.walk_hybrid``:
+        three per-basis walks are run and each emitted key is routed to the
+        basis owning its layer region. The keyset matches the single-basis
+        output for the same host exactly. ``self`` (the mid basis projector)
+        supplies the shared ``scale_boost``. See
+        ``openspec/specs/hybrid-bridge-forge`` for the routing contract.
         """
         if attention_width not in ("host", "feature_native"):
             raise ValueError(
@@ -234,6 +251,16 @@ class SubspaceProjector:
         from saeforge.adapters import adapter_for
 
         adapter = adapter_for(host_model)
+        if hybrid is not None:
+            from saeforge.adapters._hybrid import walk_hybrid
+
+            return walk_hybrid(
+                host_model,
+                adapter,
+                self,
+                bundle=hybrid,
+                attention_width=attention_width,
+            )
         return adapter.walk(host_model, self, attention_width=attention_width)
 
 
