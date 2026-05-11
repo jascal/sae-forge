@@ -282,6 +282,15 @@ def _get_forged_gpt2_class():
             self.wpe = nn.Embedding(cfg.max_position_embeddings, cfg.hidden_size)
             self.h = nn.ModuleList([Block(cfg) for _ in range(cfg.num_layers)])
             self.ln_f = nn.LayerNorm(cfg.hidden_size, eps=cfg.layer_norm_epsilon)
+            # Bridges are inserted on the forward path between block 0 → block 1
+            # (the embed/mid boundary) and between block L-2 → block L-1 (the
+            # mid/lm-head boundary). v1 implements this for GPT-2 only.
+            # TODO(hybrid-bridge-llama-gemma): mirror the same construction in
+            # the Llama/Gemma-2 native modules (saeforge/adapters/llama.py).
+            # Tracked as deferred task in
+            # openspec/changes/hybrid-bridge-forge/tasks.md §15. The
+            # HybridBasisBundle routing layer is family-agnostic; only the
+            # native nn.Module forward needs per-family wiring.
             self.bridges = self._build_bridges(cfg)
 
         @staticmethod

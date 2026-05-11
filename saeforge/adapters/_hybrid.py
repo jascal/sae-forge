@@ -59,10 +59,18 @@ def _basis_for_key(key: str, bundle: HybridBasisBundle) -> FeatureBasis:
         or "embed_positions" in key
     ):
         return bundle.basis_embed
-    # Fallback: the mid basis. Conservative for keys that don't match the
-    # documented patterns (e.g. an exotic adapter introduces a new
-    # top-level key the hybrid router didn't anticipate). Documented in
-    # design.md as the safe default.
+    # Fallback: the mid basis. We pick mid (not embed or lm_head) because
+    # mid is the "general-purpose" anchor — block 0 and block L-1 are special
+    # by construction (embedding and unembedding adjacency), but blocks
+    # 1..L-2 share the same distributional role. If a future adapter emits
+    # an unrecognized top-level key (e.g. a position-bias vector outside
+    # the documented routing table), routing it through the mid basis
+    # minimizes the worst-case faithfulness penalty: mid is the basis that
+    # was trained against the largest contiguous stack of host blocks and
+    # therefore covers the broadest activation distribution. Documented as
+    # the safe default in
+    # ``openspec/changes/hybrid-bridge-forge/design.md`` § "Three bases,
+    # three regions".
     return bundle.basis_mid
 
 

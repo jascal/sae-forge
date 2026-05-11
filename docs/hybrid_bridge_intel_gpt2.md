@@ -2,7 +2,48 @@
 
 This document captures the cross-architecture defaults-validation baseline
 documented in [the hybrid-bridge-forge change proposal](../openspec/changes/hybrid-bridge-forge/design.md)
-§ "Cross-architecture validation tiering" (T1 tier).
+§ "Cross-architecture validation tiering" (T1 tier). See also
+[`tasks.md`](../openspec/changes/hybrid-bridge-forge/tasks.md) for the
+deferred follow-ups (FSM wiring, Llama/Gemma-2 bridge insertion, real-SAE
+re-sweep, T3 M4 reproduction, T4 community CUDA validation).
+
+## Quick start
+
+Hybrid forging is **opt-in** via `--hybrid-bridge`. The flag requires
+three Polygram-compressed SAE checkpoints — one per anchor (embed / mid /
+lm-head). The CLI does not auto-train SAEs.
+
+The host model must have **untied embeddings**. GPT-2 ships tied by
+default, so the simplest reproducible CLI path is to point at an
+already-untied host. For a one-shot exploration without doing SAE
+training, the comparison harness applies an in-script untying workaround:
+
+```bash
+# Reproduce the T1 ablation (PCA-proxy bases, no real SAE training):
+python scripts/compare_single_vs_hybrid_gpt2.py --n-features 256
+```
+
+For a real forge run with trained SAE bases (recommended once you have
+three Polygram-compressed checkpoints at three anchor layers):
+
+```bash
+sae-forge forge ./mid_basis.compressed.safetensors \
+  --host-model your-untied-host \
+  --output-dir runs/hybrid \
+  --hybrid-bridge \
+  --basis-embed ./embed_basis.compressed.safetensors \
+  --basis-lm-head ./lm_head_basis.compressed.safetensors
+```
+
+Bridge configuration knobs (defaults in **bold**):
+
+| Flag | Choices | Default |
+|---|---|---|
+| `--bridge-init` | `orthogonal` / `identity` / `zero` | **`orthogonal`** |
+| `--bridge-nonlin` | `none` / `relu` / `gelu` | **`none`** |
+| `--bridge-no-pre-ln` | flag | **off** (i.e. pre-LN **enabled**) |
+
+The default config is validated against the T1 ablation table below.
 
 **Hardware:** 16GB Intel Mac (Core i9), no CUDA. Python 3.11.
 **Date:** 2026-05-11.

@@ -166,6 +166,71 @@ class TestTiedEmbeddingRefusal:
             pipeline._build_hybrid_bundle(tiny_gpt2_tied_4layer)
 
 
+class TestZeroInitInversion:
+    """Confirm zero-init bridges destroy the signal — the design.md framing.
+
+    A linear bridge with zero-init outputs zero for every input. When inserted
+    on the forward path, this clobbers the residual stream at the embed/mid
+    boundary, so the forged model's predictions become noise. This is the
+    "initialization isolation matters, not added linear capacity" claim
+    from design.md § "The honest algebraic concern", made testable.
+
+    Orthogonal-init bridges should produce qualitatively different (and
+    finite, non-zero) output. We don't pin a numeric KL here — that's the
+    job of the comparison harness — only the *qualitative* contrast.
+    """
+
+    def test_zero_init_drives_block_output_to_zero(self, tiny_gpt2_untied_4layer):
+        """After the first bridge, the residual stream at block 1's input should be near zero with zero-init bridges."""
+        import torch
+
+        from saeforge.bridges import BridgeConfig
+        from saeforge.forge import ForgePipeline
+        from saeforge.projector import SubspaceProjector
+
+        b_mid = _basis(n=8, d=16, seed=1)
+        pipeline = ForgePipeline(
+            basis=b_mid,
+            projector=SubspaceProjector(b_mid),
+            host_model_id="<offline>",
+            hybrid_bridge=True,
+            basis_embed=_basis(n=8, d=16, seed=2),
+            basis_lm_head=_basis(n=8, d=16, seed=3),
+            bridge_config=BridgeConfig(init="zero", nonlin="none", pre_layernorm=False),
+        )
+        model = _build_forged_module(pipeline, tiny_gpt2_untied_4layer)
+        # The emb_mid bridge with zero-init + no LN + linear output is exactly
+        # the zero function. Verify directly.
+        x = torch.randn(1, 4, 8)
+        emb_mid = model.torch_module.transformer.bridges["emb_mid"]
+        assert torch.allclose(emb_mid(x), torch.zeros_like(x))
+
+    def test_orthogonal_init_preserves_nonzero_signal(self, tiny_gpt2_untied_4layer):
+        """Orthogonal-init bridge preserves the input's magnitude (after pre-LN)."""
+        import torch
+
+        from saeforge.bridges import BridgeConfig
+        from saeforge.forge import ForgePipeline
+        from saeforge.projector import SubspaceProjector
+
+        b_mid = _basis(n=8, d=16, seed=1)
+        pipeline = ForgePipeline(
+            basis=b_mid,
+            projector=SubspaceProjector(b_mid),
+            host_model_id="<offline>",
+            hybrid_bridge=True,
+            basis_embed=_basis(n=8, d=16, seed=2),
+            basis_lm_head=_basis(n=8, d=16, seed=3),
+            bridge_config=BridgeConfig(init="orthogonal", nonlin="none", pre_layernorm=False),
+        )
+        model = _build_forged_module(pipeline, tiny_gpt2_untied_4layer)
+        # Orthogonal linear preserves Frobenius norm exactly.
+        x = torch.randn(1, 4, 8)
+        emb_mid = model.torch_module.transformer.bridges["emb_mid"]
+        y = emb_mid(x)
+        assert torch.allclose(torch.linalg.norm(y), torch.linalg.norm(x), atol=1e-4)
+
+
 class TestByteEquivalenceWhenDisabled:
     """Confirm hybrid_bridge=False with stale extras is byte-identical to the v0 minimal call.
 
