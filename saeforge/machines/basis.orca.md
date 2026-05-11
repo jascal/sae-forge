@@ -35,7 +35,7 @@ the same ACTION_TABLE on every spawned machine).
 |--------|-------|-------|--------|--------|
 | starting | start |  | compressed | compress_with_polygram |
 | starting | error |  | failed | log_error |
-| compressed | compress_done | should_regrow | regrown | perform_regrowth |
+| compressed | compress_done | should_regrow | regrown | adapt_and_regrow |
 | compressed | compress_done | no_regrow_more_passes | compressed | compress_with_polygram |
 | compressed | compress_done | no_regrow_done | projected | project_to_subspace |
 | compressed | error |  | failed | log_error |
@@ -53,6 +53,7 @@ the same ACTION_TABLE on every spawned machine).
 |------|-----------|
 | compress_with_polygram | (ctx) -> Context |
 | perform_regrowth | (ctx) -> Context |
+| adapt_and_regrow | (ctx) -> Context |
 | project_to_subspace | (ctx) -> Context |
 | fine_tune_model | (ctx) -> Context |
 | log_error | (ctx) -> Context |

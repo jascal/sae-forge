@@ -1,4 +1,12 @@
-"""FeatureBasis — load a Polygram-compressed SAE checkpoint into a feature basis."""
+"""FeatureBasis — load a Polygram-compressed SAE checkpoint into a feature basis.
+
+Also hosts ``RegrowController``: a deterministic pure-Python controller
+that computes the per-cycle ``effective_regrow_count`` for the
+adaptive-regrow path in ``BasisMachine``. The controller is colocated
+with ``FeatureBasis`` because both operate on the *basis-shape* concept
+(number of kept features) — keeping them in one file matches the
+existing single-file convention.
+"""
 
 from __future__ import annotations
 
@@ -148,6 +156,45 @@ class FeatureBasis:
 
     def save_summary(self, path: str | Path) -> None:
         Path(path).write_text(json.dumps(self.to_summary(), indent=2))
+
+
+class RegrowController:
+    """Deterministic, pure-function controller for adaptive regrow.
+
+    Computes the per-cycle ``effective_regrow_count`` from a single
+    polygram-side signal (``n_features_kept``) and the configured
+    ``n_features_target`` / ``regrow_count`` / ``regrow_max`` /
+    ``regrow_damping`` knobs. See ``openspec/changes/adaptive-regrow``
+    for the rationale and the rejected alternatives (PID, ML-based).
+
+    The controller is stateless: no instance state, no class state, no
+    IO, no RNG. Two calls with the same arguments return the same int.
+    """
+
+    @staticmethod
+    def next_count(
+        n_features_kept: int,
+        n_features_target: int,
+        regrow_count: int,
+        regrow_max: int,
+        regrow_damping: float,
+    ) -> int:
+        """Return the per-cycle ``effective_regrow_count`` bounded by
+        ``[regrow_count, regrow_max]``.
+
+        Equation (linear, damped, bounded):
+
+            gap     = max(0, n_features_target - n_features_kept)
+            damped  = round(gap * regrow_damping)
+            return    max(regrow_count, min(damped, regrow_max))
+
+        When the basis already exceeds the target (``gap == 0``) the
+        controller returns ``regrow_count`` — the v0.2 fallback. No
+        growth pressure beyond the configured base.
+        """
+        gap = max(0, int(n_features_target) - int(n_features_kept))
+        damped = int(round(gap * float(regrow_damping)))
+        return max(int(regrow_count), min(damped, int(regrow_max)))
 
 
 def _locate_report(checkpoint_path: Path) -> Path | None:

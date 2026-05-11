@@ -112,6 +112,18 @@ with `openspec validate <change-name>` before working on it; archive via
   is never imported on the default forge path; `--quantum-aware` only
   influences which Polygram `confirmer` is selected inside
   `compress_with_polygram`.
+- **Adaptive regrow** (v0.5, opt-in): when the fixed `--regrow-count`
+  isn't right across a multi-shard run, `--adaptive-regrow` activates
+  a controller in the basis loop that grows the basis toward
+  `--n-features-target` based on the polygram-side `n_features_kept`
+  signal. The controller is a pure function
+  (`saeforge.basis.RegrowController`) wrapped in a composed action
+  (`saeforge.actions.adapt_and_regrow`) sitting on the existing
+  `compressed → regrown` transition — zero topology drift. Defaults
+  preserve v0.2 byte-equivalence. Full knob reference and tuning
+  guidelines in
+  [`docs/advanced-fsm-options.md`](docs/advanced-fsm-options.md)
+  under "Adaptive regrow".
 
 ## Torch dependency contract
 

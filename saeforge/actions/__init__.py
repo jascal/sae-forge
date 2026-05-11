@@ -295,6 +295,13 @@ def perform_regrowth(ctx: dict, _payload: dict | None = None) -> dict:
     ``layer=10`` / ``model_name="gpt2"`` ctx fallbacks were a footgun on
     non-GPT-2 hosts; polygram-tuning-config removed the corresponding
     polygram-side defaults so callers must now declare them explicitly.
+
+    The per-cycle count is read from ``effective_regrow_count`` when
+    present (written by ``adapt_and_regrow`` under
+    ``adaptive_regrow=True``) and falls back to the configured
+    ``regrow_count`` otherwise. The gate that turns the action into a
+    pass-through is the configured ``regrow_count == 0`` — unchanged
+    from v0.2.
     """
     if ctx.get("regrow_count", 0) == 0 or not ctx.get("compression_report_path"):
         _log(ctx, "perform_regrowth", {"mode": "passthrough"})
@@ -327,18 +334,117 @@ def perform_regrowth(ctx: dict, _payload: dict | None = None) -> dict:
     # entry supply one.
     prompts = config.prompts if config.prompts is not None else tuple([""] * 16)
 
+    # Per-cycle count: prefer the adaptive controller's
+    # ``effective_regrow_count`` (when set by ``adapt_and_regrow``) over
+    # the configured ``regrow_count``. ``top_k`` is the polygram-side
+    # field that caps the regrow population.
+    effective = ctx.get("effective_regrow_count")
+    top_k = int(effective) if effective is not None else int(ctx["regrow_count"])
+
     regrower = Regrower.from_compression_report(
         report,
         sae_checkpoint=Path(ctx["compressed_sae_path"]),
         config=config,
         prompts=list(prompts),
+        top_k=top_k,
     )
     result = regrower.run(output_path)
-    _log(ctx, "perform_regrowth", {"mode": "polygram", "n_regrown": len(result.report.populations)})
+    _log(
+        ctx,
+        "perform_regrowth",
+        {
+            "mode": "polygram",
+            "n_regrown": len(result.report.populations),
+            "top_k": top_k,
+            "source": "effective" if effective is not None else "configured",
+        },
+    )
     return {
         "regrown_sae_path": str(output_path),
         "inner_refine_idx": ctx.get("inner_refine_idx", 0) + 1,
     }
+
+
+def _compute_effective_regrow_count(ctx: dict) -> dict:
+    """Run the RegrowController against ctx and stash the result.
+
+    Mutates ``ctx['effective_regrow_count']`` AND appends an
+    ``adapt_regrow_count`` entry to ``transitions_log``. Returns a
+    dict delta for orca-runtime to merge back. The two writes (ctx
+    mutation + delta return) are kept in lock-step so callers that
+    consume ctx directly (the composed action) and callers that rely
+    on the runtime's delta merge (the FSM dispatch) both see the new
+    field.
+    """
+    from saeforge.basis import RegrowController
+
+    kept = int(ctx.get("current_feature_count", 0))
+    target = int(ctx.get("n_features_target", 0))
+    regrow_count = int(ctx.get("regrow_count", 0))
+    regrow_max = int(ctx.get("regrow_max", 0))
+    damping = float(ctx.get("regrow_damping", 0.5))
+
+    value = RegrowController.next_count(
+        n_features_kept=kept,
+        n_features_target=target,
+        regrow_count=regrow_count,
+        regrow_max=regrow_max,
+        regrow_damping=damping,
+    )
+    gap = max(0, target - kept)
+    _log(
+        ctx,
+        "adapt_regrow_count",
+        {"value": value, "gap": gap, "target": target},
+    )
+    ctx["effective_regrow_count"] = value
+    return {"effective_regrow_count": value}
+
+
+def adapt_and_regrow(ctx: dict, payload: dict | None = None) -> dict:
+    """Composed BasisMachine action: optionally compute ``effective_regrow_count`` then regrow.
+
+    Three paths, in order:
+
+    1. **Disabled toggle** — ``ctx['adaptive_regrow']`` is falsy. The
+       controller is NOT invoked. ``effective_regrow_count`` is NOT
+       written. The call reduces to ``perform_regrowth(ctx, payload)``
+       — byte-identical to v0.2.
+    2. **Cold start** — ``adaptive_regrow=True`` but no prior
+       compression has populated ``current_feature_count`` (it is
+       ``None`` or ``0``). The controller is NOT invoked; the action
+       falls through to ``perform_regrowth`` using the configured
+       ``regrow_count``. No ``adapt_regrow_count`` log entry is
+       appended.
+    3. **Enabled, warm** — ``adaptive_regrow=True`` AND a prior
+       compression populated ``current_feature_count``. The controller
+       runs, writes ``effective_regrow_count`` to ctx, appends an
+       ``adapt_regrow_count`` log entry, and then calls
+       ``perform_regrowth`` which reads the just-written field.
+
+    The ``transitions_log`` records two consecutive entries per
+    enabled-warm cycle: ``adapt_regrow_count`` then
+    ``perform_regrowth``. Existing readers indexed by action name see
+    one extra entry per regrow cycle.
+    """
+    if not ctx.get("adaptive_regrow"):
+        return perform_regrowth(ctx, payload)
+
+    # Cold-start: skip the controller entirely on the first cycle.
+    # ``current_feature_count`` is unset (None) or zero (the initial
+    # ctx default) until the first ``compress_with_polygram`` runs in
+    # polygram mode. Pass-through compression also leaves it at zero;
+    # in that case there's nothing meaningful for the controller to
+    # target on the first pass, so we use the configured ``regrow_count``.
+    if not ctx.get("current_feature_count"):
+        return perform_regrowth(ctx, payload)
+
+    delta: dict = {}
+    delta.update(_compute_effective_regrow_count(ctx))
+    inner_delta = perform_regrowth(ctx, payload)
+    if isinstance(inner_delta, dict):
+        delta.update(inner_delta)
+    return delta
 
 
 def project_to_subspace(ctx: dict, _payload: dict | None = None) -> dict:
@@ -785,6 +891,7 @@ ACTION_TABLE: dict[str, Any] = {
     "load_and_scan": load_and_scan,
     "compress_with_polygram": compress_with_polygram,
     "perform_regrowth": perform_regrowth,
+    "adapt_and_regrow": adapt_and_regrow,
     "project_to_subspace": project_to_subspace,
     "fine_tune_model": fine_tune_model,
     "evaluate_faithfulness": evaluate_faithfulness,

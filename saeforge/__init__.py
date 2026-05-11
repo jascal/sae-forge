@@ -1,6 +1,6 @@
 """sae-forge — turn a Polygram-compressed SAE into a small, semantically-native transformer."""
 
-from saeforge.basis import FeatureBasis
+from saeforge.basis import FeatureBasis, RegrowController
 from saeforge.forge import ForgeFailed, ForgePipeline, ForgeResult
 from saeforge.model import NativeModel
 from saeforge.projector import SubspaceProjector
@@ -13,6 +13,7 @@ __all__ = [
     "ForgePipeline",
     "ForgeResult",
     "NativeModel",
+    "RegrowController",
     "SubspaceProjector",
     "__version__",
 ]
