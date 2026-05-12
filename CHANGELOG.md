@@ -5,6 +5,21 @@ their corresponding OpenSpec change is archived.
 
 ## [Unreleased]
 
+### Added (qwen3-dense-support)
+
+- **Qwen3 dense architecture adapter.** `Qwen3Adapter` inherits from
+  `Qwen2Adapter` and stamps `family="qwen3"` + auto-detects the
+  per-head Q/K RMSNorm (`qk_norm=True`). The shared `LlamaAdapter.walk`
+  now emits `q_norm`/`k_norm` weights as head-dim-aligned pass-through
+  whenever the host has those submodules (host-attribute-gated, no-ops
+  for Llama / Gemma-2 / Qwen2). The Llama-family `LlamaSelfAttention`
+  conditionally constructs `RMSNorm(head_dim)` on Q and K when
+  `cfg.qk_norm=True` and applies them between projection-reshape and
+  SDPA. Qwen3 inherits hybrid-bridge support automatically via the
+  shared `build_llama_family_module` factory. Requires
+  `transformers >= 4.51`; the `[intel]` extra is capped at `<4.50` and
+  silently skips Qwen3 registration.
+
 ### Added (hybrid-bridge-llama-family)
 
 - **Hybrid-bridge insertion into the Llama-family native module

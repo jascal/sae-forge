@@ -98,6 +98,7 @@ from saeforge.adapters import gpt2 as _gpt2  # noqa: E402,F401
 from saeforge.adapters import llama as _llama  # noqa: E402,F401
 from saeforge.adapters import gemma2 as _gemma2  # noqa: E402,F401
 from saeforge.adapters import qwen2 as _qwen2  # noqa: E402,F401
+from saeforge.adapters import qwen3 as _qwen3  # noqa: E402,F401
 
 
 __all__ = [
