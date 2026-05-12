@@ -336,3 +336,51 @@ def feature_basis_128_to_32():
         merged_norms=np.linalg.norm(W, axis=1).astype(np.float32),
         original_norms=np.linalg.norm(W, axis=1).astype(np.float32),
     )
+
+
+@pytest.fixture
+def tiny_synthetic_whisper():
+    """A tiny synthetic Whisper — d_model=64, 2 encoder layers, MHA-only.
+
+    Architecturally a scaled-down whisper-tiny: 64-d residual,
+    4 attention heads (head_dim=16), 128-dim FFN, the standard 80
+    mel bins, and 1500 max source positions. Decoder fields are
+    populated to the minimum WhisperConfig validation tolerates but
+    are unused by the encoder-only forge path.
+    """
+    pytest.importorskip("torch")
+    pytest.importorskip("transformers")
+    from transformers import WhisperConfig, WhisperModel
+
+    config = WhisperConfig(
+        d_model=64,
+        encoder_layers=2,
+        encoder_attention_heads=4,
+        encoder_ffn_dim=128,
+        decoder_layers=1,
+        decoder_attention_heads=1,
+        decoder_ffn_dim=8,
+        vocab_size=51865,
+        num_mel_bins=80,
+        max_source_positions=1500,
+    )
+    return WhisperModel(config).eval()
+
+
+@pytest.fixture
+def feature_basis_64_to_32():
+    """A 32-feature FeatureBasis over a 64-d residual (matches the
+    tiny_synthetic_whisper fixture's d_model=64)."""
+    import numpy as np
+
+    from saeforge.basis import FeatureBasis
+
+    n = 32
+    rng = np.random.default_rng(0)
+    W = rng.standard_normal((n, 64)).astype(np.float32)
+    return FeatureBasis(
+        kept_ids=np.arange(n, dtype=np.int64),
+        W_dec=W,
+        merged_norms=np.linalg.norm(W, axis=1).astype(np.float32),
+        original_norms=np.linalg.norm(W, axis=1).astype(np.float32),
+    )

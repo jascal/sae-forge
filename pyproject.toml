@@ -72,6 +72,13 @@ orca = ["orca-runtime-python>=0.1.27"]
 # v0.3 forge-finetune-recipe — pulls HuggingFace `datasets` for the
 # stream-from-HF corpus path. Local-file corpora work without this.
 recipe = ["datasets>=2.16"]
+# v0.4 forge-whisper-encoder — librosa for real-audio mel extraction
+# from .wav / .flac. The synthetic fixture path
+# (saeforge.audio_data.synthetic_mel_features) is pure-numpy and does
+# not need this; pre-extracted mel features piped in via
+# --audio-features-path also work without librosa. Install this extra
+# only when you need to feed real audio through the forge eval.
+audio = ["librosa>=0.10"]
 all = [
     "pytest",
     "ruff",
@@ -82,6 +89,7 @@ all = [
     "polygram>=0.3.0",
     "orca-runtime-python>=0.1.27",
     "datasets>=2.16",
+    "librosa>=0.10",
 ]
 
 [project.scripts]

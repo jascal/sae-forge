@@ -26,10 +26,14 @@ The adapter's `family` class attribute SHALL be `"whisper_encoder"`.
 
 ### Requirement: walk projects every encoder weight whose input or output touches the residual stream
 
-For a Whisper encoder host with `n` layers, `WhisperEncoderAdapter.walk`
-SHALL return a dict containing exactly the following keys, each with
+`WhisperEncoderAdapter.walk` SHALL return, for a Whisper encoder host
+with `n` layers, a dict containing exactly the following keys, each with
 the indicated shape (where `f = n_features`, `d = d_model`, `i =
-intermediate_size`, `m = n_mels`, `p = max_source_positions`):
+intermediate_size`, `m = n_mels`, `p = max_source_positions`).
+Shapes follow HF `nn.Linear` convention: `weight` is `(out, in)` and
+`bias` matches `out`. Q/K/V read the residual (in-axis projected
+from `d` to `f`); `out_proj` writes the residual (out-axis
+projected from `d` to `f`).
 
 ```
 conv1.weight                                (d, m, 3)         # frozen-copied
@@ -37,14 +41,15 @@ conv1.bias                                  (d,)               # frozen-copied
 conv2.weight                                (d, d, 3)         # frozen-copied
 conv2.bias                                  (d,)               # frozen-copied
 embed_positions.weight                      (p, d)            # frozen-copied
+basis_encode                                (d, f)            # d→f bridge buffer
 layers.{0..n-1}.self_attn_layer_norm.weight (f,)
 layers.{...}.self_attn_layer_norm.bias      (f,)
-layers.{...}.self_attn.q_proj.weight        (f, d)
+layers.{...}.self_attn.q_proj.weight        (d, f)
 layers.{...}.self_attn.q_proj.bias          (d,)
-layers.{...}.self_attn.k_proj.weight        (f, d)
-layers.{...}.self_attn.v_proj.weight        (f, d)
+layers.{...}.self_attn.k_proj.weight        (d, f)
+layers.{...}.self_attn.v_proj.weight        (d, f)
 layers.{...}.self_attn.v_proj.bias          (d,)
-layers.{...}.self_attn.out_proj.weight      (d, f)
+layers.{...}.self_attn.out_proj.weight      (f, d)
 layers.{...}.self_attn.out_proj.bias        (f,)
 layers.{...}.final_layer_norm.weight        (f,)
 layers.{...}.final_layer_norm.bias          (f,)
@@ -55,6 +60,18 @@ layers.{...}.fc2.bias                       (f,)
 layer_norm.weight                           (f,)
 layer_norm.bias                             (f,)
 ```
+
+The conv stem stays at ``d_model`` channels (frozen-copied) and the
+transformer blocks operate at ``n_features`` width, so the forged
+module needs a runtime d → f projection at the conv-stem →
+first-block boundary. The walker emits ``basis_encode`` carrying
+``projector.basis.pseudoinverse() * projector.scale_boost`` (the
+matrix-form of :meth:`SubspaceProjector.encode`); the forged module
+loads it into a non-parameter buffer. It appears in
+``state_dict()`` (so save/load round-trips it) but not in
+``named_parameters()`` (so it doesn't participate in gradient
+checkpointing, weight-decay groups, or the
+no-randomly-initialised-weights invariant).
 
 `k_proj` SHALL NOT have a bias (matches HF Whisper). The conv stem
 weights and `embed_positions` SHALL be byte-identical to the host's
@@ -127,10 +144,11 @@ extra) but SHALL succeed when torch is installed.
 
 ### Requirement: Adapter registry dispatches by host model class
 
-The v0.3 contract is preserved. The change is that `registered_classes()`
-SHALL include `transformers.WhisperForConditionalGeneration` and
+`saeforge.adapters.registered_classes()` SHALL include
+`transformers.WhisperForConditionalGeneration` and
 `transformers.WhisperModel` in its returned list once
-`saeforge.adapters.whisper` has been imported.
+`saeforge.adapters.whisper` has been imported (the v0.3 contract is
+otherwise preserved unchanged).
 
 The `NotImplementedError` raised on unregistered hosts SHALL list
 all five registered classes (the v0.3 GPT-2/Llama/Gemma-2 plus the

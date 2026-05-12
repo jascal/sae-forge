@@ -5,6 +5,70 @@ their corresponding OpenSpec change is archived.
 
 ## [Unreleased]
 
+### Added (forge-whisper-encoder)
+
+- **Whisper-encoder forging — first non-causal-LM architecture in the
+  registry.** New `WhisperEncoderAdapter` walks the encoder of either
+  `WhisperForConditionalGeneration` or `WhisperModel` into the
+  projected weight dict the matching native module consumes. The
+  decoder is out of scope for v0.4 (tracked as `forge-whisper-decoder`).
+- **`ForgedWhisperEncoder` native module.** Pre-LN block layout
+  matching HF Whisper, GELU MLP, MHA (no GQA). The conv stem
+  (`conv1`/`conv2`) and `embed_positions` are frozen-copied from the
+  host bit-for-bit — ε_conv accounting per `docs/algorithm.md` §10.5.
+  A `basis_encode` buffer carries the d → f bridge
+  (`projector.basis.pseudoinverse() * scale_boost`) at the conv-stem
+  → first-block boundary; state-dict-resident but not a parameter, so
+  the no-randomly-initialised-weights invariant applies cleanly.
+- **`NativeModelConfig.output_kind`** — new field, defaults to
+  `"logits"`. Accepts `"encoder_states"` for the Whisper-encoder
+  family. `vocab_size` now defaults to `0` and is gated by
+  `output_kind`. Cross-constraints enforced at construction. Existing
+  LM callers see byte-identical behaviour.
+- **`saeforge.audio_eval.cosine_faithfulness`** — per-frame cosine
+  similarity between forged encoder states and host states projected
+  through the forge's own `basis_encode` buffer. Optional
+  `precomputed_host_states` kwarg skips the host forward when the FSM
+  has pre-captured states.
+- **Family-aware `evaluate_faithfulness` dispatch.** LM families go
+  through `_kl_from_input_ids` verbatim (FSM byte-equivalence net
+  green); `whisper_encoder` goes through `cosine_faithfulness`. The
+  `faithfulness` ctx field carries the family-appropriate scalar;
+  `perplexity` carries `1 - cosine` for encoder so the existing
+  `perplexity < best_perplexity` progress check keeps the right
+  direction. `min_faithfulness` is reinterpreted per family (KL
+  negation for LM; positive cosine threshold for encoder).
+- **`ForgePipeline.eval_audio_features` and `eval_encoder_states`.**
+  Pipeline-level fields plumbed through `_build_fsm_ctx`. Mutually
+  exclusive with `eval_prompts` at construction. The
+  `eval_encoder_states` field is the audio-side analog of pre-
+  tokenised `_eval_input_ids` — when set, the host forward is
+  skipped inside the FSM.
+- **`saeforge.audio_data.synthetic_mel_features`** — pure-numpy
+  sine-sweep + Gaussian noise synthesiser producing
+  `(batch, 80, n_frames)` tensors shaped like Whisper input. Used
+  by the synthetic example + tests; no `[audio]` extra required.
+- **`sae-forge forge --audio-features-path FILE.pt`** — CLI flag,
+  argparse-level mutually exclusive with `--eval-prompts`. Loads a
+  `torch.save`'d tensor and passes it through to
+  `ForgePipeline.eval_audio_features`.
+- **`[audio]` pyproject extra** pinning `librosa>=0.10`. Optional —
+  only the real-audio `.wav`/`.flac` mel-extraction path needs it.
+  Added to `[all]`.
+- **New examples and docs.** `examples/forge_whisper_synthetic.py`
+  runs the full pipeline on a tiny synthetic Whisper without HF
+  download or audio files. `docs/audio-forge.md` is the user-facing
+  reference; `docs/algorithm.md` §10.5 documents the algorithmic
+  surface (output_kind, vocab_size=0, the d→f bridge, ε_conv).
+- **Spec correction in the same change.** The architecture-adapters
+  spec delta for Whisper originally listed q/k/v_proj.weight as
+  `(f, d)` and out_proj.weight as `(d, f)`; under HF
+  `nn.Linear (out, in)` convention these need to be `(d, f)` and
+  `(f, d)` respectively. The `(d,)` `q_proj.bias` alongside the
+  original `(f, d)` `q_proj.weight` was self-inconsistent (Linear
+  bias must match the first weight axis). Spec now matches the
+  implementation and HF convention.
+
 ### Added (qwen3-dense-support)
 
 - **Qwen3 dense architecture adapter.** `Qwen3Adapter` inherits from

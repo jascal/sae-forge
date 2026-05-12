@@ -31,6 +31,13 @@ Recent landed work:
   (structural EWC), replay buffer for fine-tune. All knobs default to
   values that recover the single-shard pipeline byte-identically. See
   [`docs/advanced-fsm-options.md`](docs/advanced-fsm-options.md).
+- **forge-whisper-encoder**: encoder-only Whisper forging — the first
+  non-causal-LM architecture in the registry. New
+  `WhisperEncoderAdapter`, `ForgedWhisperEncoder` native module (with
+  a frozen-copied conv stem and a `basis_encode` buffer at the
+  d → f boundary), `cosine_faithfulness` eval, family-aware
+  `evaluate_faithfulness` dispatch. LM byte-equivalence net stays
+  green. See [`docs/audio-forge.md`](docs/audio-forge.md).
 
 New work is staged through OpenSpec changes — see ``openspec/changes/``.
 

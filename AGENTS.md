@@ -123,6 +123,44 @@ with `openspec validate <change-name>` before working on it; archive via
 - Lazy-import torch inside the modules that need it, never at package
   import time. `import saeforge` MUST succeed without torch.
 
+## Audio architecture support (v0.4 forge-whisper-encoder)
+
+- Encoder-only forging of Whisper variants is supported via
+  `family == "whisper_encoder"`. The decoder forge (cross-attention,
+  vocab head, beam search) is deliberately out of scope and tracked
+  as a separate change (`forge-whisper-decoder`). Encoder-only is
+  the natural unit because the polygram-side Whisper SAEs target
+  encoder residuals.
+- `evaluate_faithfulness` dispatches on `forged.config.family`:
+  LM families (gpt2 / llama / gemma2 / qwen2 / qwen3) go through
+  the existing `_kl_from_input_ids` path verbatim;
+  `whisper_encoder` goes through
+  `saeforge.audio_eval.cosine_faithfulness` instead. The
+  `faithfulness` ctx field carries the family-appropriate scalar
+  (KL for LM, cosine for encoder); `perplexity` is `exp(KL)` for
+  LM and `1 - cosine` for encoder so the existing
+  `perplexity < best_perplexity` progress check keeps the right
+  direction in both paths.
+- `min_faithfulness` is reinterpreted per family. LM uses the v0.1
+  negation convention (`min_faith=-0.05` means "max KL = 0.05").
+  Encoder uses the natural positive convention
+  (`min_faith=0.95` means "min cosine = 0.95"). The default `0.0`
+  is uniformly permissive across both.
+- The conv stem (`conv1`, `conv2`) and positional embeddings stay
+  at `d_model` width (frozen-copied — ε_conv per
+  `docs/algorithm.md` §5). The d → f bridge from the conv-stem
+  output into the SAE-basis residual stream lives in a
+  `basis_encode` buffer on `ForgedWhisperEncoder`, set by the
+  adapter walk from `projector.basis.pseudoinverse() *
+  scale_boost`. Buffer not parameter, so it doesn't participate
+  in gradient checkpointing or the no-randomly-initialised-weights
+  invariant.
+- Real-audio mel extraction needs `librosa` (the `[audio]` extra);
+  the synthetic-fixture path
+  (`saeforge.audio_data.synthetic_mel_features`) and the
+  CLI `--audio-features-path` (pre-extracted tensors) work
+  without it.
+
 ## File layout
 
 ```
