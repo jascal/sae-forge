@@ -115,9 +115,20 @@ class LlamaAdapter(ArchitectureAdapter):
             # MLP. Two cases:
             # - Dense (Llama / Gemma-2 / Qwen2 / Qwen3-dense): block.mlp has
             #   gate_proj / up_proj / down_proj attributes directly.
-            # - MoE (Qwen3-MoE): block.mlp has gate (router) + experts
-            #   ModuleList; each expert has its own gate_proj / up_proj /
-            #   down_proj. Detected by ``hasattr(block.mlp, "experts")``.
+            # - MoE (Qwen3-MoE): block.mlp has gate (router) + experts.
+            #   Two host sub-layouts depending on transformers version:
+            #     * 4.51–4.x: experts is an nn.ModuleList of per-expert MLPs,
+            #       each with its own gate_proj / up_proj / down_proj.
+            #     * 5.x: experts is a single Qwen3MoeExperts nn.Module with
+            #       fused 3D parameters gate_up_proj (E, 2*I, H) and
+            #       down_proj (E, H, I). gate and up are concatenated on dim 1
+            #       (verified against HF forward: linear(x, gate_up_proj[e])
+            #       .chunk(2, dim=-1) — first half is gate, second is up).
+            #   Detected by ``hasattr(block.mlp, "experts")``; the fused
+            #   layout is further detected by ``hasattr(experts, "gate_up_proj")``.
+            #   We unfuse on read so the forged native module's per-expert key
+            #   scheme (mlp.experts.{e}.{gate,up,down}_proj.weight) stays the
+            #   same across transformers versions.
             #
             # SwiGLU shape conventions (for both dense and per-expert):
             #   gate/up are (intermediate, hidden) — IN axis (1) is residual
@@ -129,16 +140,35 @@ class LlamaAdapter(ArchitectureAdapter):
                 out[f"{prefix}.mlp.gate.weight"] = projector.project_residual_output(
                     to_numpy(block.mlp.gate.weight)
                 )
-                for e, expert in enumerate(block.mlp.experts):
-                    out[f"{prefix}.mlp.experts.{e}.gate_proj.weight"] = projector.project_residual_output(
-                        to_numpy(expert.gate_proj.weight)
-                    )
-                    out[f"{prefix}.mlp.experts.{e}.up_proj.weight"] = projector.project_residual_output(
-                        to_numpy(expert.up_proj.weight)
-                    )
-                    out[f"{prefix}.mlp.experts.{e}.down_proj.weight"] = projector.project_residual_input(
-                        to_numpy(expert.down_proj.weight)
-                    )
+                experts_mod = block.mlp.experts
+                if hasattr(experts_mod, "gate_up_proj"):
+                    # transformers 5.x fused layout.
+                    gate_up = to_numpy(experts_mod.gate_up_proj)  # (E, 2*I, H)
+                    down = to_numpy(experts_mod.down_proj)        # (E, H, I)
+                    num_experts = gate_up.shape[0]
+                    inter = gate_up.shape[1] // 2
+                    for e in range(num_experts):
+                        out[f"{prefix}.mlp.experts.{e}.gate_proj.weight"] = projector.project_residual_output(
+                            gate_up[e, :inter, :]
+                        )
+                        out[f"{prefix}.mlp.experts.{e}.up_proj.weight"] = projector.project_residual_output(
+                            gate_up[e, inter:, :]
+                        )
+                        out[f"{prefix}.mlp.experts.{e}.down_proj.weight"] = projector.project_residual_input(
+                            down[e]
+                        )
+                else:
+                    # transformers 4.51–4.x ModuleList layout.
+                    for e, expert in enumerate(experts_mod):
+                        out[f"{prefix}.mlp.experts.{e}.gate_proj.weight"] = projector.project_residual_output(
+                            to_numpy(expert.gate_proj.weight)
+                        )
+                        out[f"{prefix}.mlp.experts.{e}.up_proj.weight"] = projector.project_residual_output(
+                            to_numpy(expert.up_proj.weight)
+                        )
+                        out[f"{prefix}.mlp.experts.{e}.down_proj.weight"] = projector.project_residual_input(
+                            to_numpy(expert.down_proj.weight)
+                        )
             else:
                 out[f"{prefix}.mlp.gate_proj.weight"] = projector.project_residual_output(
                     to_numpy(block.mlp.gate_proj.weight)
