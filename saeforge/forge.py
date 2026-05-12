@@ -234,6 +234,43 @@ class ForgePipeline:
                 "(cosine via eval_audio_features), not both. Set exactly "
                 "one."
             )
+        # Issue #27 / Bug 1: forge-whisper-encoder finetune incompatibility.
+        # The fine_tune_model action passes module.parameters() to the
+        # optimizer; on whisper_encoder the parameter set includes the
+        # frozen-copied conv stem (conv1, conv2) and embed_positions — the
+        # adapter walk copies them bit-for-bit from the host and they MUST
+        # stay frozen to keep the ε_conv accounting honest. There's no
+        # per-frame loss signal defined for an encoder forge either; the
+        # fine-tune path is LM-only by construction.
+        if self.eval_audio_features is not None and self.finetune_steps > 0:
+            raise ValueError(
+                "ForgePipeline: finetune_steps > 0 is not supported on "
+                "whisper_encoder forges. The conv stem (conv1, conv2, "
+                "embed_positions) is frozen-copied from the host and must "
+                "stay frozen — fine-tuning would corrupt those weights and "
+                "break the ε_conv accounting. Additionally, no per-frame "
+                "loss signal is defined for the encoder forge yet. Set "
+                "finetune_steps=0 or pair the pipeline with an LM host."
+            )
+        # Issue #27 / Bug 2: hybrid_bridge has no Whisper-encoder semantics.
+        # The flag wires three bases (basis_embed, basis, basis_lm_head)
+        # whose insertion points are the embed / mid / lm-head regions of
+        # an LM residual stream. Whisper encoder has no lm_head, and
+        # ForgedWhisperEncoder already carries its own d → f bridge in the
+        # basis_encode buffer at the conv-stem → first-block boundary. A
+        # hybrid_bridge=True whisper forge would either double-project
+        # the residual or crash deep in the projection step.
+        if self.eval_audio_features is not None and self.hybrid_bridge:
+            raise ValueError(
+                "ForgePipeline: hybrid_bridge=True is not supported on "
+                "whisper_encoder forges. The forged encoder already carries "
+                "a d → f projection in the basis_encode buffer at the "
+                "conv-stem → first-block boundary; layering a second bridge "
+                "on top would double-project the residual. There is also "
+                "no lm_head on a Whisper encoder for basis_lm_head to "
+                "attach to. Disable hybrid_bridge for whisper_encoder "
+                "forges."
+            )
         if self.task_trigger not in ("labeled", "token_budget", "loss_delta"):
             raise ValueError(
                 f"ForgePipeline: task_trigger={self.task_trigger!r} must be one of "
