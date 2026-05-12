@@ -66,9 +66,9 @@ state-dict-resident buffer so save/load round-trips it.
 
 ## 7. Audio data fixture
 
-- [ ] 7.1 New module `saeforge/audio_data.py` exposing `synthetic_mel_features(seed, batch=1, n_mels=80, n_frames=3000)` — pure-numpy mel-spectrogram synthesis (sine sweep + noise)
-- [ ] 7.2 `tests/conftest.py` gains a `tiny_synthetic_whisper` fixture (39M-class WhisperConfig with d_model=64, encoder_layers=2)
-- [ ] 7.3 Tests confirm the fixture produces a valid `WhisperModel` with `.encoder` accessible
+- [x] 7.1 New module `saeforge/audio_data.py` exposing `synthetic_mel_features(seed, batch=1, n_mels=80, n_frames=3000)` — pure-numpy sine-sweep + Gaussian noise; returns `torch.Tensor` with magnitude bounded near the sine envelope
+- [x] 7.2 `tests/conftest.py` gains a `tiny_synthetic_whisper` fixture (39M-class WhisperConfig with d_model=64, encoder_layers=2) — landed in the §1+§2 commit
+- [x] 7.3 Tests in `tests/test_audio_data.py` confirm the fixture has accessible `.encoder` with conv1/conv2/embed_positions/layers/layer_norm, and that synthetic mel features feed both the host encoder and `ForgedWhisperEncoder` without shape/dtype mismatches
 
 ## 8. CLI
 
