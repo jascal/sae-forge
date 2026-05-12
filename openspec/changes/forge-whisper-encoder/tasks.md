@@ -78,8 +78,8 @@ state-dict-resident buffer so save/load round-trips it.
 
 ## 9. Examples
 
-- [ ] 9.1 New `examples/forge_whisper_synthetic.py` — full synthetic Whisper forge end-to-end (no HF download, no real audio)
-- [ ] 9.2 Add an `examples/test_examples_smoke.py` entry that runs the synthetic Whisper example with a 30s wall-clock budget
+- [x] 9.1 New `examples/forge_whisper_synthetic.py` — five-stage end-to-end: tiny WhisperModel, FeatureBasis, adapter walk, ForgedWhisperEncoder assembly, cosine_faithfulness eval on a synthetic sine-sweep mel. No HF download, no real audio. Includes a print-side note explaining that cosine ≈ 0 on random hosts/bases is expected (ε compounds across blocks; a real polygram-compressed Whisper SAE gives much higher scores).
+- [x] 9.2 `tests/test_examples_smoke.py::test_forge_whisper_synthetic_main_runs_end_to_end` runs the example end-to-end in ~2s on CPU — well inside the 30s budget — asserting `forge_summary.json` contents and the saved model files.
 
 ## 10. CI / extras
 
