@@ -289,3 +289,57 @@ What is intentionally *not* replicated in v0.2:
   mask). The forged native module uses the standard causal mask
   everywhere; long-context drift is accepted as `ε_attn`. Replicating
   the exact sliding-window mechanics is future work.
+
+### 10.5 Native model shape — non-LM families (Whisper encoder)
+
+v0.4 (`forge-whisper-encoder`) extended `NativeModelConfig` to cover
+encoder-shaped families. Two new knobs gate the LM-vs-encoder split,
+both backward-compatible:
+
+- `output_kind: str ∈ {"logits", "encoder_states"}` — defaults to
+  `"logits"`. LM families produce vocab-shaped logits via an
+  `lm_head`; encoder families produce per-frame hidden states with
+  no vocab head. Cross-constraints: `output_kind == "logits"`
+  requires `vocab_size > 0`; `output_kind == "encoder_states"`
+  requires `vocab_size == 0` AND `family == "whisper_encoder"` (no
+  other encoder family ships in v0.4).
+- `vocab_size: int` — was a required field; now defaults to `0`.
+  The `vocab_size > 0` invariant is enforced only when
+  `output_kind == "logits"`, so LM callers see byte-identical
+  behaviour from v0.3 and encoder callers can omit the field.
+
+The projection algebra of §4 still applies to every residual-touching
+weight in the encoder block (Q/K/V/O, fc1/fc2, the two per-block
+LayerNorms, and the encoder-final LayerNorm). What's specific to
+Whisper-encoder is *what is not projected*:
+
+- **Mel conv stem (`conv1`, `conv2`)** — 1D temporal convolutions
+  on the 80-mel input. Their kernels operate on a spatial structure,
+  not the residual stream, so the projection rule in §4 does not
+  define them. They are frozen-copied from the host bit-for-bit
+  (`ε_conv`, accounted alongside the existing `ε_nonlin` / `ε_attn`
+  in §5). Future work could attempt a spatial-aware projection;
+  out of scope for v0.4.
+- **`embed_positions.weight`** — Whisper's sinusoidal-in-spirit
+  positional embeddings are stored as a learned tensor of shape
+  `(max_source_positions, d_model)`. They are frozen-copied
+  (matches the v0.1 GPT-2 `wpe` precedent — also copied unchanged).
+
+Because the conv stem and positional embeddings live at the host's
+`d_model` width while the transformer blocks operate at
+`n_features`, the forged encoder needs an explicit d → f bridge at
+the conv-stem → first-block boundary. This is the `basis_encode`
+buffer, set by the adapter walk from
+`projector.basis.pseudoinverse() * scale_boost` — the matrix form
+of `SubspaceProjector.encode`. The buffer is state-dict-resident
+(save/load round-trips it) but not in `named_parameters()`, so it
+doesn't participate in gradient checkpointing or the
+no-randomly-initialised-weights invariant.
+
+Faithfulness signal for encoder forges is per-frame cosine
+similarity in basis space (`saeforge.audio_eval.cosine_faithfulness`),
+not KL — encoder states are real-valued per-frame vectors, not
+distributions over a vocabulary. The dispatch lives in
+`evaluate_faithfulness`; consumers downstream of the FSM read the
+same `faithfulness` ctx field. See [`audio-forge.md`](audio-forge.md)
+for the user-facing reference.

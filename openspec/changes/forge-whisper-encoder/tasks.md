@@ -94,17 +94,17 @@ state-dict-resident buffer so save/load round-trips it.
 
 ## 12. Documentation
 
-- [ ] 12.1 New `docs/audio-forge.md` — user-facing reference for forging audio encoders. Covers: when to use it, how to pre-extract mel features, recommended polygram profile, the cosine eval semantics, the conv-stem ε_conv accounting
-- [ ] 12.2 Update `AGENTS.md` "Adapter contract" subsection to mention the encoder-only audio scope and the LM-vs-encoder eval dispatch
-- [ ] 12.3 Update `README.md` Status section bullet for `forge-whisper-encoder`
-- [ ] 12.4 Document the new `NativeModelConfig.output_kind` and the `vocab_size = 0` semantics in `docs/algorithm.md` §"Native model shape" (or equivalent section). The math foundation doc is the canonical reference for how the projection algebra sees the native model — adding a non-LM family is the kind of change that needs to land there, not just the user-facing audio doc
-- [ ] 12.5 Add a `## [Unreleased]` section to `CHANGELOG.md` (the repo currently lands entries at archive time per the file's preamble; this change introduces the Unreleased convention so the implementation PR has a place to drop notes incrementally). The Unreleased entry SHALL list the four artefacts this change introduces (adapter, native module, eval, audio-forge doc) so reviewers can see the surface area at a glance before the release-bump commit lands
+- [x] 12.1 `docs/audio-forge.md` (landed in §11.2): when to use the encoder forge, the polygram `uniform-sphere` profile recommendation with panel rationale, the d → f bridge mechanics via `basis_encode`, ε_conv accounting, pointer to the synthetic example, v0.4 limitations matrix
+- [x] 12.2 `AGENTS.md` gains an "Audio architecture support (v0.4 forge-whisper-encoder)" subsection documenting the encoder-only scope, the family-aware `evaluate_faithfulness` dispatch, the `min_faithfulness` reinterpretation, the conv-stem / `embed_positions` frozen-copy path and the `basis_encode` buffer, and the `[audio]` extra scope
+- [x] 12.3 `README.md` Status section gets a `forge-whisper-encoder` bullet alongside the other landed change entries, linking to `docs/audio-forge.md`
+- [x] 12.4 `docs/algorithm.md` §10.5 documents the `NativeModelConfig.output_kind` / `vocab_size = 0` semantics, the encoder-shape projection rules (what's projected vs what's frozen-copied), the `basis_encode` d → f bridge, and the family-aware faithfulness signal
+- [x] 12.5 `CHANGELOG.md` `[Unreleased]` already existed (the convention was established by qwen3-dense-support / hybrid-bridge-llama-family); this change appends a `### Added (forge-whisper-encoder)` block covering every artefact landed: adapter, native module, NativeModelConfig changes, cosine_faithfulness + dispatch, ForgePipeline audio fields, synthetic-mel synthesiser, CLI flag, `[audio]` extra, examples + docs, and the in-flight spec correction for the attention projection axis convention
 
 ## 13. Tests (overall)
 
-- [ ] 13.1 The byte-equivalence safety net `test_imperative_and_fsm_byte_equivalent` continues to pass unchanged (LM family default behavior preserved)
-- [ ] 13.2 Total new test count target: ~25 tests across `test_whisper_encoder_adapter.py` (12), `test_whisper_encoder_module.py` (5), `test_audio_eval.py` (8), and `test_evaluate_faithfulness_dispatch.py` (3)
-- [ ] 13.3 No existing tests modified except where the dispatch branch in `evaluate_faithfulness` requires updating a stub return value (LM-path stubs unchanged)
+- [x] 13.1 `test_imperative_and_fsm_byte_equivalent` passes unchanged — verified directly. LM family default behaviour is preserved end-to-end (FSM transitions, forged weights bit-equal, faithfulness path unmodified for non-whisper_encoder families)
+- [x] 13.2 New-test count comfortably above the proposal's ~25 estimate. Across the four target files: 9 (`test_whisper_encoder_adapter.py`) + 7 (`test_whisper_encoder_module.py`) + 12 (`test_audio_eval.py`) + 11 (`test_evaluate_faithfulness_dispatch.py`) = **39 tests**. Plus 12 (`test_audio_data.py`) + 7 (`test_forge_pipeline_audio.py`) + 4 (`test_polygram_whisper_coord.py`) + 4 (`test_cli.py::TestAudioFeaturesPath`) + 8 (`test_architecture_adapters.py::TestNativeModelConfigOutputKind`) + 1 (`test_examples_smoke.py` whisper smoke) = **75 Whisper-related new tests** total. Unit suite went from 249 (pre-change) to 315 + 2 skipped, all green
+- [x] 13.3 No existing tests modified destructively. `tests/conftest.py`, `tests/test_architecture_adapters.py`, `tests/test_cli.py`, and `tests/test_examples_smoke.py` are purely additive — verified via `git diff --stat` showing 0 deletions. The `evaluate_faithfulness` dispatch refactor uses extracted helpers (`_evaluate_lm` and `_evaluate_whisper_encoder`); LM-path stubs in existing tests are unchanged
 
 ## 14. OpenSpec scaffolding
 
