@@ -218,6 +218,117 @@ class TestAudioFeaturesPath:
         assert tuple(captured["eval_audio_features"].shape) == (1, 80, 3000)
 
 
+class TestEvalPromptsWiring:
+    """--eval-prompts JSONL-of-strings is now wired into
+    ForgePipeline.eval_prompts. Full JSONL-schema support (objects
+    with role / completion / metadata) is tech-debt — tracked in
+    a separate backlog issue.
+    """
+
+    def test_eval_prompts_parses_jsonl_strings(self, tmp_path, monkeypatch):
+        import json
+        import numpy as np
+        from safetensors.numpy import save_file
+
+        from saeforge.cli import main
+
+        # JSONL-of-strings file: each line a json-encoded prompt.
+        prompts_path = tmp_path / "prompts.jsonl"
+        prompts_path.write_text(
+            "\n".join(json.dumps(p) for p in [
+                "The quick brown fox",
+                "In a hole in the ground",
+            ])
+            + "\n"
+        )
+
+        ckpt = tmp_path / "sae.compressed.safetensors"
+        W = np.random.default_rng(0).standard_normal((32, 64)).astype(np.float32)
+        save_file({"W_dec": W}, str(ckpt))
+        (tmp_path / "sae.compressed_compression_report.json").write_text(
+            json.dumps({"schema_version": 1, "clusters": []})
+        )
+
+        captured = {}
+
+        class _StubPipeline:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+            def run(self, output_dir):
+                from saeforge.forge import ForgeResult
+
+                return ForgeResult(
+                    model=None,
+                    output_dir=output_dir,
+                    n_params=0,
+                    faithfulness_kl=None,
+                    extras={},
+                )
+
+        monkeypatch.setattr("saeforge.ForgePipeline", _StubPipeline)
+
+        rc = main(
+            [
+                "forge",
+                str(ckpt),
+                "--host-model", "gpt2",
+                "--output-dir", str(tmp_path / "out"),
+                "--eval-prompts", str(prompts_path),
+            ]
+        )
+        assert rc == 0
+        assert captured["eval_prompts"] == [
+            "The quick brown fox",
+            "In a hole in the ground",
+        ]
+
+    def test_eval_prompts_defaults_empty_list_when_unset(
+        self, tmp_path, monkeypatch
+    ):
+        import json
+        import numpy as np
+        from safetensors.numpy import save_file
+
+        from saeforge.cli import main
+
+        ckpt = tmp_path / "sae.compressed.safetensors"
+        W = np.random.default_rng(0).standard_normal((32, 64)).astype(np.float32)
+        save_file({"W_dec": W}, str(ckpt))
+        (tmp_path / "sae.compressed_compression_report.json").write_text(
+            json.dumps({"schema_version": 1, "clusters": []})
+        )
+
+        captured = {}
+
+        class _StubPipeline:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+            def run(self, output_dir):
+                from saeforge.forge import ForgeResult
+
+                return ForgeResult(
+                    model=None,
+                    output_dir=output_dir,
+                    n_params=0,
+                    faithfulness_kl=None,
+                    extras={},
+                )
+
+        monkeypatch.setattr("saeforge.ForgePipeline", _StubPipeline)
+        rc = main(
+            [
+                "forge",
+                str(ckpt),
+                "--host-model", "gpt2",
+                "--output-dir", str(tmp_path / "out"),
+            ]
+        )
+        assert rc == 0
+        assert captured["eval_prompts"] == []
+
+
 class TestInspectFsmDiagram:
     def test_fsm_diagram_emits_state_diagram_v2(self, capsys):
         pytest.importorskip("orca_runtime_python")

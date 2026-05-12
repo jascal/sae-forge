@@ -191,6 +191,15 @@ def _cmd_forge(args: argparse.Namespace) -> int:
     # v0.4 forge-whisper-encoder: load pre-extracted mel features for the
     # audio faithfulness path. torch is lazy-imported so the non-audio
     # CLI path keeps working without the [torch] extra exercised here.
+    # JSONL-of-strings parse: each non-empty line is a single
+    # json-encoded prompt. Full schema support (objects with role /
+    # completion / metadata) is tracked separately as tech debt.
+    eval_prompts = (
+        [json.loads(line) for line in Path(args.eval_prompts).read_text().splitlines() if line.strip()]
+        if args.eval_prompts
+        else []
+    )
+
     eval_audio_features = None
     if args.audio_features_path is not None:
         try:
@@ -245,6 +254,7 @@ def _cmd_forge(args: argparse.Namespace) -> int:
         epoch_compression=epoch_compression,
         regrow=regrow,
         regrow_count=args.regrow_count,
+        eval_prompts=eval_prompts,
         eval_audio_features=eval_audio_features,
         **hybrid_kwargs,
     )
