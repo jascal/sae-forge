@@ -12,6 +12,10 @@ shape/dtype mismatches.
 from __future__ import annotations
 
 import numpy as np
+import pytest
+
+pytest.importorskip("torch")
+pytest.importorskip("transformers")
 
 
 # ---------------------------------------------------------------------------

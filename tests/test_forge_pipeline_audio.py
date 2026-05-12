@@ -11,6 +11,9 @@ from __future__ import annotations
 
 import pytest
 
+pytest.importorskip("torch")
+pytest.importorskip("transformers")
+
 
 # ---------------------------------------------------------------------------
 # Mutual exclusion: eval_audio_features XOR eval_prompts

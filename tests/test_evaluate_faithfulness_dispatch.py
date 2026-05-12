@@ -17,6 +17,9 @@ from unittest.mock import patch
 
 import pytest
 
+pytest.importorskip("torch")
+pytest.importorskip("transformers")
+
 
 # ---------------------------------------------------------------------------
 # Helpers

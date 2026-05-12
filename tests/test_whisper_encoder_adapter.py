@@ -19,6 +19,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+pytest.importorskip("torch")
+pytest.importorskip("transformers")
+
 from saeforge.adapters import adapter_for, registered_classes
 from saeforge.model import NativeModel
 from saeforge.projector import SubspaceProjector

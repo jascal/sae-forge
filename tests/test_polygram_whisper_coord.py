@@ -33,6 +33,9 @@ import json
 import numpy as np
 import pytest
 
+pytest.importorskip("torch")
+pytest.importorskip("transformers")
+
 
 @pytest.fixture
 def whisper_shaped_polygram_checkpoint(tmp_path):
