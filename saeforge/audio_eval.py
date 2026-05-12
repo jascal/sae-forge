@@ -47,6 +47,7 @@ def cosine_faithfulness(
     host: Any,
     audio_features: Any,
     *,
+    precomputed_host_states: Any | None = None,
     device: str = "cpu",
 ) -> float:
     """Per-frame cosine similarity between forged and host encoder states.
@@ -62,13 +63,23 @@ def cosine_faithfulness(
         Either a ``transformers.WhisperModel`` or a
         ``transformers.WhisperForConditionalGeneration``. The encoder
         is extracted via :class:`WhisperEncoderAdapter`'s helper so
-        both classes work identically.
+        both classes work identically. May be ``None`` when
+        ``precomputed_host_states`` is supplied — the helper never
+        looks at ``host`` in that case.
     audio_features:
         A ``torch.Tensor`` of shape ``(batch, n_mels, n_frames)``
         — the mel-spectrogram input both encoders consume. fp16 /
         bf16 inputs are cast to fp32 internally before the similarity
         computation; the forward pass through each encoder runs at
         the encoder's own dtype.
+    precomputed_host_states:
+        Optional pre-captured host encoder states of shape
+        ``(batch, n_frames, d_model)``. When supplied, the helper
+        skips the host encoder forward entirely — the caller is
+        responsible for guaranteeing these are the output of running
+        the host's encoder on ``audio_features``. This is the audio-
+        side analog of pre-tokenised ``_eval_input_ids`` and unblocks
+        the FSM's pre-capture fast path on big Whisper hosts.
     device:
         Torch device string; both models and the input are moved
         there before the forward pass. Default ``"cpu"``.
@@ -83,25 +94,27 @@ def cosine_faithfulness(
     """
     torch = require_extra("torch", "torch")
 
-    from saeforge.adapters.whisper import WhisperEncoderAdapter
-
     forged_module = forged.torch_module.to(device).eval()
-    host = host.to(device).eval()
     audio_features = audio_features.to(device)
-
-    host_encoder = WhisperEncoderAdapter._extract_encoder(host)
 
     with torch.no_grad():
         forged_states = forged_module(audio_features)
-        host_out = host_encoder(audio_features)
-        # WhisperEncoder.forward returns BaseModelOutput when called
-        # outside of the parent model; fall back to indexing for the
-        # tuple-style return.
-        host_states = (
-            host_out.last_hidden_state
-            if hasattr(host_out, "last_hidden_state")
-            else host_out[0]
-        )
+        if precomputed_host_states is not None:
+            host_states = precomputed_host_states.to(device)
+        else:
+            from saeforge.adapters.whisper import WhisperEncoderAdapter
+
+            host = host.to(device).eval()
+            host_encoder = WhisperEncoderAdapter._extract_encoder(host)
+            host_out = host_encoder(audio_features)
+            # WhisperEncoder.forward returns BaseModelOutput when called
+            # outside of the parent model; fall back to indexing for the
+            # tuple-style return.
+            host_states = (
+                host_out.last_hidden_state
+                if hasattr(host_out, "last_hidden_state")
+                else host_out[0]
+            )
 
     # Cast both to fp32 for the similarity math. bf16 / fp16 inputs
     # round-trip through here without overflow on small encoders.

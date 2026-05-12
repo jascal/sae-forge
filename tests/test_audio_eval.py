@@ -338,6 +338,71 @@ class TestLowPrecisionInput:
 # ---------------------------------------------------------------------------
 
 
+class TestPrecomputedHostStates:
+    """The optional ``precomputed_host_states`` kwarg lets a caller skip
+    the host encoder forward entirely. The FSM uses this for the
+    pre-capture fast path; tests verify the helper accepts ``host=None``
+    when precomputed states are supplied and uses them directly.
+    """
+
+    def test_precomputed_states_skip_host_forward(self):
+        import torch
+
+        from saeforge.audio_eval import cosine_faithfulness
+
+        rng = np.random.default_rng(8)
+        d, f = 8, 4
+        basis_encode = rng.standard_normal((d, f)).astype(np.float32)
+        host_states = rng.standard_normal((1, 3, d)).astype(np.float32)
+        projected = (
+            torch.as_tensor(host_states, dtype=torch.float32)
+            @ torch.as_tensor(basis_encode, dtype=torch.float32)
+        ).numpy()
+
+        forged = _stub_forged(basis_encode, projected)
+        # host=None: the helper SHALL never look at it when
+        # precomputed_host_states is provided.
+        audio_features = torch.zeros(1, 80, 6)
+        score = cosine_faithfulness(
+            forged,
+            host=None,
+            audio_features=audio_features,
+            precomputed_host_states=torch.as_tensor(host_states),
+        )
+        assert score == pytest.approx(1.0, abs=1e-6)
+
+    def test_precomputed_states_match_running_host(self):
+        """Computing cosine via precomputed_host_states gives the same
+        result as running the host inside the helper."""
+        import torch
+
+        from saeforge.audio_eval import cosine_faithfulness
+
+        rng = np.random.default_rng(9)
+        d, f = 8, 4
+        basis_encode = rng.standard_normal((d, f)).astype(np.float32)
+        host_states = rng.standard_normal((1, 3, d)).astype(np.float32)
+        forged_states = rng.standard_normal((1, 3, f)).astype(np.float32) * 0.1
+
+        forged = _stub_forged(basis_encode, forged_states)
+        host = _stub_host(host_states)
+        audio_features = torch.zeros(1, 80, 6)
+
+        score_via_host = cosine_faithfulness(forged, host, audio_features)
+        score_via_precomputed = cosine_faithfulness(
+            forged,
+            host=None,
+            audio_features=audio_features,
+            precomputed_host_states=torch.as_tensor(host_states),
+        )
+        assert score_via_host == pytest.approx(score_via_precomputed, abs=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# End-to-end smoke through the real forged encoder
+# ---------------------------------------------------------------------------
+
+
 class TestEndToEnd:
     """Run cosine_faithfulness through the real ``ForgedWhisperEncoder``
     + ``WhisperModel`` host. This isn't a strict numerical assertion —

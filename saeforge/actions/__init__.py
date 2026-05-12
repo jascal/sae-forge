@@ -579,23 +579,90 @@ def _run_recipe_fine_tune(ctx: dict, model, corpus, iterator) -> dict:
 
 
 def evaluate_faithfulness(ctx: dict, _payload: dict | None = None) -> dict:
-    """Compute KL faithfulness, then derive ``should_continue`` and ``advance_stream``.
+    """Compute faithfulness, then derive ``should_continue`` and ``advance_stream``.
 
-    Both predicate fields are written here so the FSM's `eval_done`
+    Dispatches on ``forged.config.family``:
+
+    - **LM families** (``gpt2`` / ``llama`` / ``gemma2`` / ``qwen2`` /
+      ``qwen3``): per-token KL between forged and host logits via
+      :func:`saeforge.forge._kl_from_input_ids`. The ``faithfulness``
+      ctx field carries the KL value (lower = more faithful);
+      ``perplexity`` is ``exp(KL)``. ``min_faithfulness`` follows the
+      v0.1 negation convention — pass a negative threshold to encode
+      "max allowed KL" (e.g. ``min_faithfulness=-0.05`` continues only
+      while ``KL ≤ 0.05``).
+
+    - **whisper_encoder**: per-frame cosine similarity between forged
+      encoder states and the host's encoder states projected through
+      the forge's ``basis_encode`` buffer, via
+      :func:`saeforge.audio_eval.cosine_faithfulness`. The
+      ``faithfulness`` ctx field carries the cosine score (range
+      ``[0, 1]``, higher = more faithful); ``perplexity`` carries
+      ``1 - cosine`` so the existing ``perplexity < best_perplexity``
+      progress check keeps the right direction (a lower
+      ``1 - cosine`` means a higher cosine). ``min_faithfulness`` is
+      reinterpreted as "minimum cosine similarity" with the natural
+      positive convention — pass ``min_faithfulness=0.95`` to require
+      cosine ≥ 0.95.
+
+    The ``should_continue`` predicate is family-aware; the
+    ``advance_stream`` stream-loop computation is family-agnostic
+    (it consumes the family-appropriate perplexity analog). Both
+    predicate fields are written here so the FSM's ``eval_done``
     guards can be a flat ctx read. The stream-loop dominance contract
     (``advance_stream == true`` wins over ``should_continue``) lives
-    in the guard expression `refine_same_shard`, which requires
+    in the guard expression ``refine_same_shard``, which requires
     ``advance_stream == false``.
+    """
+    host = ctx.get("_host_model")
+    forged = ctx.get("_native_model")
+    device = ctx.get("device", "cpu")
+    family = (
+        forged.config.family
+        if forged is not None and hasattr(forged, "config")
+        else None
+    )
+
+    if family == "whisper_encoder":
+        faithfulness, perplexity, should_continue = _evaluate_whisper_encoder(
+            ctx, host, forged, device
+        )
+    else:
+        faithfulness, perplexity, should_continue = _evaluate_lm(
+            ctx, host, forged, device
+        )
+
+    advance_stream = _compute_advance_stream(ctx, faithfulness, perplexity)
+
+    _log(
+        ctx,
+        "evaluate_faithfulness",
+        {
+            "faithfulness": faithfulness,
+            "perplexity": perplexity,
+            "should_continue": should_continue,
+            "advance_stream": advance_stream,
+        },
+    )
+    return {
+        "faithfulness": float(faithfulness),
+        "perplexity": perplexity,
+        "should_continue": should_continue,
+        "advance_stream": advance_stream,
+    }
+
+
+def _evaluate_lm(ctx, host, forged, device) -> tuple[float, float, bool]:
+    """LM-family faithfulness: per-token KL, exp(KL) perplexity, KL-negation
+    threshold convention. v0.3 behavior preserved byte-for-byte.
     """
     from saeforge.forge import _kl_from_input_ids
 
-    host = ctx.get("_host_model")
-    forged = ctx.get("_native_model")
     eval_input_ids = ctx.get("_eval_input_ids")
     if host is None or forged is None or eval_input_ids is None:
         kl = 0.0
     else:
-        kl = _kl_from_input_ids(forged, host, eval_input_ids, device=ctx.get("device", "cpu"))
+        kl = _kl_from_input_ids(forged, host, eval_input_ids, device=device)
     perplexity = float(np.exp(kl)) if kl >= 0 else float("inf")
     iters = ctx.get("iterations", 1)
     current = ctx.get("current_iter", 0)
@@ -606,25 +673,45 @@ def evaluate_faithfulness(ctx: dict, _payload: dict | None = None) -> dict:
         and (kl >= min_faith if min_faith == 0.0 else kl <= min_faith * -1)
         and perplexity < best_perp
     )
+    return float(kl), perplexity, should_continue
 
-    advance_stream = _compute_advance_stream(ctx, kl, perplexity)
 
-    _log(
-        ctx,
-        "evaluate_faithfulness",
-        {
-            "faithfulness": kl,
-            "perplexity": perplexity,
-            "should_continue": should_continue,
-            "advance_stream": advance_stream,
-        },
+def _evaluate_whisper_encoder(ctx, host, forged, device) -> tuple[float, float, bool]:
+    """Whisper-encoder faithfulness: per-frame cosine similarity in basis
+    space; ``perplexity = 1 - cosine`` so the LM-shaped progress check
+    keeps pointing the right way; ``min_faithfulness`` is the minimum
+    cosine threshold (positive convention).
+    """
+    from saeforge.audio_eval import cosine_faithfulness
+
+    audio_features = ctx.get("_eval_audio_features")
+    precomputed_host_states = ctx.get("_eval_encoder_states")
+    # The pre-capture fast path lets the caller run the host encoder once
+    # outside the FSM and pass states in via ``_eval_encoder_states`` —
+    # the action no longer needs the host in that case.
+    if forged is None or audio_features is None:
+        cosine = 0.0
+    elif precomputed_host_states is None and host is None:
+        cosine = 0.0
+    else:
+        cosine = cosine_faithfulness(
+            forged,
+            host,
+            audio_features,
+            precomputed_host_states=precomputed_host_states,
+            device=device,
+        )
+    perplexity = 1.0 - cosine
+    iters = ctx.get("iterations", 1)
+    current = ctx.get("current_iter", 0)
+    min_faith = ctx.get("min_faithfulness", 0.0)
+    best_perp = ctx.get("best_perplexity", float("inf"))
+    should_continue = bool(
+        current + 1 < iters
+        and cosine >= min_faith
+        and perplexity < best_perp
     )
-    return {
-        "faithfulness": float(kl),
-        "perplexity": perplexity,
-        "should_continue": should_continue,
-        "advance_stream": advance_stream,
-    }
+    return float(cosine), perplexity, should_continue
 
 
 def _compute_advance_stream(ctx: dict, kl: float, perplexity: float) -> bool:

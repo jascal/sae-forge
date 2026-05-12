@@ -51,18 +51,18 @@ state-dict-resident buffer so save/load round-trips it.
 
 ## 5. evaluate_faithfulness dispatch
 
-- [ ] 5.1 In `saeforge/actions/__init__.py`, modify `evaluate_faithfulness` to dispatch on `forged.config.family`
-- [ ] 5.2 LM families (`"gpt2" | "llama" | "gemma2"`) use the existing `_kl_from_input_ids` path verbatim — no behavior change for v0.3 LM forges
-- [ ] 5.3 `"whisper_encoder"` reads `ctx["_eval_audio_features"]` and `ctx["_eval_encoder_states"]`, calls `cosine_faithfulness`, writes the result to the existing `faithfulness` ctx field
-- [ ] 5.4 The `should_continue` predicate logic is unchanged: `min_faithfulness` semantic is reinterpreted as "minimum cosine similarity" for the encoder family — document this in the action's docstring
-- [ ] 5.5 Tests in `tests/test_evaluate_faithfulness_dispatch.py`: LM family routes to KL path (mock `_kl_from_input_ids`, assert called); whisper_encoder routes to cosine (mock `cosine_faithfulness`, assert called); unknown family raises a clear error
+- [x] 5.1 In `saeforge/actions/__init__.py`, modify `evaluate_faithfulness` to dispatch on `forged.config.family` — extracted into `_evaluate_lm` and `_evaluate_whisper_encoder` helpers
+- [x] 5.2 LM families (`"gpt2" | "llama" | "gemma2"` / qwen2 / qwen3) use the existing `_kl_from_input_ids` path verbatim — no behavior change for v0.3 LM forges (FSM byte-equivalence net green)
+- [x] 5.3 `"whisper_encoder"` reads `ctx["_eval_audio_features"]` and `ctx["_eval_encoder_states"]`, calls `cosine_faithfulness`, writes the result to the existing `faithfulness` ctx field. `_eval_encoder_states` (when present) is passed through to `cosine_faithfulness`'s `precomputed_host_states` kwarg so the host forward is skipped inside the FSM
+- [x] 5.4 The `should_continue` predicate is family-aware: cosine uses the natural `cosine >= min_faithfulness` direction; perplexity carries `1 - cosine` so the existing `perplexity < best_perplexity` progress check keeps pointing the right way. Documented in the action's docstring
+- [x] 5.5 Tests in `tests/test_evaluate_faithfulness_dispatch.py`: LM family routes to KL path (mock `_kl_from_input_ids`, assert called); whisper_encoder routes to cosine (mock `cosine_faithfulness`, assert called); precomputed-states pass-through; missing-context fallbacks return 0.0 rather than raising
 
 ## 6. ForgePipeline + FSM context wiring
 
-- [ ] 6.1 Add `eval_audio_features: torch.Tensor | None = None` and `eval_encoder_states: torch.Tensor | None = None` to `ForgePipeline`
-- [ ] 6.2 `_build_fsm_ctx` populates `ctx["_eval_audio_features"]` and `ctx["_eval_encoder_states"]` from the new fields when set
-- [ ] 6.3 Construction-time validation: `eval_audio_features` requires the host to be a Whisper class (`adapter_for(host).family == "whisper_encoder"`); `eval_prompts` is mutually exclusive with `eval_audio_features`
-- [ ] 6.4 `run_synthetic` accepts the new audio-side kwargs alongside the existing text kwargs
+- [x] 6.1 Add `eval_audio_features: torch.Tensor | None = None` and `eval_encoder_states: torch.Tensor | None = None` to `ForgePipeline` (typed as `Any | None` in the dataclass so the package keeps importing without torch installed)
+- [x] 6.2 `_build_fsm_ctx` populates `ctx["_eval_audio_features"]` and `ctx["_eval_encoder_states"]` from the new fields when set
+- [x] 6.3 Construction-time validation: `eval_audio_features` and `eval_prompts` are mutually exclusive (raised at `__post_init__`). Host-class verification (`adapter_for(host).family == "whisper_encoder"`) is intentionally deferred to run-time — the host isn't loaded at construction
+- [ ] 6.4 `run_synthetic` accepts the new audio-side kwargs alongside the existing text kwargs — deferred: pipeline-field path covers the use case; per-call kwargs add API surface without a clear user need
 
 ## 7. Audio data fixture
 

@@ -118,6 +118,22 @@ class ForgePipeline:
     projector: SubspaceProjector
     host_model_id: str | None = None
     eval_prompts: list[str] = field(default_factory=list)
+    # v0.4 forge-whisper-encoder: audio-side eval input for the
+    # whisper_encoder family. When set, evaluate_faithfulness dispatches
+    # to cosine_faithfulness using these mel features and the forged
+    # encoder. Mutually exclusive with eval_prompts (validation in
+    # __post_init__) — a pipeline targets either text-LM or audio
+    # faithfulness, not both. The torch.Tensor type is left as Any in
+    # the annotation so the dataclass keeps working without torch
+    # installed; the runtime contract is (batch, n_mels, n_frames).
+    eval_audio_features: Any | None = None
+    # Optional pre-captured host encoder states for the
+    # whisper_encoder family. When set, evaluate_faithfulness skips
+    # the host forward inside the FSM and uses these states directly
+    # — the audio-side analog of pre-tokenised ``_eval_input_ids``.
+    # Shape contract: (batch, n_frames, d_model). Caller is responsible
+    # for ensuring this is the output of host.encoder(eval_audio_features).
+    eval_encoder_states: Any | None = None
     dtype: str = "float32"
     device: str = "cpu"
     orchestrator: str = "imperative"
@@ -205,6 +221,18 @@ class ForgePipeline:
                 f"The pre-change layer=10 / model_name=\"gpt2\" fallbacks "
                 f"were removed in polygram 0.1.0 because they silently "
                 f"bound regrowth to GPT-2."
+            )
+        # v0.4 forge-whisper-encoder: text and audio eval inputs are mutually
+        # exclusive. The downstream evaluate_faithfulness action dispatches
+        # on forged.config.family, so a pipeline carrying both would be
+        # ambiguous about which signal drove the FSM's faithfulness gate.
+        if self.eval_audio_features is not None and len(self.eval_prompts) > 0:
+            raise ValueError(
+                "ForgePipeline: eval_audio_features and eval_prompts are "
+                "mutually exclusive — a pipeline targets either text-LM "
+                "faithfulness (KL via eval_prompts) or audio faithfulness "
+                "(cosine via eval_audio_features), not both. Set exactly "
+                "one."
             )
         if self.task_trigger not in ("labeled", "token_budget", "loss_delta"):
             raise ValueError(
@@ -530,6 +558,8 @@ class ForgePipeline:
             output_dir=output_dir,
             host_model=host,
             eval_input_ids=eval_input_ids,
+            eval_audio_features=self.eval_audio_features,
+            eval_encoder_states=self.eval_encoder_states,
             finetune_input_ids=None,
             finetune_iterator=finetune_iterator,
             host_model_id=self.host_model_id,
@@ -656,6 +686,8 @@ class ForgePipeline:
             output_dir=output_dir,
             host_model=host_model,
             eval_input_ids=eval_input_ids,
+            eval_audio_features=self.eval_audio_features,
+            eval_encoder_states=self.eval_encoder_states,
             finetune_input_ids=finetune_input_ids,
             finetune_iterator=finetune_iterator,
             host_model_id="<in-memory>",
@@ -690,6 +722,8 @@ class ForgePipeline:
         finetune_input_ids,
         finetune_iterator,
         host_model_id: str,
+        eval_audio_features=None,
+        eval_encoder_states=None,
     ) -> dict:
         """Shared FSM-context builder for both ``_run_real_fsm`` and
         ``_run_synthetic_fsm`` — keeps the polygram-tuning + finetune-recipe
@@ -720,6 +754,13 @@ class ForgePipeline:
             "device": self.device,
             "_host_model": host_model,
             "_eval_input_ids": eval_input_ids,
+            # v0.4 forge-whisper-encoder: audio-side eval input. None when
+            # the host is an LM family; populated when a Whisper host is
+            # being forged. ``_eval_encoder_states`` is an optional pre-
+            # capture fast path — when present, the action uses these
+            # states directly and skips the host forward.
+            "_eval_audio_features": eval_audio_features,
+            "_eval_encoder_states": eval_encoder_states,
             "_finetune_input_ids": finetune_input_ids,
             "_finetune_iterator": finetune_iterator,
             "validation_report_path": self.validation_report_path,
