@@ -5,7 +5,7 @@
 - [x] 1.3 Add `whisper_encoder` to `_SUPPORTED_FAMILIES`; assert that `family == "whisper_encoder"` implies `output_kind == "encoder_states"` and `vocab_size == 0`
 - [x] 1.4 Update `to_dict` / `from_dict` to round-trip the new fields — handled automatically by the dataclass `asdict` + `cls(**payload)` pattern; pre-change configs without `output_kind` deserialise with the default `"logits"`
 - [x] 1.5 Add `_build_torch_module` dispatch branch for `whisper_encoder` → `saeforge.adapters.whisper.build_whisper_encoder_module(config)`
-- [ ] 1.6 Tests: NativeModelConfig invalid-combination matrix (vocab=0+logits, vocab>0+encoder_states, whisper_encoder+vocab>0)
+- [x] 1.6 Tests: NativeModelConfig invalid-combination matrix (vocab=0+logits, vocab>0+encoder_states, whisper_encoder+vocab>0) — landed as `TestNativeModelConfigOutputKind` in `tests/test_architecture_adapters.py`
 
 ## 2. WhisperEncoderAdapter
 
@@ -21,23 +21,25 @@
 
 ## 3. ForgedWhisperEncoder torch module
 
-NOTE: §§3.1–3.4 are landed as a parameter-skeleton stub so the adapter
-walk + `from_projected_weights` + no-randomly-initialised-weights
-invariant work. The forward path (§3.5), explicit
-`from_projected_weights` override (§3.6 — currently goes through
-`NativeModel.from_projected_weights`), `save_pretrained` /
-`load_pretrained` (§3.7), and module-level tests (§3.8) are deferred
-to the next commit. Calling `.forward()` on a `ForgedWhisperEncoder`
-today raises `NotImplementedError` naming this deferral.
+NOTE: §3.6 (`from_projected_weights`) and §3.7 (`save_pretrained` /
+`load_pretrained`) are satisfied by `NativeModel.from_projected_weights`
+and `NativeModel.{save,load}_pretrained` respectively — that is the
+existing GPT-2 / Llama precedent (those families do not ship per-class
+overrides either). The d → f bridge between the frozen-copied conv
+stem and the f-wide transformer blocks is carried by a non-parameter
+`basis_encode` buffer materialised from
+`projector.basis.pseudoinverse() * scale_boost`; the adapter walk
+emits it as a top-level key and the forged module registers it as a
+state-dict-resident buffer so save/load round-trips it.
 
 - [x] 3.1 New `nn.Module` `ForgedWhisperEncoder` in `saeforge/adapters/whisper.py` (or `saeforge/whisper_encoder.py` — pick by repo convention; the Llama family lives in adapters/, follow that)
-- [x] 3.2 Block layout: `pre_layernorm → self_attn → residual → pre_layernorm → mlp → residual` (matches HF Whisper post-LN-ish pre-LN-via-LN-before-each-sublayer) — parameter slots in place; forward path deferred
+- [x] 3.2 Block layout: `pre_layernorm → self_attn → residual → pre_layernorm → mlp → residual` (matches HF Whisper post-LN-ish pre-LN-via-LN-before-each-sublayer)
 - [x] 3.3 Self-attn: separate `q_proj` / `k_proj` / `v_proj` / `out_proj` Linear layers (Whisper uses Linear, not GPT-2's fused Conv1d); MHA only (no GQA)
-- [x] 3.4 MLP: `fc1 → gelu → fc2`; activation is GELU, not SiLU (Whisper diverges from Llama here) — `fc1` / `fc2` slots in place; GELU is applied inside the deferred forward path
-- [ ] 3.5 `forward(input_features)` matches HF's encoder forward signature: `(batch, n_mels, n_frames)` → `(batch, n_frames // 2, hidden_size)` after the conv stem
-- [ ] 3.6 `from_projected_weights(config, weights_dict)` classmethod loads the projected state dict via `load_state_dict(strict=True)`
-- [ ] 3.7 `save_pretrained(dir)` / `load_pretrained(dir)` mirror the existing GPT-2/Llama save patterns; persist a `config.json` derived from `config.to_dict()` and a `model.safetensors` from `state_dict()`
-- [ ] 3.8 Tests in `tests/test_whisper_encoder_module.py`: forward-shape sanity, save/load round-trip, conv-stem-frozen invariant (forging does not change `conv1.weight` etc.)
+- [x] 3.4 MLP: `fc1 → gelu → fc2`; activation is GELU, not SiLU (Whisper diverges from Llama here)
+- [x] 3.5 `forward(input_features)` matches HF's encoder forward signature: `(batch, n_mels, n_frames)` → `(batch, n_frames // 2, hidden_size)` after the conv stem
+- [x] 3.6 `from_projected_weights(config, weights_dict)` classmethod loads the projected state dict via `load_state_dict(strict=True)` — handled via `NativeModel.from_projected_weights` (GPT-2 / Llama precedent — no per-class override)
+- [x] 3.7 `save_pretrained(dir)` / `load_pretrained(dir)` mirror the existing GPT-2/Llama save patterns; persist a `config.json` derived from `config.to_dict()` and a `model.safetensors` from `state_dict()` — handled via `NativeModel.{save,load}_pretrained` (same precedent)
+- [x] 3.8 Tests in `tests/test_whisper_encoder_module.py`: forward-shape sanity, save/load round-trip, conv-stem-frozen invariant (forging does not change `conv1.weight` etc.), `basis_encode` buffer invariants
 
 ## 4. Audio eval
 

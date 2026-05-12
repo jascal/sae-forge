@@ -290,6 +290,102 @@ class TestNativeModelConfigFamily:
             )
 
 
+class TestNativeModelConfigOutputKind:
+    """§1.6 — invalid-combination matrix for the v0.4 output_kind /
+    vocab_size / whisper_encoder cross-constraints.
+    """
+
+    def _lm_kwargs(self, **overrides):
+        base = dict(
+            family="llama",
+            hidden_size=32,
+            qkv_inner_size=32,
+            num_layers=2,
+            num_heads=4,
+            head_dim=8,
+            intermediate_size=64,
+            vocab_size=100,
+        )
+        base.update(overrides)
+        return base
+
+    def _whisper_kwargs(self, **overrides):
+        base = dict(
+            family="whisper_encoder",
+            hidden_size=32,
+            qkv_inner_size=64,
+            num_layers=2,
+            num_heads=4,
+            head_dim=16,
+            intermediate_size=64,
+            vocab_size=0,
+            output_kind="encoder_states",
+        )
+        base.update(overrides)
+        return base
+
+    def test_lm_default_output_kind_is_logits(self):
+        from saeforge.model import NativeModelConfig
+
+        config = NativeModelConfig(**self._lm_kwargs())
+        assert config.output_kind == "logits"
+
+    def test_logits_requires_positive_vocab(self):
+        from saeforge.model import NativeModelConfig
+
+        with pytest.raises(ValueError, match="vocab_size > 0"):
+            NativeModelConfig(**self._lm_kwargs(vocab_size=0))
+
+    def test_encoder_states_requires_zero_vocab(self):
+        from saeforge.model import NativeModelConfig
+
+        with pytest.raises(ValueError, match="vocab_size == 0"):
+            NativeModelConfig(**self._whisper_kwargs(vocab_size=100))
+
+    def test_encoder_states_requires_whisper_family(self):
+        from saeforge.model import NativeModelConfig
+
+        with pytest.raises(ValueError, match="whisper_encoder"):
+            NativeModelConfig(
+                **self._lm_kwargs(
+                    output_kind="encoder_states", vocab_size=0
+                )
+            )
+
+    def test_whisper_family_rejects_logits_output_kind(self):
+        from saeforge.model import NativeModelConfig
+
+        with pytest.raises(ValueError, match="output_kind='encoder_states'"):
+            NativeModelConfig(
+                **self._whisper_kwargs(output_kind="logits")
+            )
+
+    def test_unknown_output_kind_rejected(self):
+        from saeforge.model import NativeModelConfig
+
+        with pytest.raises(ValueError, match="output_kind"):
+            NativeModelConfig(**self._lm_kwargs(output_kind="probabilities"))
+
+    def test_round_trip_preserves_output_kind(self):
+        from saeforge.model import NativeModelConfig
+
+        original = NativeModelConfig(**self._whisper_kwargs())
+        round_tripped = NativeModelConfig.from_dict(original.to_dict())
+        assert round_tripped.output_kind == "encoder_states"
+        assert round_tripped.vocab_size == 0
+        assert round_tripped.family == "whisper_encoder"
+
+    def test_pre_v04_config_dict_defaults_to_logits(self):
+        """A serialized config from before v0.4 lacks ``output_kind``;
+        deserialising should fall through to the ``"logits"`` default."""
+        from saeforge.model import NativeModelConfig
+
+        payload = self._lm_kwargs()
+        assert "output_kind" not in payload
+        config = NativeModelConfig.from_dict(payload)
+        assert config.output_kind == "logits"
+
+
 # ---------------------------------------------------------------------------
 # §7.6 (continued) — registry hygiene: registering a custom adapter works
 # and the dispatcher honours first-match-wins.

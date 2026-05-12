@@ -43,6 +43,20 @@ in the forged encoder's outputs versus the host. Projecting the
 1D-spatial conv kernels is a separate research question and is
 deferred. See the ``forge-whisper-encoder`` design doc for the full
 rationale.
+
+d → f bridge: because the conv stem and positional embeddings stay
+at ``d_model`` width while the transformer blocks operate at
+``n_features`` width, the forged module needs a runtime projection
+from ``d_model`` to ``n_features`` at the conv-stem→first-block
+boundary. This matrix is the basis encode operator
+(``projector.basis.pseudoinverse() * scale_boost``, shape
+``(d_model, n_features)``) and is materialised as a non-parameter
+``basis_encode`` buffer on :class:`ForgedWhisperEncoder`. The walk
+emits a ``basis_encode`` key whose value is exactly that matrix; the
+buffer is part of ``state_dict()`` so save/load round-trips preserve
+it, but it does not appear in ``named_parameters()`` and so doesn't
+participate in training-side concerns (gradient checkpointing,
+weight-decay groups, the no-randomly-initialised-weights invariant).
 """
 
 from __future__ import annotations
@@ -180,6 +194,12 @@ class WhisperEncoderAdapter(ArchitectureAdapter):
             to_numpy(encoder.layer_norm.bias)
         )
 
+        # d → f bridge buffer: applied inside forward() at the conv-stem →
+        # first-block boundary. Matches SubspaceProjector.encode exactly so
+        # the forged encoder reproduces the basis-projected residual stream
+        # that every downstream layer's projected weights expect.
+        out["basis_encode"] = projector.basis.pseudoinverse() * projector.scale_boost
+
         return out
 
     def build_native_config(
@@ -258,20 +278,29 @@ def build_whisper_encoder_module(config: "NativeModelConfig"):
 def _get_forged_whisper_encoder_class():
     """Return the ForgedWhisperEncoder class (lazy torch import).
 
-    v0.4 ships the parameter skeleton: every slot the adapter's walk
-    emits has a matching ``nn.Parameter`` so ``load_state_dict`` and
-    the no-randomly-initialised-weights invariant work. The forward
-    pass is deferred to the §3 follow-up — calling ``.forward()`` on a
-    ForgedWhisperEncoder raises ``NotImplementedError`` naming the
-    deferred task. This keeps the adapter merge unblocked while the
-    eval-side wiring lands in a separate commit.
+    Closes §3 of forge-whisper-encoder. The forged module reproduces
+    HF Whisper's encoder forward path with two differences:
+
+    1. The transformer blocks operate at residual width ``n_features``
+       (the SAE basis size), not ``d_model``. The conv stem and
+       positional embeddings stay at ``d_model`` (frozen-copied), and
+       the d → f projection is applied via the ``basis_encode`` buffer
+       at the conv-stem → first-block boundary.
+    2. Dropout is omitted everywhere — the forge path is eval-only.
+
+    There is no causal mask: Whisper's encoder self-attention is
+    bidirectional (the conv stem produces a fixed-length 1500-frame
+    output and every frame attends to every other).
     """
     global _FORGED_WHISPER_ENCODER_CLASS
     if _FORGED_WHISPER_ENCODER_CLASS is not None:
         return _FORGED_WHISPER_ENCODER_CLASS
 
     torch = require_extra("torch", "torch")
+    import math
+
     import torch.nn as nn
+    import torch.nn.functional as F
 
     class WhisperEncoderSelfAttention(nn.Module):
         def __init__(self, cfg):
@@ -285,14 +314,34 @@ def _get_forged_whisper_encoder_class():
             self.num_heads = cfg.num_heads
             self.head_dim = cfg.head_dim
 
-        def forward(self, x):  # pragma: no cover — §3 follow-up
-            raise NotImplementedError(
-                "ForgedWhisperEncoder.forward is deferred to the §3 "
-                "follow-up commit on forge-whisper-encoder. The adapter "
-                "and parameter skeleton are in place; the forward pass "
-                "(matching HF WhisperEncoder's mel → encoder_states "
-                "contract) ships separately."
+        def forward(self, x):
+            # x: (B, T, hidden_size)
+            B, T, _ = x.shape
+            q = (
+                self.q_proj(x)
+                .view(B, T, self.num_heads, self.head_dim)
+                .transpose(1, 2)
             )
+            k = (
+                self.k_proj(x)
+                .view(B, T, self.num_heads, self.head_dim)
+                .transpose(1, 2)
+            )
+            v = (
+                self.v_proj(x)
+                .view(B, T, self.num_heads, self.head_dim)
+                .transpose(1, 2)
+            )
+            # Whisper encoder is bidirectional — no causal mask.
+            scores = (q @ k.transpose(-2, -1)) / math.sqrt(self.head_dim)
+            attn = F.softmax(scores, dim=-1)
+            out = (
+                (attn @ v)
+                .transpose(1, 2)
+                .contiguous()
+                .view(B, T, self.num_heads * self.head_dim)
+            )
+            return self.out_proj(out)
 
     class WhisperEncoderLayer(nn.Module):
         def __init__(self, cfg):
@@ -304,23 +353,29 @@ def _get_forged_whisper_encoder_class():
             self.fc1 = nn.Linear(cfg.hidden_size, cfg.intermediate_size, bias=True)
             self.fc2 = nn.Linear(cfg.intermediate_size, cfg.hidden_size, bias=True)
 
-        def forward(self, x):  # pragma: no cover — §3 follow-up
-            raise NotImplementedError(
-                "ForgedWhisperEncoder.forward is deferred to the §3 "
-                "follow-up commit."
-            )
+        def forward(self, x):
+            # Pre-LN self-attention sublayer (matches HF Whisper).
+            residual = x
+            x = self.self_attn_layer_norm(x)
+            x = self.self_attn(x)
+            x = residual + x
+            # Pre-LN FFN sublayer with GELU.
+            residual = x
+            x = self.final_layer_norm(x)
+            x = self.fc1(x)
+            x = F.gelu(x)
+            x = self.fc2(x)
+            x = residual + x
+            return x
 
     class ForgedWhisperEncoder(nn.Module):
-        """Forged Whisper encoder — parameter skeleton.
+        """Forged Whisper encoder.
 
         Every parameter slot matches a key emitted by
-        :meth:`WhisperEncoderAdapter.walk`. The conv stem and positional
-        embedding are sized to host shapes (frozen-copied) so
-        ``load_state_dict(strict=True)`` accepts the walk output.
-
-        The forward pass is intentionally not implemented — see
-        :func:`_get_forged_whisper_encoder_class` for the deferral
-        rationale.
+        :meth:`WhisperEncoderAdapter.walk`; the ``basis_encode`` buffer
+        carries the d → f projection plumbing applied at the conv-stem
+        → first-block boundary. ``load_state_dict(strict=True)``
+        accepts the walk output and the buffer in one pass.
         """
 
         def __init__(self, cfg):
@@ -345,15 +400,45 @@ def _get_forged_whisper_encoder_class():
             self.layer_norm = nn.LayerNorm(
                 cfg.hidden_size, eps=cfg.layer_norm_epsilon
             )
-
-        def forward(self, input_features):  # pragma: no cover — §3 follow-up
-            raise NotImplementedError(
-                "ForgedWhisperEncoder.forward is deferred to the §3 "
-                "follow-up commit on forge-whisper-encoder. Parameter "
-                "loading via from_projected_weights works; calling the "
-                "forward path requires the conv stem → block stack → "
-                "final norm pipeline, tracked separately."
+            # d → f projection buffer. Populated by from_projected_weights
+            # from the walk's ``basis_encode`` entry. The default-init
+            # zero matrix collapses the encoder output to zero — it is
+            # never the value used at runtime, but it lets the module
+            # construct before weights are loaded.
+            self.register_buffer(
+                "basis_encode",
+                torch.zeros(d_head, cfg.hidden_size),
             )
+
+        def forward(self, input_features):
+            """HF-Whisper-compatible encoder forward.
+
+            ``input_features`` shape ``(B, n_mels=80, n_frames)`` →
+            return ``(B, n_frames // 2, n_features)``. The factor-of-2
+            downsample comes from ``conv2``'s ``stride=2``.
+            """
+            # Conv stem (frozen-copied; ε_conv per docs/algorithm.md §5).
+            x = F.gelu(self.conv1(input_features))
+            x = F.gelu(self.conv2(x))
+            # (B, d_model, n_frames // 2) → (B, n_frames // 2, d_model).
+            x = x.permute(0, 2, 1)
+            T = x.size(1)
+            if T > self.embed_positions.weight.size(0):
+                raise ValueError(
+                    f"ForgedWhisperEncoder.forward: input produces "
+                    f"{T} frames after the conv stem but the positional "
+                    f"embedding table has only "
+                    f"{self.embed_positions.weight.size(0)} slots. Pad "
+                    f"input mel features to max_source_positions * "
+                    f"conv1.stride * conv2.stride."
+                )
+            x = x + self.embed_positions.weight[:T]
+            # d → f projection at the residual-stream entry boundary.
+            x = x @ self.basis_encode
+            for layer in self.layers:
+                x = layer(x)
+            x = self.layer_norm(x)
+            return x
 
     _FORGED_WHISPER_ENCODER_CLASS = ForgedWhisperEncoder
     return ForgedWhisperEncoder

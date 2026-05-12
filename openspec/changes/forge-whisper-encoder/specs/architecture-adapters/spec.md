@@ -41,6 +41,7 @@ conv1.bias                                  (d,)               # frozen-copied
 conv2.weight                                (d, d, 3)         # frozen-copied
 conv2.bias                                  (d,)               # frozen-copied
 embed_positions.weight                      (p, d)            # frozen-copied
+basis_encode                                (d, f)            # d→f bridge buffer
 layers.{0..n-1}.self_attn_layer_norm.weight (f,)
 layers.{...}.self_attn_layer_norm.bias      (f,)
 layers.{...}.self_attn.q_proj.weight        (d, f)
@@ -59,6 +60,18 @@ layers.{...}.fc2.bias                       (f,)
 layer_norm.weight                           (f,)
 layer_norm.bias                             (f,)
 ```
+
+The conv stem stays at ``d_model`` channels (frozen-copied) and the
+transformer blocks operate at ``n_features`` width, so the forged
+module needs a runtime d → f projection at the conv-stem →
+first-block boundary. The walker emits ``basis_encode`` carrying
+``projector.basis.pseudoinverse() * projector.scale_boost`` (the
+matrix-form of :meth:`SubspaceProjector.encode`); the forged module
+loads it into a non-parameter buffer. It appears in
+``state_dict()`` (so save/load round-trips it) but not in
+``named_parameters()`` (so it doesn't participate in gradient
+checkpointing, weight-decay groups, or the
+no-randomly-initialised-weights invariant).
 
 `k_proj` SHALL NOT have a bias (matches HF Whisper). The conv stem
 weights and `embed_positions` SHALL be byte-identical to the host's

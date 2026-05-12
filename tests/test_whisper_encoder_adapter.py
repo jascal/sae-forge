@@ -39,6 +39,8 @@ def _expected_keys(num_layers: int) -> set[str]:
         "embed_positions.weight",
         "layer_norm.weight",
         "layer_norm.bias",
+        # d → f projection bridge; loaded into a non-parameter buffer.
+        "basis_encode",
     }
     for i in range(num_layers):
         prefix = f"layers.{i}"
@@ -93,6 +95,9 @@ class TestWalkerShape:
         d = 64
         i = 128
         p = 1500
+
+        # d → f bridge buffer.
+        assert walk["basis_encode"].shape == (d, f)
 
         # Frozen-copied (not projected).
         assert walk["conv1.weight"].shape == (d, 80, 3)
