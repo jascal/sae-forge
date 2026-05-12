@@ -72,9 +72,9 @@ state-dict-resident buffer so save/load round-trips it.
 
 ## 8. CLI
 
-- [ ] 8.1 `sae-forge forge --audio-features-path FILE.pt` flag; loads a torch tensor of shape `(batch, n_mels, n_frames)`
-- [ ] 8.2 Mutually exclusive with `--eval-prompts` (argparse-level)
-- [ ] 8.3 Tests in `tests/test_cli.py` for the new flag's argparse contract
+- [x] 8.1 `sae-forge forge --audio-features-path FILE.pt` flag; `torch.load(map_location="cpu")` loads the tensor and passes it to `ForgePipeline.eval_audio_features`. A friendly error message + `return 2` covers the no-torch case
+- [x] 8.2 Mutually exclusive with `--eval-prompts` via `argparse.add_mutually_exclusive_group` — both flags now live in the same group
+- [x] 8.3 Tests in `tests/test_cli.py::TestAudioFeaturesPath` (4 tests): flag parses, default is `None`, mutual-exclusion exits 2 with an argparse usage error, end-to-end CLI run pipes the loaded tensor through to a stubbed `ForgePipeline.eval_audio_features`
 
 ## 9. Examples
 

@@ -23,9 +23,23 @@ def _build_parser() -> argparse.ArgumentParser:
     forge.add_argument("checkpoint", help="Polygram-compressed .safetensors checkpoint.")
     forge.add_argument("--host-model", required=True, help="HuggingFace host model id.")
     forge.add_argument("--output-dir", required=True, help="Where to write the forged model.")
-    forge.add_argument(
+    # Eval signal selection. --eval-prompts (text-LM faithfulness via KL)
+    # and --audio-features-path (audio faithfulness via per-frame cosine)
+    # are mutually exclusive — a forge run targets one signal, not both.
+    eval_group = forge.add_mutually_exclusive_group()
+    eval_group.add_argument(
         "--eval-prompts",
         help="JSONL file of prompts for the faithfulness eval; optional in v0.",
+    )
+    eval_group.add_argument(
+        "--audio-features-path",
+        help=(
+            "Path to a torch.save'd tensor of mel features "
+            "(shape: batch, n_mels=80, n_frames=3000) for the audio "
+            "faithfulness eval on a Whisper-encoder forge. Loads via "
+            "torch.load and passes to ForgePipeline.eval_audio_features. "
+            "Mutually exclusive with --eval-prompts."
+        ),
     )
     forge.add_argument("--dtype", default="float32", choices=("float32", "float16", "bfloat16"))
     forge.add_argument("--device", default="cpu")
@@ -174,6 +188,24 @@ def _cmd_forge(args: argparse.Namespace) -> int:
     basis = FeatureBasis.from_polygram_checkpoint(args.checkpoint)
     projector = SubspaceProjector(basis)
 
+    # v0.4 forge-whisper-encoder: load pre-extracted mel features for the
+    # audio faithfulness path. torch is lazy-imported so the non-audio
+    # CLI path keeps working without the [torch] extra exercised here.
+    eval_audio_features = None
+    if args.audio_features_path is not None:
+        try:
+            import torch
+        except ImportError:
+            print(
+                "sae-forge forge: --audio-features-path requires the "
+                "[torch] extra (or [intel] on x86_64 macOS).",
+                file=sys.stderr,
+            )
+            return 2
+        eval_audio_features = torch.load(
+            args.audio_features_path, map_location="cpu"
+        )
+
     # Hybrid-bridge wiring. The mutually-required check is here (not argparse-level)
     # so we can produce a clear actionable message naming both missing flags at once.
     hybrid_kwargs = {}
@@ -213,6 +245,7 @@ def _cmd_forge(args: argparse.Namespace) -> int:
         epoch_compression=epoch_compression,
         regrow=regrow,
         regrow_count=args.regrow_count,
+        eval_audio_features=eval_audio_features,
         **hybrid_kwargs,
     )
     result = pipeline.run(args.output_dir)
