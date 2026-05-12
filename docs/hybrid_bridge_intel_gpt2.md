@@ -130,6 +130,34 @@ preserves the save-time-fold option discussed in the design doc. Findings:
   Post-fine-tune the ranking may flip; tracked as a follow-up
   experiment.
 
+## Cross-family coverage
+
+The numbers above were captured against GPT-2 specifically because the
+GPT-2 native module is the first place the hybrid-bridge forward-pass
+insertion landed (#18). As of the `hybrid-bridge-llama-family` change,
+the same mechanism is wired through the shared `LlamaTransformer`
+factory and exercises end-to-end on the **Llama**, **Gemma-2**, and
+**Qwen2** families. The mechanism is family-agnostic; only the
+state-dict key prefix differs (`transformer.bridges.*` for GPT-2,
+`model.bridges.*` for the Llama-family — each reflecting the host's
+own HF naming convention).
+
+Family-specific integration coverage:
+
+- `tests/integration/test_hybrid_bridge_gpt2.py` — T0 GPT-2 (this doc's
+  numbers come from this surface).
+- `tests/integration/test_hybrid_bridge_llama.py` — T0 untied Llama
+  smoke + round-trip + tied-refusal + zero-init inversion.
+- `tests/integration/test_hybrid_bridge_qwen2.py` — same shape against
+  an untied Qwen2 (qkv_bias=True) host. Validates that the Q/K/V bias
+  state-dict entries coexist cleanly with the bridge state-dict
+  entries.
+
+A Gemma-2 family integration test is deferred to the T3 M4 reproduction
+pass (the mechanism works for Gemma-2 by inheritance through
+`LlamaTransformer`, but pinning a CI test without cached Gemma-2 weights
+doesn't add signal).
+
 ## What this experiment does NOT establish
 
 1. **Trained SAE bases.** The bases here are PCA proxies. Real Polygram-

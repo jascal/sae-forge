@@ -5,6 +5,18 @@ their corresponding OpenSpec change is archived.
 
 ## [Unreleased]
 
+### Added (hybrid-bridge-llama-family)
+
+- **Hybrid-bridge insertion into the Llama-family native module
+  forward path.** `LlamaTransformer` now constructs `BridgeModule`
+  instances when `cfg.bridges=True` and applies them at block indices
+  `0` and `L-2` in its per-block loop, mirroring the GPT-2 wiring.
+  Closes the half-built state shipped in #18 where `hybrid_bridge=True`
+  on a Llama / Gemma-2 / Qwen2 host accepted the flag, projected the
+  weights through three bases, and then silently dropped the bridges
+  on the forward pass. Llama, Gemma-2, and Qwen2 hybrid forges now
+  work end-to-end. Default-off behavior is byte-identical to today.
+
 ### Changed (hierarchical-fsm)
 
 - **FSM refactored into a three-machine hierarchy** —
