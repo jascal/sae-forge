@@ -43,11 +43,11 @@ state-dict-resident buffer so save/load round-trips it.
 
 ## 4. Audio eval
 
-- [ ] 4.1 New module `saeforge/audio_eval.py` exposing `cosine_faithfulness(forged, host, audio_features, *, device="cpu") -> float`
-- [ ] 4.2 Computes per-frame cosine similarity between forged encoder output and pre-captured host encoder output; averages across the batch and time axis
-- [ ] 4.3 Returns a Python `float` in `[0.0, 1.0]` (or `[-1.0, 1.0]` if negative cosines surface — clamp to non-negative for the FSM contract since `min_faithfulness >= 0` in the existing predicate logic)
-- [ ] 4.4 Tests in `tests/test_audio_eval.py`: identical states → 1.0; orthogonal states → 0.0; monotone decreasing under additive Gaussian noise; batch axis correctly averaged; fp16/bf16 input handled (via `.float()` in the helper)
-- [ ] 4.5 Document the metric choice in a module-level docstring (cribbed from design.md §"Eval dispatch")
+- [x] 4.1 New module `saeforge/audio_eval.py` exposing `cosine_faithfulness(forged, host, audio_features, *, device="cpu") -> float`
+- [x] 4.2 Computes per-frame cosine similarity between forged encoder output and pre-captured host encoder output; averages across the batch and time axis. Host states are projected through the forged module's `basis_encode` buffer so both vectors live in the same SAE-basis space.
+- [x] 4.3 Returns a Python `float` in `[0.0, 1.0]` — negative cosines clamp to 0.0; the upper end is clipped at 1.0 to absorb fp32 noise. Zero-norm forged or host states map to 0.0 rather than NaN.
+- [x] 4.4 Tests in `tests/test_audio_eval.py`: identical states → 1.0; zero-forged / zero-host / anti-correlated → 0.0; monotone decreasing under additive Gaussian noise; batch axis correctly averaged as the mean of per-example cosines; fp16 + bf16 input round-trip; plus an end-to-end smoke through the real `ForgedWhisperEncoder` + `WhisperModel` host
+- [x] 4.5 Document the metric choice in a module-level docstring (cribbed from design.md §"Eval dispatch")
 
 ## 5. evaluate_faithfulness dispatch
 
