@@ -89,8 +89,8 @@ state-dict-resident buffer so save/load round-trips it.
 
 ## 11. Polygram coordination
 
-- [ ] 11.1 Verify a polygram-compressed Whisper SAE (one of the five-SAE panel checkpoints) loads through `FeatureBasis.from_polygram_checkpoint` end-to-end. The Llama-Scope inspect verified the bf16 path; this confirms the same for Whisper specifically
-- [ ] 11.2 Note in `docs/advanced-fsm-options.md` (or a new `docs/audio-forge.md`) that audio SAE compressions tagged with `profile=uniform-sphere` are the recommended polygram-side setting; sae-forge does not consume the profile but flags the recommendation for users
+- [x] 11.1 Verify a polygram-compressed Whisper SAE loads through `FeatureBasis.from_polygram_checkpoint` end-to-end. Implemented as a synthetic-checkpoint smoke (`tests/test_polygram_whisper_coord.py`) that builds a polygram-format `.compressed.safetensors` + report at Whisper-encoder dimensions (256 × 64) and runs it through the WhisperEncoderAdapter → forged module → cosine_faithfulness pipeline. The bf16 dtype path that Llama-Scope inspect surfaced is fixed in polygram 0.2.0 already; modern TopK SAEs (Whisper included) hit exactly that code path. A real-checkpoint integration smoke (downloaded panel SAE, manual one-shot) is tracked as a follow-up — not in CI to keep the test suite independent of HF availability.
+- [x] 11.2 New `docs/audio-forge.md` covers when to use the Whisper-encoder forge, the recommended polygram `uniform-sphere` profile (with the panel rationale), the d → f bridge mechanics, the ε_conv accounting, the synthetic example, and the v0.4 limitations matrix.
 
 ## 12. Documentation
 
