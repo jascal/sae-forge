@@ -20,7 +20,7 @@ from saeforge.projector import SubspaceProjector
 from saeforge.utils.lazy import require_extra
 
 
-_SUPPORTED_FAMILIES = ("gpt2", "llama", "gemma2", "qwen2")
+_SUPPORTED_FAMILIES = ("gpt2", "llama", "gemma2", "qwen2", "qwen3")
 
 
 @dataclass
@@ -73,6 +73,10 @@ class NativeModelConfig:
     # and Gemma-2 (no biases on attention projections). The o_proj remains
     # bias-free across all families.
     qkv_bias: bool = False
+    # Qwen3-specific. When True, the attention block applies RMSNorm(head_dim)
+    # on Q and K per head between projection-and-reshape and the scaled dot-
+    # product. Llama / Gemma-2 / Qwen2 default to False (no q_norm/k_norm).
+    qk_norm: bool = False
     # Hybrid-bridge knobs. When ``bridges=True``, the native module
     # constructs and registers two ``BridgeModule`` instances on the
     # forward path between the embed/mid and mid/lm-head regions.
@@ -145,7 +149,7 @@ def _build_torch_module(config: NativeModelConfig):
         from saeforge.adapters.gpt2 import build_gpt2_module
 
         return build_gpt2_module(config)
-    if config.family in ("llama", "gemma2", "qwen2"):
+    if config.family in ("llama", "gemma2", "qwen2", "qwen3"):
         from saeforge.adapters.llama import build_llama_family_module
 
         return build_llama_family_module(config)

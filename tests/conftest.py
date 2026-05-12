@@ -293,6 +293,33 @@ def tiny_qwen2_untied_4layer():
 
 
 @pytest.fixture
+def tiny_qwen3_untied_4layer():
+    """A 4-layer untied Qwen3 — minimum for hybrid (n_layer >= 3).
+
+    Qwen3 dense is Llama-shaped + per-head Q/K RMSNorm. Q/K/V biases OFF
+    (Qwen2 had them; Qwen3 dropped them — auto-detection handles this).
+    Requires ``transformers >= 4.51``; older installs (``[intel]`` extra)
+    skip via ``importorskip``.
+    """
+    pytest.importorskip("torch")
+    pytest.importorskip("transformers", minversion="4.51")
+    from transformers import Qwen3Config, Qwen3ForCausalLM
+
+    config = Qwen3Config(
+        hidden_size=128,
+        num_hidden_layers=4,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        intermediate_size=256,
+        vocab_size=1024,
+        head_dim=32,
+        max_position_embeddings=64,
+        tie_word_embeddings=False,
+    )
+    return Qwen3ForCausalLM(config).eval()
+
+
+@pytest.fixture
 def feature_basis_128_to_32():
     """A 32-feature FeatureBasis over a 128-d residual (matches the
     tiny_llama / tiny_gemma2 fixtures)."""

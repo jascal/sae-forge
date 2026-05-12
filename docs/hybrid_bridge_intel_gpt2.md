@@ -152,6 +152,11 @@ Family-specific integration coverage:
   an untied Qwen2 (qkv_bias=True) host. Validates that the Q/K/V bias
   state-dict entries coexist cleanly with the bridge state-dict
   entries.
+- `tests/integration/test_hybrid_bridge_qwen3.py` — same shape against
+  an untied Qwen3 (qk_norm=True) host. Validates that the per-head Q/K
+  RMSNorm weights coexist cleanly with the bridge state-dict entries.
+  Requires `transformers >= 4.51`; the entire file skips on installs
+  without Qwen3 support (the `[intel]` extra is capped at `<4.50`).
 
 A Gemma-2 family integration test is deferred to the T3 M4 reproduction
 pass (the mechanism works for Gemma-2 by inheritance through

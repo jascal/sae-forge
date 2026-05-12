@@ -97,6 +97,15 @@ class LlamaAdapter(ArchitectureAdapter):
                 b = getattr(block.self_attn, qkv).bias
                 if b is not None:
                     out[f"{prefix}.self_attn.{qkv}.bias"] = to_numpy(b)
+            # Qwen3 inserts RMSNorm(head_dim) on Q and K per head between
+            # projection-and-reshape and the scaled dot-product. These weights
+            # are head-dim aligned (not residual-aligned) so they pass through
+            # the projector unchanged. Llama / Gemma-2 / Qwen2 hosts have no
+            # q_norm/k_norm submodules, so this loop no-ops for them.
+            for qk in ("q_norm", "k_norm"):
+                norm = getattr(block.self_attn, qk, None)
+                if norm is not None:
+                    out[f"{prefix}.self_attn.{qk}.weight"] = to_numpy(norm.weight)
             # o_proj is (hidden, n_q_heads * head_dim); the *first* axis
             # is the residual one, so project_residual_input applies.
             out[f"{prefix}.self_attn.o_proj.weight"] = projector.project_residual_input(
@@ -233,12 +242,26 @@ def _get_forged_llama_class():
             self.v_proj = nn.Linear(cfg.hidden_size, cfg.n_kv_heads * cfg.head_dim, bias=qkv_bias)
             self.o_proj = nn.Linear(cfg.num_heads * cfg.head_dim, cfg.hidden_size, bias=False)
             self.attn_logit_softcap = cfg.attn_logit_softcap
+            # Qwen3 applies RMSNorm(head_dim) on Q and K per head after the
+            # reshape and before SDPA. Llama / Gemma-2 / Qwen2 set qk_norm=False
+            # and these stay None — forward path falls through unchanged.
+            if getattr(cfg, "qk_norm", False):
+                norm_eps = cfg.rms_norm_eps if cfg.rms_norm_eps is not None else 1e-6
+                self.q_norm = RMSNorm(cfg.head_dim, eps=norm_eps)
+                self.k_norm = RMSNorm(cfg.head_dim, eps=norm_eps)
+            else:
+                self.q_norm = None
+                self.k_norm = None
 
         def forward(self, x):
             shape_prefix = x.shape[:-1]
             q = self.q_proj(x).view(*shape_prefix, self.num_heads, self.head_dim).transpose(-3, -2)
             k = self.k_proj(x).view(*shape_prefix, self.n_kv_heads, self.head_dim).transpose(-3, -2)
             v = self.v_proj(x).view(*shape_prefix, self.n_kv_heads, self.head_dim).transpose(-3, -2)
+            # Qwen3 per-head Q/K norm; no-op for other Llama-family hosts.
+            if self.q_norm is not None:
+                q = self.q_norm(q)
+                k = self.k_norm(k)
             # GQA: repeat K/V along the head axis to match Q's heads.
             n_groups = self.num_heads // self.n_kv_heads
             if n_groups > 1:
