@@ -150,6 +150,65 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _parse_eval_prompts(path: Path) -> list[str]:
+    """Parse a ``--eval-prompts`` file into a list of prompt strings.
+
+    Closes #26. Three input shapes are supported in a single pass —
+    each non-empty line is tried in this order:
+
+    1. ``{"prompt": "Hello"}`` — JSON object with a ``"prompt"`` string
+       field. Other dict shapes raise ``ValueError`` naming the
+       expected field.
+    2. ``"Hello world"`` — bare JSON string. ``json.loads`` returns
+       the unquoted string.
+    3. ``Hello world`` — non-JSON raw line. The ``json.JSONDecodeError``
+       is caught and the line itself is used.
+
+    Booleans, numbers, lists, and other JSON shapes raise
+    ``ValueError``. The first-shape-wins ordering means a line that
+    happens to be valid JSON is treated as JSON first; users who want
+    raw-line semantics on JSON-looking lines should escape them
+    explicitly (e.g. by writing ``"foo"`` as ``\"foo\"`` — though that
+    would round-trip to the same string anyway).
+    """
+    prompts: list[str] = []
+    for raw in path.read_text().splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            parsed = json.loads(line)
+        except json.JSONDecodeError:
+            # Shape 3: non-JSON raw line. Use the (stripped) line directly.
+            prompts.append(line)
+            continue
+        if isinstance(parsed, str):
+            # Shape 2: bare JSON string.
+            prompts.append(parsed)
+        elif isinstance(parsed, dict):
+            # Shape 1: dict shorthand with required "prompt" field.
+            if "prompt" not in parsed:
+                raise ValueError(
+                    f"--eval-prompts: dict entries must have a 'prompt' "
+                    f"key with a string value; got keys "
+                    f"{sorted(parsed.keys())!r} on line {raw!r}"
+                )
+            value = parsed["prompt"]
+            if not isinstance(value, str):
+                raise ValueError(
+                    f"--eval-prompts: dict 'prompt' field must be a string; "
+                    f"got {type(value).__name__} on line {raw!r}"
+                )
+            prompts.append(value)
+        else:
+            raise ValueError(
+                f"--eval-prompts: entries must be a JSON string, a dict "
+                f"with a 'prompt' field, or a raw text line; got JSON "
+                f"{type(parsed).__name__} on line {raw!r}"
+            )
+    return prompts
+
+
 def _cmd_forge(args: argparse.Namespace) -> int:
     from saeforge import FeatureBasis, ForgePipeline, SubspaceProjector
 
@@ -191,11 +250,8 @@ def _cmd_forge(args: argparse.Namespace) -> int:
     # v0.4 forge-whisper-encoder: load pre-extracted mel features for the
     # audio faithfulness path. torch is lazy-imported so the non-audio
     # CLI path keeps working without the [torch] extra exercised here.
-    # JSONL-of-strings parse: each non-empty line is a single
-    # json-encoded prompt. Full schema support (objects with role /
-    # completion / metadata) is tracked separately as tech debt.
     eval_prompts = (
-        [json.loads(line) for line in Path(args.eval_prompts).read_text().splitlines() if line.strip()]
+        _parse_eval_prompts(Path(args.eval_prompts))
         if args.eval_prompts
         else []
     )

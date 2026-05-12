@@ -329,6 +329,74 @@ class TestEvalPromptsWiring:
         assert captured["eval_prompts"] == []
 
 
+class TestEvalPromptsParser:
+    """Closes #26 — _parse_eval_prompts handles three input shapes
+    (dict-shorthand, JSON string, raw line) in a single pass and
+    raises actionable ValueError on unsupported shapes.
+    """
+
+    def _parse(self, path):
+        from saeforge.cli import _parse_eval_prompts
+
+        return _parse_eval_prompts(path)
+
+    def test_dict_shorthand(self, tmp_path):
+        path = tmp_path / "prompts.jsonl"
+        path.write_text(
+            '{"prompt": "Hello"}\n{"prompt": "World"}\n'
+        )
+        assert self._parse(path) == ["Hello", "World"]
+
+    def test_json_string(self, tmp_path):
+        """Each line a bare JSON string — the existing string-only
+        format the v0.4 wiring fix shipped."""
+        path = tmp_path / "prompts.jsonl"
+        path.write_text('"Hello"\n"World"\n')
+        assert self._parse(path) == ["Hello", "World"]
+
+    def test_plain_text(self, tmp_path):
+        """Each non-empty line a raw prompt — non-JSON content is
+        accepted as-is."""
+        path = tmp_path / "prompts.txt"
+        path.write_text("Hello\nWorld\n")
+        assert self._parse(path) == ["Hello", "World"]
+
+    def test_mixed_shapes_one_file(self, tmp_path):
+        """First-shape-wins per line — a single file may interleave
+        the three forms."""
+        path = tmp_path / "prompts.jsonl"
+        path.write_text(
+            '{"prompt": "Hello"}\n'
+            '"World"\n'
+            "Raw line here\n"
+        )
+        assert self._parse(path) == ["Hello", "World", "Raw line here"]
+
+    def test_blank_lines_skipped(self, tmp_path):
+        path = tmp_path / "prompts.txt"
+        path.write_text("\nHello\n\n\nWorld\n\n")
+        assert self._parse(path) == ["Hello", "World"]
+
+    def test_dict_without_prompt_key_raises(self, tmp_path):
+        path = tmp_path / "bad.jsonl"
+        path.write_text('{"not_prompt": "Hello"}\n')
+        with pytest.raises(ValueError, match="'prompt'"):
+            self._parse(path)
+
+    def test_dict_with_non_string_prompt_raises(self, tmp_path):
+        path = tmp_path / "bad.jsonl"
+        path.write_text('{"prompt": 42}\n')
+        with pytest.raises(ValueError, match="must be a string"):
+            self._parse(path)
+
+    def test_invalid_json_type_raises(self, tmp_path):
+        """JSON numbers, booleans, lists are unsupported shapes."""
+        path = tmp_path / "bad.jsonl"
+        path.write_text("[1, 2, 3]\n")
+        with pytest.raises(ValueError, match="entries must be"):
+            self._parse(path)
+
+
 class TestInspectFsmDiagram:
     def test_fsm_diagram_emits_state_diagram_v2(self, capsys):
         pytest.importorskip("orca_runtime_python")
