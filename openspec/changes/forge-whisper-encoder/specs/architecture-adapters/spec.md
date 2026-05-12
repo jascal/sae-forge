@@ -26,8 +26,8 @@ The adapter's `family` class attribute SHALL be `"whisper_encoder"`.
 
 ### Requirement: walk projects every encoder weight whose input or output touches the residual stream
 
-For a Whisper encoder host with `n` layers, `WhisperEncoderAdapter.walk`
-SHALL return a dict containing exactly the following keys, each with
+`WhisperEncoderAdapter.walk` SHALL return, for a Whisper encoder host
+with `n` layers, a dict containing exactly the following keys, each with
 the indicated shape (where `f = n_features`, `d = d_model`, `i =
 intermediate_size`, `m = n_mels`, `p = max_source_positions`).
 Shapes follow HF `nn.Linear` convention: `weight` is `(out, in)` and
@@ -144,10 +144,11 @@ extra) but SHALL succeed when torch is installed.
 
 ### Requirement: Adapter registry dispatches by host model class
 
-The v0.3 contract is preserved. The change is that `registered_classes()`
-SHALL include `transformers.WhisperForConditionalGeneration` and
+`saeforge.adapters.registered_classes()` SHALL include
+`transformers.WhisperForConditionalGeneration` and
 `transformers.WhisperModel` in its returned list once
-`saeforge.adapters.whisper` has been imported.
+`saeforge.adapters.whisper` has been imported (the v0.3 contract is
+otherwise preserved unchanged).
 
 The `NotImplementedError` raised on unregistered hosts SHALL list
 all five registered classes (the v0.3 GPT-2/Llama/Gemma-2 plus the
