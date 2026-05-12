@@ -112,18 +112,43 @@ class LlamaAdapter(ArchitectureAdapter):
                 to_numpy(block.self_attn.o_proj.weight)
             )
 
-            # SwiGLU — gate / up are (intermediate, hidden), project the
-            # right axis; down is (hidden, intermediate), project the
-            # left/residual axis.
-            out[f"{prefix}.mlp.gate_proj.weight"] = projector.project_residual_output(
-                to_numpy(block.mlp.gate_proj.weight)
-            )
-            out[f"{prefix}.mlp.up_proj.weight"] = projector.project_residual_output(
-                to_numpy(block.mlp.up_proj.weight)
-            )
-            out[f"{prefix}.mlp.down_proj.weight"] = projector.project_residual_input(
-                to_numpy(block.mlp.down_proj.weight)
-            )
+            # MLP. Two cases:
+            # - Dense (Llama / Gemma-2 / Qwen2 / Qwen3-dense): block.mlp has
+            #   gate_proj / up_proj / down_proj attributes directly.
+            # - MoE (Qwen3-MoE): block.mlp has gate (router) + experts
+            #   ModuleList; each expert has its own gate_proj / up_proj /
+            #   down_proj. Detected by ``hasattr(block.mlp, "experts")``.
+            #
+            # SwiGLU shape conventions (for both dense and per-expert):
+            #   gate/up are (intermediate, hidden) — IN axis (1) is residual
+            #     → project_residual_output
+            #   down is (hidden, intermediate) — OUT axis (0) is residual
+            #     → project_residual_input
+            if hasattr(block.mlp, "experts"):
+                # Router: gate.weight is (num_experts, hidden) — IN axis is residual.
+                out[f"{prefix}.mlp.gate.weight"] = projector.project_residual_output(
+                    to_numpy(block.mlp.gate.weight)
+                )
+                for e, expert in enumerate(block.mlp.experts):
+                    out[f"{prefix}.mlp.experts.{e}.gate_proj.weight"] = projector.project_residual_output(
+                        to_numpy(expert.gate_proj.weight)
+                    )
+                    out[f"{prefix}.mlp.experts.{e}.up_proj.weight"] = projector.project_residual_output(
+                        to_numpy(expert.up_proj.weight)
+                    )
+                    out[f"{prefix}.mlp.experts.{e}.down_proj.weight"] = projector.project_residual_input(
+                        to_numpy(expert.down_proj.weight)
+                    )
+            else:
+                out[f"{prefix}.mlp.gate_proj.weight"] = projector.project_residual_output(
+                    to_numpy(block.mlp.gate_proj.weight)
+                )
+                out[f"{prefix}.mlp.up_proj.weight"] = projector.project_residual_output(
+                    to_numpy(block.mlp.up_proj.weight)
+                )
+                out[f"{prefix}.mlp.down_proj.weight"] = projector.project_residual_input(
+                    to_numpy(block.mlp.down_proj.weight)
+                )
 
             # RMSNorm γ — residual-aligned. No β (RMSNorm has no bias).
             for norm_name in self._norms_per_layer:
@@ -292,6 +317,64 @@ def _get_forged_llama_class():
         def forward(self, x):
             return self.down_proj(F.silu(self.gate_proj(x)) * self.up_proj(x))
 
+    class Qwen3Expert(nn.Module):
+        """A single SwiGLU expert. Identical to ``SwiGLU_MLP`` but parameterized
+        by ``moe_intermediate_size`` (the per-expert FF inner dim) rather than
+        the dense ``intermediate_size``.
+        """
+
+        def __init__(self, cfg):
+            super().__init__()
+            self.gate_proj = nn.Linear(cfg.hidden_size, cfg.moe_intermediate_size, bias=False)
+            self.up_proj = nn.Linear(cfg.hidden_size, cfg.moe_intermediate_size, bias=False)
+            self.down_proj = nn.Linear(cfg.moe_intermediate_size, cfg.hidden_size, bias=False)
+
+        def forward(self, x):
+            return self.down_proj(F.silu(self.gate_proj(x)) * self.up_proj(x))
+
+    class Qwen3MoEMLP(nn.Module):
+        """Mixtral-style sparse MoE MLP for Qwen3-MoE.
+
+        Forward pass: softmax over expert axis (fp32) → top-K → optional
+        renormalization → naive per-expert loop dispatching with ``index_add_``.
+        Matches the HF ``Qwen3MoeSparseMoeBlock`` reference. The naive loop is
+        intentional for v1; the fused scatter-add path is a separate
+        optimization (``moe-fused-dispatch``).
+        """
+
+        def __init__(self, cfg):
+            super().__init__()
+            self.num_experts = cfg.num_experts
+            self.top_k = cfg.num_experts_per_tok
+            self.norm_topk_prob = cfg.norm_topk_prob
+            self.gate = nn.Linear(cfg.hidden_size, cfg.num_experts, bias=False)
+            self.experts = nn.ModuleList(
+                [Qwen3Expert(cfg) for _ in range(cfg.num_experts)]
+            )
+
+        def forward(self, x):
+            B, T, H = x.shape
+            x_flat = x.reshape(-1, H)
+            gate_logits = self.gate(x_flat)
+            # fp32 softmax matches HF Qwen3MoE to avoid underflow at large num_experts
+            weights = torch.softmax(gate_logits, dim=-1, dtype=torch.float32)
+            top_w, top_i = weights.topk(self.top_k, dim=-1)
+            if self.norm_topk_prob:
+                top_w = top_w / top_w.sum(dim=-1, keepdim=True)
+            top_w = top_w.to(x.dtype)
+            out = torch.zeros_like(x_flat)
+            for e in range(self.num_experts):
+                mask = top_i == e
+                if not mask.any():
+                    continue
+                token_idx, slot_idx = mask.nonzero(as_tuple=True)
+                if token_idx.numel() == 0:
+                    continue
+                expert_out = self.experts[e](x_flat[token_idx])
+                expert_w = top_w[token_idx, slot_idx].unsqueeze(-1)
+                out.index_add_(0, token_idx, expert_w * expert_out)
+            return out.view(B, T, H)
+
     class LlamaBlock(nn.Module):
         def __init__(self, cfg):
             super().__init__()
@@ -299,7 +382,12 @@ def _get_forged_llama_class():
             self.input_layernorm = RMSNorm(cfg.hidden_size, eps=eps)
             self.self_attn = LlamaSelfAttention(cfg)
             self.post_attention_layernorm = RMSNorm(cfg.hidden_size, eps=eps)
-            self.mlp = SwiGLU_MLP(cfg)
+            # MoE-aware MLP construction. num_experts > 0 -> sparse routing
+            # (Qwen3-MoE); == 0 -> dense SwiGLU (every other family).
+            if getattr(cfg, "num_experts", 0) > 0:
+                self.mlp = Qwen3MoEMLP(cfg)
+            else:
+                self.mlp = SwiGLU_MLP(cfg)
             self.family = cfg.family
             # Gemma-2 wraps the attn and mlp blocks with extra norms; the
             # residual loop becomes:

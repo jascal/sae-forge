@@ -184,6 +184,14 @@ class ForgePipeline:
     basis_lm_head: FeatureBasis | None = None
     bridge_config: BridgeConfig = field(default_factory=BridgeConfig)
 
+    # v0.6 qwen3-moe-support knobs. Control how a Qwen3-MoE host is forged:
+    # - "preserve" (default): per-expert projection; full fidelity
+    # - "collapse": average experts into a single dense MLP per layer
+    # - "top_n": v1 placeholder, raises NotImplementedError pointing at
+    #   the moe-expert-calibration follow-up
+    moe_strategy: str = "preserve"
+    moe_keep_n: int = 0
+
     # ----------------------------------------------------------------
     # Construction-time validation + dict round-trip
     # ----------------------------------------------------------------
@@ -229,6 +237,16 @@ class ForgePipeline:
             raise ValueError(
                 "ForgePipeline: replay_policy='per_task' requires "
                 "task_trigger='labeled' (per-task slots need task boundaries)"
+            )
+        if self.moe_strategy not in ("preserve", "collapse", "top_n"):
+            raise ValueError(
+                f"ForgePipeline: moe_strategy={self.moe_strategy!r} must be one of "
+                "'preserve' | 'collapse' | 'top_n'"
+            )
+        if self.moe_strategy == "top_n" and self.moe_keep_n <= 0:
+            raise ValueError(
+                f"ForgePipeline: moe_strategy='top_n' requires moe_keep_n > 0; "
+                f"got moe_keep_n={self.moe_keep_n}"
             )
         if self.hybrid_bridge:
             if self.basis_embed is None or self.basis_lm_head is None:
@@ -371,6 +389,58 @@ class ForgePipeline:
             )
         return self._run_real_imperative(output_dir)
 
+    def _apply_moe_collapse(self, weights: dict, native_cfg) -> tuple[dict, Any]:
+        """Average per-expert weights into dense MLP keys; downgrade config to dense.
+
+        For each layer with MoE keys
+        (``mlp.experts.{e}.{gate,up,down}_proj.weight`` ×
+        ``num_experts``), produce a single averaged
+        ``mlp.{gate,up,down}_proj.weight`` set. Drop the router
+        (``mlp.gate.weight``). The forged config is downgraded to a
+        dense Qwen3 (family="qwen3", num_experts=0,
+        intermediate_size=moe_intermediate_size).
+
+        Used only when ``moe_strategy="collapse"``. Documented in the
+        capability spec as "experimental — produces a model that thinks
+        like the average expert, not like any specific expert."
+        """
+        import re
+        from dataclasses import replace
+
+        if native_cfg.num_experts == 0:
+            return weights, native_cfg  # already dense
+
+        expert_pattern = re.compile(
+            r"^(model\.layers\.\d+)\.mlp\.experts\.\d+\.(gate_proj|up_proj|down_proj)\.weight$"
+        )
+        new_weights: dict = {}
+        # Buckets keyed by (layer_prefix, kind) → list of tensors
+        buckets: dict = {}
+        for k, v in weights.items():
+            m = expert_pattern.match(k)
+            if m:
+                layer_prefix, kind = m.groups()
+                buckets.setdefault((layer_prefix, kind), []).append(v)
+            elif ".mlp.gate.weight" in k:
+                # Drop the router — collapsed model has no routing
+                continue
+            else:
+                new_weights[k] = v
+
+        for (layer_prefix, kind), tensors in buckets.items():
+            avg = sum(tensors) / len(tensors)
+            new_weights[f"{layer_prefix}.mlp.{kind}.weight"] = avg
+
+        new_cfg = replace(
+            native_cfg,
+            family="qwen3",
+            num_experts=0,
+            num_experts_per_tok=0,
+            intermediate_size=native_cfg.moe_intermediate_size,
+            moe_intermediate_size=0,
+        )
+        return new_weights, new_cfg
+
     def _build_hybrid_bundle(self, host) -> "HybridBasisBundle | None":
         """Return a hybrid bundle when enabled, else None. Enforces tied-embedding refusal.
 
@@ -451,6 +521,19 @@ class ForgePipeline:
             config.bridge_init = self.bridge_config.init
             config.bridge_nonlin = self.bridge_config.nonlin
             config.bridge_pre_layernorm = self.bridge_config.pre_layernorm
+        # MoE strategy dispatch (only relevant when host is qwen3_moe; for
+        # every other family config.num_experts is 0 and these branches no-op).
+        if self.moe_strategy == "top_n":
+            raise NotImplementedError(
+                "ForgePipeline: moe_strategy='top_n' is a v1 placeholder. "
+                "It requires a per-expert activation-frequency calibration "
+                "utility tracked as the moe-expert-calibration follow-up. "
+                "Use moe_strategy='preserve' (default, full fidelity) or "
+                "moe_strategy='collapse' (averages experts into a dense MLP) "
+                "in v1."
+            )
+        if self.moe_strategy == "collapse" and config.num_experts > 0:
+            weights, config = self._apply_moe_collapse(weights, config)
         model = NativeModel.from_projected_weights(config, weights)
         model._move(dtype=self.dtype, device=self.device)
 
