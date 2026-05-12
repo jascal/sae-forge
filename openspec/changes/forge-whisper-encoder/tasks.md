@@ -83,9 +83,9 @@ state-dict-resident buffer so save/load round-trips it.
 
 ## 10. CI / extras
 
-- [ ] 10.1 `pyproject.toml`: add `[audio]` extra pinning `librosa>=0.10` (optional — only the real-audio path needs it; the synthetic fixture path is pure-numpy)
-- [ ] 10.2 `[audio]` is included in the `[all]` extra
-- [ ] 10.3 Update CI matrix to install `[dev,intel,polygram,orca,audio]` so the Whisper smoke runs
+- [x] 10.1 `pyproject.toml`: `audio = ["librosa>=0.10"]` added with an in-file comment explaining that the synthetic-fixture path and the pre-extracted-features CLI path don't need it; only real-audio mel extraction from `.wav` / `.flac` does
+- [x] 10.2 `[all]` updated to include `librosa>=0.10`
+- [ ] 10.3 CI matrix expansion deferred — out of scope for this change. The existing CI workflow installs only `[dev]`, so every torch / transformers / polygram test already skips in CI via `pytest.importorskip`. Expanding the matrix to `[dev,torch,polygram,orca,audio]` would significantly change CI install cost and exercise paths well beyond Whisper-encoder; that's a project-wide CI decision, not a Whisper-specific one. Tracked as a follow-up.
 
 ## 11. Polygram coordination
 
