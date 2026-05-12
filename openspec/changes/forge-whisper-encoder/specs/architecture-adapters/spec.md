@@ -29,7 +29,11 @@ The adapter's `family` class attribute SHALL be `"whisper_encoder"`.
 For a Whisper encoder host with `n` layers, `WhisperEncoderAdapter.walk`
 SHALL return a dict containing exactly the following keys, each with
 the indicated shape (where `f = n_features`, `d = d_model`, `i =
-intermediate_size`, `m = n_mels`, `p = max_source_positions`):
+intermediate_size`, `m = n_mels`, `p = max_source_positions`).
+Shapes follow HF `nn.Linear` convention: `weight` is `(out, in)` and
+`bias` matches `out`. Q/K/V read the residual (in-axis projected
+from `d` to `f`); `out_proj` writes the residual (out-axis
+projected from `d` to `f`).
 
 ```
 conv1.weight                                (d, m, 3)         # frozen-copied
@@ -39,12 +43,12 @@ conv2.bias                                  (d,)               # frozen-copied
 embed_positions.weight                      (p, d)            # frozen-copied
 layers.{0..n-1}.self_attn_layer_norm.weight (f,)
 layers.{...}.self_attn_layer_norm.bias      (f,)
-layers.{...}.self_attn.q_proj.weight        (f, d)
+layers.{...}.self_attn.q_proj.weight        (d, f)
 layers.{...}.self_attn.q_proj.bias          (d,)
-layers.{...}.self_attn.k_proj.weight        (f, d)
-layers.{...}.self_attn.v_proj.weight        (f, d)
+layers.{...}.self_attn.k_proj.weight        (d, f)
+layers.{...}.self_attn.v_proj.weight        (d, f)
 layers.{...}.self_attn.v_proj.bias          (d,)
-layers.{...}.self_attn.out_proj.weight      (d, f)
+layers.{...}.self_attn.out_proj.weight      (f, d)
 layers.{...}.self_attn.out_proj.bias        (f,)
 layers.{...}.final_layer_norm.weight        (f,)
 layers.{...}.final_layer_norm.bias          (f,)

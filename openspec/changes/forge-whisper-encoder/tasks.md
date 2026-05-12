@@ -1,30 +1,39 @@
 ## 1. NativeModelConfig extension
 
-- [ ] 1.1 Add `output_kind: str = "logits"` field to `NativeModelConfig` (saeforge/model.py); default preserves byte-equivalent v0.3 LM behavior
-- [ ] 1.2 Make `vocab_size` default to `0` (was required); the `__post_init__` invariant `vocab_size > 0` is gated by `output_kind == "logits"`
-- [ ] 1.3 Add `whisper_encoder` to `_SUPPORTED_FAMILIES`; assert that `family == "whisper_encoder"` implies `output_kind == "encoder_states"` and `vocab_size == 0`
-- [ ] 1.4 Update `to_dict` / `from_dict` to round-trip the new fields
-- [ ] 1.5 Add `_build_torch_module` dispatch branch for `whisper_encoder` → `saeforge.adapters.whisper.build_whisper_encoder_module(config)`
+- [x] 1.1 Add `output_kind: str = "logits"` field to `NativeModelConfig` (saeforge/model.py); default preserves byte-equivalent v0.3 LM behavior
+- [x] 1.2 Make `vocab_size` default to `0` (was required); the `__post_init__` invariant `vocab_size > 0` is gated by `output_kind == "logits"`
+- [x] 1.3 Add `whisper_encoder` to `_SUPPORTED_FAMILIES`; assert that `family == "whisper_encoder"` implies `output_kind == "encoder_states"` and `vocab_size == 0`
+- [x] 1.4 Update `to_dict` / `from_dict` to round-trip the new fields — handled automatically by the dataclass `asdict` + `cls(**payload)` pattern; pre-change configs without `output_kind` deserialise with the default `"logits"`
+- [x] 1.5 Add `_build_torch_module` dispatch branch for `whisper_encoder` → `saeforge.adapters.whisper.build_whisper_encoder_module(config)`
 - [ ] 1.6 Tests: NativeModelConfig invalid-combination matrix (vocab=0+logits, vocab>0+encoder_states, whisper_encoder+vocab>0)
 
 ## 2. WhisperEncoderAdapter
 
-- [ ] 2.1 New module `saeforge/adapters/whisper.py` exposing `WhisperEncoderAdapter` (subclass of `ArchitectureAdapter`)
-- [ ] 2.2 `family = "whisper_encoder"`; `walk(host, projector)` produces a dict of every encoder weight (per design.md §"Native module shape" projected list)
-- [ ] 2.3 `_extract_encoder(host)` handles both `WhisperForConditionalGeneration` (`.model.encoder`) and `WhisperModel` (`.encoder`)
-- [ ] 2.4 Frozen-copy path for `conv1`, `conv2`, `embed_positions` (no projector call); add an explicit in-code comment block stating that this path is the ε_conv accounting per `docs/algorithm.md` §5 and naming the known limitation for real-audio use ("the unprojected conv stem feeds non-basis-aligned features into the first encoder block; bounded but not zero error in the forged encoder's outputs vs the host"). Comment is load-bearing for future readers, not vestigial
-- [ ] 2.5 `build_native_config(host, n_features)` reads `host.config.encoder_layers / encoder_attention_heads / d_model / encoder_ffn_dim`; produces `NativeModelConfig(family="whisper_encoder", output_kind="encoder_states", vocab_size=0, ...)`
-- [ ] 2.6 `native_module_class()` returns `ForgedWhisperEncoder` (lazy torch import)
-- [ ] 2.7 `grad_checkpoint_targets(module)` returns `(module.layers, module.embed_positions.weight)` so the recipe path works on Whisper
-- [ ] 2.8 Register adapter at module import time for both `WhisperForConditionalGeneration` and `WhisperModel`
-- [ ] 2.9 Tests in `tests/test_whisper_encoder_adapter.py`: walker shape audit (every key + shape), MHA invariant (encoder is not GQA — `n_kv_heads == num_heads`), frozen-copy check (conv1/conv2/embed_positions match host bit-for-bit), no-randomly-initialized-weights invariant, registry dispatch test (both Whisper classes resolve to the same adapter)
+- [x] 2.1 New module `saeforge/adapters/whisper.py` exposing `WhisperEncoderAdapter` (subclass of `ArchitectureAdapter`)
+- [x] 2.2 `family = "whisper_encoder"`; `walk(host, projector)` produces a dict of every encoder weight (per design.md §"Native module shape" projected list)
+- [x] 2.3 `_extract_encoder(host)` handles both `WhisperForConditionalGeneration` (`.model.encoder`) and `WhisperModel` (`.encoder`)
+- [x] 2.4 Frozen-copy path for `conv1`, `conv2`, `embed_positions` (no projector call); module docstring carries the ε_conv accounting and the known limitation for real-audio use ("the unprojected conv stem feeds non-basis-aligned features into the first encoder block; bounded but not zero error in the forged encoder's outputs vs the host")
+- [x] 2.5 `build_native_config(host, n_features)` reads `host.config.encoder_layers / encoder_attention_heads / d_model / encoder_ffn_dim`; produces `NativeModelConfig(family="whisper_encoder", output_kind="encoder_states", vocab_size=0, ...)`
+- [x] 2.6 `native_module_class()` returns `ForgedWhisperEncoder` (lazy torch import)
+- [x] 2.7 `grad_checkpoint_targets(module)` returns `(module.layers, module.embed_positions.weight)` so the recipe path works on Whisper
+- [x] 2.8 Register adapter at module import time for both `WhisperForConditionalGeneration` and `WhisperModel`
+- [x] 2.9 Tests in `tests/test_whisper_encoder_adapter.py`: walker shape audit (every key + shape), MHA invariant (encoder is not GQA — `n_kv_heads == num_heads`), frozen-copy check (conv1/conv2/embed_positions match host bit-for-bit), no-randomly-initialized-weights invariant, registry dispatch test (both Whisper classes resolve to the same adapter)
 
 ## 3. ForgedWhisperEncoder torch module
 
-- [ ] 3.1 New `nn.Module` `ForgedWhisperEncoder` in `saeforge/adapters/whisper.py` (or `saeforge/whisper_encoder.py` — pick by repo convention; the Llama family lives in adapters/, follow that)
-- [ ] 3.2 Block layout: `pre_layernorm → self_attn → residual → pre_layernorm → mlp → residual` (matches HF Whisper post-LN-ish pre-LN-via-LN-before-each-sublayer)
-- [ ] 3.3 Self-attn: separate `q_proj` / `k_proj` / `v_proj` / `out_proj` Linear layers (Whisper uses Linear, not GPT-2's fused Conv1d); MHA only (no GQA)
-- [ ] 3.4 MLP: `fc1 → gelu → fc2`; activation is GELU, not SiLU (Whisper diverges from Llama here)
+NOTE: §§3.1–3.4 are landed as a parameter-skeleton stub so the adapter
+walk + `from_projected_weights` + no-randomly-initialised-weights
+invariant work. The forward path (§3.5), explicit
+`from_projected_weights` override (§3.6 — currently goes through
+`NativeModel.from_projected_weights`), `save_pretrained` /
+`load_pretrained` (§3.7), and module-level tests (§3.8) are deferred
+to the next commit. Calling `.forward()` on a `ForgedWhisperEncoder`
+today raises `NotImplementedError` naming this deferral.
+
+- [x] 3.1 New `nn.Module` `ForgedWhisperEncoder` in `saeforge/adapters/whisper.py` (or `saeforge/whisper_encoder.py` — pick by repo convention; the Llama family lives in adapters/, follow that)
+- [x] 3.2 Block layout: `pre_layernorm → self_attn → residual → pre_layernorm → mlp → residual` (matches HF Whisper post-LN-ish pre-LN-via-LN-before-each-sublayer) — parameter slots in place; forward path deferred
+- [x] 3.3 Self-attn: separate `q_proj` / `k_proj` / `v_proj` / `out_proj` Linear layers (Whisper uses Linear, not GPT-2's fused Conv1d); MHA only (no GQA)
+- [x] 3.4 MLP: `fc1 → gelu → fc2`; activation is GELU, not SiLU (Whisper diverges from Llama here) — `fc1` / `fc2` slots in place; GELU is applied inside the deferred forward path
 - [ ] 3.5 `forward(input_features)` matches HF's encoder forward signature: `(batch, n_mels, n_frames)` → `(batch, n_frames // 2, hidden_size)` after the conv stem
 - [ ] 3.6 `from_projected_weights(config, weights_dict)` classmethod loads the projected state dict via `load_state_dict(strict=True)`
 - [ ] 3.7 `save_pretrained(dir)` / `load_pretrained(dir)` mirror the existing GPT-2/Llama save patterns; persist a `config.json` derived from `config.to_dict()` and a `model.safetensors` from `state_dict()`
