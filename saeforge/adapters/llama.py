@@ -309,11 +309,42 @@ def _get_forged_llama_class():
                 [LlamaBlock(cfg) for _ in range(cfg.num_layers)]
             )
             self.norm = RMSNorm(cfg.hidden_size, eps=eps)
+            # Hybrid-bridge insertion on the residual stream between the embed
+            # and mid regions (after block 0) and between the mid and lm-head
+            # regions (after block L-2). Mirrors the GPT-2 wiring in
+            # ``saeforge/adapters/gpt2.py``. See the
+            # ``hybrid-bridge-llama-family`` capability spec.
+            self.bridges = self._build_bridges(cfg)
+
+        @staticmethod
+        def _build_bridges(cfg):
+            if not getattr(cfg, "bridges", False):
+                return None
+            from saeforge.bridges import BridgeConfig, make_bridge
+
+            bcfg = BridgeConfig(
+                init=cfg.bridge_init,
+                nonlin=cfg.bridge_nonlin,
+                pre_layernorm=cfg.bridge_pre_layernorm,
+                train=True,
+            )
+            return nn.ModuleDict(
+                {
+                    "emb_mid": make_bridge(cfg.hidden_size, bcfg),
+                    "mid_lm": make_bridge(cfg.hidden_size, bcfg),
+                }
+            )
 
         def forward(self, input_ids):
             x = self.embed_tokens(input_ids)
-            for layer in self.layers:
+            n = len(self.layers)
+            for i, layer in enumerate(self.layers):
                 x = layer(x)
+                if self.bridges is not None:
+                    if i == 0 and n >= 3:
+                        x = self.bridges["emb_mid"](x)
+                    elif i == n - 2 and n >= 3:
+                        x = self.bridges["mid_lm"](x)
             return self.norm(x)
 
     class ForgedLlama(nn.Module):

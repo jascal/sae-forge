@@ -172,14 +172,20 @@ def tiny_gpt2(monkeypatch):
 
 @pytest.fixture
 def tiny_llama():
-    """A tiny torch Llama — 128-dim residual, 2 layers, 4 heads, 2 KV heads (GQA), 1024 vocab."""
+    """A tiny torch Llama — 128-dim residual, 4 layers, 4 heads, 2 KV heads (GQA), 1024 vocab.
+
+    Bumped to 4 layers (was 2) per the ``hybrid-bridge-llama-family`` change
+    so the same fixture can exercise both single-basis and hybrid (n_layer
+    >= 3) paths. Architecture is structurally identical to the 2-layer
+    version; existing single-basis tests are unaffected.
+    """
     pytest.importorskip("torch")
     pytest.importorskip("transformers")
     from transformers import LlamaConfig, LlamaForCausalLM
 
     config = LlamaConfig(
         hidden_size=128,
-        num_hidden_layers=2,
+        num_hidden_layers=4,
         num_attention_heads=4,
         num_key_value_heads=2,
         intermediate_size=256,
@@ -250,6 +256,31 @@ def tiny_qwen2():
     config = Qwen2Config(
         hidden_size=128,
         num_hidden_layers=2,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        intermediate_size=256,
+        vocab_size=1024,
+        head_dim=32,
+        max_position_embeddings=64,
+        tie_word_embeddings=False,
+    )
+    return Qwen2ForCausalLM(config).eval()
+
+
+@pytest.fixture
+def tiny_qwen2_untied_4layer():
+    """A 4-layer untied Qwen2 — minimum for hybrid (n_layer >= 3).
+
+    Mirrors ``tiny_gpt2_untied_4layer`` so the GPT-2 / Llama / Qwen2
+    integration tests share fixture shape. Q/K/V biases ON.
+    """
+    pytest.importorskip("torch")
+    pytest.importorskip("transformers")
+    from transformers import Qwen2Config, Qwen2ForCausalLM
+
+    config = Qwen2Config(
+        hidden_size=128,
+        num_hidden_layers=4,
         num_attention_heads=4,
         num_key_value_heads=2,
         intermediate_size=256,
