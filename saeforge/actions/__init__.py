@@ -551,6 +551,8 @@ def _run_recipe_fine_tune(ctx: dict, model, corpus, iterator) -> dict:
         save_every_steps=ctx.get("finetune_save_every", 250),
         save_dir=ctx.get("finetune_save_dir") or finetuned_dir / "checkpoints",
         log_every_steps=ctx.get("finetune_log_every", 10),
+        distill_alpha=ctx.get("finetune_distill_alpha", 1.0),
+        distill_temperature=ctx.get("finetune_distill_temperature", 2.0),
     )
 
     host = ctx.get("_host_model")

@@ -5,6 +5,34 @@ their corresponding OpenSpec change is archived.
 
 ## [Unreleased]
 
+### Added (add-host-distillation-finetune-loss)
+
+- **Host distillation in fine-tune.** `TrainingConfig` gains
+  `distill_alpha` (default 1.0 = pure LM-CE, byte-identical to
+  v0.3) and `distill_temperature` (default 2.0). When
+  `distill_alpha < 1.0`, the loss becomes
+  `α·CE(corpus) + (1-α)·τ²·KL(host ‖ forged)` — Hinton-style
+  soft-label distillation with the same KL direction as
+  `faithfulness_kl` (so the training objective matches the eval
+  metric). The host forward runs under `torch.no_grad()` in the
+  same autocast context as the student.
+- **`ForgePipeline` exposes the same knobs** as
+  `finetune_distill_alpha` / `finetune_distill_temperature`,
+  threading them into the per-step `TrainingConfig` via the
+  existing ctx-build path.
+- **`α=1.0` is zero-cost.** When `distill_alpha >= 1.0` the host
+  forward is skipped entirely; pre-change pipeline tests
+  pass unchanged.
+- **`run_finetune` rejects `host=None` + `α<1.0` at the top of
+  the function** before any batches are consumed, so the
+  misconfiguration can't waste work.
+- Docs: new "Host distillation" section in
+  `docs/finetune-recipe.md`. Tests:
+  `tests/test_distillation.py` (14 tests covering field
+  validation, byte-identity at `α=1.0`, gradient-flow at
+  `α=0.5`, host-unchanged invariant, `α=0.0` pure-KD path,
+  pipeline kwargs plumbing).
+
 ### Added (forge-whisper-encoder)
 
 - **Whisper-encoder forging — first non-causal-LM architecture in the

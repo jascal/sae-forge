@@ -30,6 +30,60 @@ result = pipeline.run(output_dir="/tmp/forge-run/")
 print(result.faithfulness_kl)
 ```
 
+## Host distillation
+
+`forge-finetune-recipe` v0.3 computes `faithfulness_kl(host, forged)`
+as an **eval** metric. `add-host-distillation-finetune-loss` makes
+it optionally a **training** signal too — `TrainingConfig` accepts
+two new knobs:
+
+| Knob | Default | Effect |
+|---|---|---|
+| `distill_alpha` | `1.0` | Loss = `α·CE(corpus) + (1-α)·τ²·KL(host ‖ forged)`. At `α=1.0` (default) the KD branch is skipped entirely (zero compute vs the pre-change path). |
+| `distill_temperature` | `2.0` | Softmax temperature `τ` applied to both host and forged logits before computing KL. Standard Hinton-style scaling. |
+
+The `ForgePipeline` exposes the same knobs as `finetune_distill_alpha`
+and `finetune_distill_temperature`.
+
+### When to enable it
+
+- **Small custom corpora.** Pure LM-CE on a short corpus under-samples
+  the host's behavior. Adding the KD term pulls the student toward
+  the host's logit distribution on every batch, not just the corpus
+  ground truth.
+- **High-faithfulness target.** If `faithfulness_kl` is your real eval
+  metric, optimizing it directly is more efficient than hoping CE
+  recovers it.
+
+### When NOT to enable it
+
+- **Per-step compute matters.** A host forward at every training step
+  roughly doubles wall-clock for Llama/Gemma-scale hosts. The `α=1.0`
+  default avoids this cost entirely.
+- **Eval set is your training corpus.** If the corpus IS what the
+  host was trained on, CE already approximates the host's distribution
+  — KD is mostly redundant.
+
+### Recommended starting values
+
+If you're enabling KD for the first time on a forge run:
+
+- `distill_alpha = 0.5` — equal weighting of corpus CE and host KL.
+- `distill_temperature = 2.0` — standard literature default.
+
+Sweep `α ∈ {0.3, 0.5, 0.7}` and `τ ∈ {1.0, 2.0, 4.0}` if the
+single-point default doesn't beat the pure-CE baseline on
+`faithfulness_kl`.
+
+### Requirements
+
+- `host` must be non-None when `distill_alpha < 1.0`. `run_finetune`
+  raises `ValueError` at the top of the function if you violate this
+  — no batches are consumed before the check.
+- Host and forged models must share the same tokenizer / vocab size
+  (the `SubspaceProjector` already ensures this by construction;
+  defensive shape check at the KL site).
+
 ## Corpus formats
 
 `build_iterator` (used internally when you pass `finetune_corpus`) accepts:
