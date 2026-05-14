@@ -58,8 +58,15 @@ and `finetune_distill_temperature`.
 ### When NOT to enable it
 
 - **Per-step compute matters.** A host forward at every training step
-  roughly doubles wall-clock for Llama/Gemma-scale hosts. The `α=1.0`
-  default avoids this cost entirely.
+  roughly doubles wall-clock. Rough numbers on a 24 GB card:
+  - GPT-2 small host: +30-50% wall time (host is small relative to
+    optimizer state + student backward).
+  - Llama-3-8B / Gemma-2-9B host: +80-120% wall time (host forward
+    is the dominant cost; nearly a full doubling).
+  - 70B-class hosts: not recommended without gradient checkpointing
+    on the student and `bf16` autocast; expected +120-150% if the
+    host fits at all.
+  The `α=1.0` default avoids this cost entirely.
 - **Eval set is your training corpus.** If the corpus IS what the
   host was trained on, CE already approximates the host's distribution
   — KD is mostly redundant.

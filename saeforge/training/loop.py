@@ -87,6 +87,14 @@ def run_finetune(model, host, iterator, config: TrainingConfig) -> TrainingResul
                     # Host-distillation: teacher forward under no_grad
                     # on the same batch + autocast context. Gradients
                     # flow only through the student.
+                    #
+                    # Future optimization: when the corpus iterator is
+                    # deterministic (static corpus, fixed shuffle seed),
+                    # host_logits could be precomputed once per epoch
+                    # and cached. The deferred caching path documented
+                    # in add-host-distillation-finetune-loss design.md
+                    # Decision 5 would plug in here, keyed on
+                    # `(batch_hash, step)`. Out of scope for v1.
                     with torch.no_grad():
                         host_out = host(input_ids=batch)
                         host_logits = (
