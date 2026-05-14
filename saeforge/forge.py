@@ -176,6 +176,11 @@ class ForgePipeline:
     finetune_save_every: int = 250
     finetune_save_dir: Path | None = None
     finetune_log_every: int = 10
+    # add-host-distillation-finetune-loss. Defaults (alpha=1.0,
+    # tau=2.0) are byte-identical to the pre-change loss; opt into
+    # KD by setting alpha < 1.0.
+    finetune_distill_alpha: float = 1.0
+    finetune_distill_temperature: float = 2.0
 
     # v0.4 forge-continual-learning-loop knobs. All default to values that
     # recover v0.1 single-shard byte-identical behavior.
@@ -835,6 +840,8 @@ class ForgePipeline:
             "finetune_save_every": self.finetune_save_every,
             "finetune_save_dir": str(self.finetune_save_dir) if self.finetune_save_dir else None,
             "finetune_log_every": self.finetune_log_every,
+            "finetune_distill_alpha": self.finetune_distill_alpha,
+            "finetune_distill_temperature": self.finetune_distill_temperature,
             **self._build_continual_ctx(),
         }
 
