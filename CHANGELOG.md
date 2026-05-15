@@ -5,6 +5,48 @@ their corresponding OpenSpec change is archived.
 
 ## [Unreleased]
 
+### Added (add-forge-quality-diagnostics)
+
+- **Forge-quality diagnostics on every sweep row.** `ParetoFrontierRow`
+  gains four new optional fields populated when the sweep can resolve
+  the host's residual stream width:
+  - `host_d_model` — `AutoConfig.from_pretrained(host_model_id).hidden_size`
+    (config-only fetch; cached once per sweep).
+  - `basis_rank` — `numpy.linalg.matrix_rank(W_dec_kept)` for the
+    surviving (non-zero) rows of the polygram-compressed SAE.
+  - `quality_ratio` — `basis_rank / host_d_model`.
+  - `quality_tier` — heuristic four-tier categorical (`saturated` ≥
+    1.0, `good` ≥ 0.5, `undersized` ≥ 0.0625, else `degenerate`).
+    Tweakable via `--quality-tier-thresholds`.
+- **Pre-flight stderr advisory** when any encoding's smallest-K basis
+  is in the `undersized` or `degenerate` tier. Names the encoding,
+  K, basis_rank, host_d_model, computed ratio, suggested K floor,
+  and a fixed clarification sentence: "'degenerate' describes the
+  rank ratio, not the validity of the run; exploratory low-rank
+  smokes remain valid for impl validation."
+- **Opt-in `--quality-floor RATIO`** refuses the sweep before any
+  forge call when any encoding's smallest-K ratio falls below the
+  floor. Default behaviour is advisory-only.
+- **`--quality-tier-thresholds STR`** overrides the heuristic
+  boundaries (e.g.,
+  `--quality-tier-thresholds saturated:2.0,good:1.0,undersized:0.25`).
+  Parser enforces format, name set, and ordering constraint.
+- **Diagnostics populated regardless of forge outcome.** Failure
+  rows (`error_message` populated) and `--frontier-only` rows both
+  carry the four diagnostic fields, so analysts can distinguish
+  "forge bug" from "structurally doomed setup" without reading row
+  metrics.
+- **`QualityTier` and `QualityThresholds` exported from `saeforge`**
+  for downstream tooling that wants to consume the schema.
+- **Public surface bumped** to include `QualityTier` and
+  `QualityThresholds`; backwards-compatible (existing readers see
+  `null` for the four new fields).
+- **No new dependencies.** Uses the existing `transformers` extra
+  for `AutoConfig` (already pulled in by `[torch]`/`[intel]`).
+  Failure to resolve `host_d_model` (offline, gated model, non-LM
+  host) silently disables diagnostics — the sweep proceeds with
+  all four fields as `None` and no advisory printed.
+
 ### Added (add-pareto-sweep-driver)
 
 - **Bundled fix: `torch_dtype=` for transformers compat.** Two

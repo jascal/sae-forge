@@ -19,10 +19,14 @@ from __future__ import annotations
 import contextlib
 import json
 import re
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterator, Mapping
+
+if TYPE_CHECKING:
+    from saeforge.forge_quality import QualityThresholds  # noqa: F401
 
 if TYPE_CHECKING:
     from saeforge.forge import ForgePipeline
@@ -52,6 +56,13 @@ class ParetoFrontierRow:
     forged_model_path: str | None
     elapsed_seconds: float
     error_message: str | None
+    # Forge-feasibility diagnostics, populated when the sweep can resolve
+    # the host's residual width. See ``saeforge.forge_quality`` and the
+    # ``add-forge-quality-diagnostics`` capability for the contract.
+    host_d_model: int | None = None
+    basis_rank: int | None = None
+    quality_ratio: float | None = None
+    quality_tier: str | None = None
 
     def __post_init__(self) -> None:
         if int(self.target_n_features_kept) < 1:
@@ -69,6 +80,32 @@ class ParetoFrontierRow:
                 f"ParetoFrontierRow: n_features_kept_actual must be >= 0 or None; "
                 f"got {self.n_features_kept_actual}"
             )
+        if self.host_d_model is not None and int(self.host_d_model) < 1:
+            raise ValueError(
+                f"ParetoFrontierRow: host_d_model must be >= 1 or None; "
+                f"got {self.host_d_model}"
+            )
+        if self.basis_rank is not None and int(self.basis_rank) < 0:
+            raise ValueError(
+                f"ParetoFrontierRow: basis_rank must be >= 0 or None; "
+                f"got {self.basis_rank}"
+            )
+        if self.quality_ratio is not None and float(self.quality_ratio) < 0:
+            raise ValueError(
+                f"ParetoFrontierRow: quality_ratio must be >= 0 or None; "
+                f"got {self.quality_ratio}"
+            )
+        if self.quality_tier is not None:
+            # Lazy-imported to avoid circular import with forge_quality if
+            # this module is ever consumed before forge_quality finishes.
+            from saeforge.forge_quality import QualityTier
+
+            valid = {t.value for t in QualityTier}
+            if self.quality_tier not in valid:
+                raise ValueError(
+                    f"ParetoFrontierRow: quality_tier must be one of "
+                    f"{sorted(valid)} or None; got {self.quality_tier!r}"
+                )
 
     def to_json_dict(self) -> dict[str, Any]:
         return {
@@ -91,6 +128,14 @@ class ParetoFrontierRow:
             ),
             "elapsed_seconds": float(self.elapsed_seconds),
             "error_message": self.error_message,
+            "host_d_model": (
+                int(self.host_d_model) if self.host_d_model is not None else None
+            ),
+            "basis_rank": (
+                int(self.basis_rank) if self.basis_rank is not None else None
+            ),
+            "quality_ratio": _finite_or_none(self.quality_ratio),
+            "quality_tier": self.quality_tier,
         }
 
     @classmethod
@@ -129,6 +174,26 @@ class ParetoFrontierRow:
             error_message=(
                 str(data["error_message"])
                 if data.get("error_message") is not None
+                else None
+            ),
+            host_d_model=(
+                int(data["host_d_model"])
+                if data.get("host_d_model") is not None
+                else None
+            ),
+            basis_rank=(
+                int(data["basis_rank"])
+                if data.get("basis_rank") is not None
+                else None
+            ),
+            quality_ratio=(
+                float(data["quality_ratio"])
+                if data.get("quality_ratio") is not None
+                else None
+            ),
+            quality_tier=(
+                str(data["quality_tier"])
+                if data.get("quality_tier") is not None
                 else None
             ),
         )
@@ -364,6 +429,39 @@ def _basis_swap(pipeline: "ForgePipeline", sae_checkpoint: Path) -> Iterator[Non
 
 
 # ---------------------------------------------------------------------------
+# Per-row diagnostics
+# ---------------------------------------------------------------------------
+
+
+def _compute_row_diagnostics(
+    ckpt_path: Path,
+    host_d_model: int | None,
+    thresholds: "QualityThresholds | None",
+) -> tuple[int | None, float | None, str | None]:
+    """Return ``(basis_rank, quality_ratio, quality_tier_value)`` for a row.
+
+    All three values are ``None`` when ``host_d_model`` is unresolved.
+    Otherwise ``basis_rank`` is computed from the SAE checkpoint's
+    surviving-feature ``W_dec`` rows, and the ratio + tier follow.
+    """
+    if host_d_model is None:
+        return None, None, None
+    try:
+        from saeforge.forge_quality import (
+            basis_rank_from_safetensors,
+            classify_quality,
+        )
+
+        basis_rank = basis_rank_from_safetensors(ckpt_path)
+    except Exception:  # noqa: BLE001 — diagnostic, not load-bearing
+        return None, None, None
+    if basis_rank == 0:
+        return 0, 0.0, "degenerate"
+    ratio, tier = classify_quality(basis_rank, host_d_model, thresholds)
+    return basis_rank, ratio, tier.value
+
+
+# ---------------------------------------------------------------------------
 # Driver
 # ---------------------------------------------------------------------------
 
@@ -374,6 +472,9 @@ def sweep_pareto(
     encodings: list[tuple[str, Path]],
     output_dir: Path,
     frontier_only: bool = False,
+    quality_floor: float | None = None,
+    quality_thresholds: "QualityThresholds | None" = None,
+    host_d_model_override: int | None = None,
     **forge_kwargs: Any,
 ) -> Path:
     """Run the forge pipeline across per-K SAE checkpoints.
@@ -413,6 +514,60 @@ def sweep_pareto(
     output_dir.mkdir(parents=True, exist_ok=True)
     frontier_path = output_dir / "frontier.jsonl"
 
+    # Forge-quality diagnostics: resolve host d_model once, build the
+    # advisory, enforce --quality-floor if set. All three are best-effort
+    # (skipped silently when host d_model can't be resolved).
+    from saeforge.forge_quality import (
+        QualityThresholds as _QualityThresholds,
+        advise_sweep_quality,
+        basis_rank_from_safetensors,
+        resolve_host_d_model,
+    )
+
+    thresholds = quality_thresholds if quality_thresholds is not None else _QualityThresholds()
+    host_d_model: int | None
+    host_model_type: str | None = None
+    if host_d_model_override is not None:
+        host_d_model = int(host_d_model_override)
+    else:
+        host_model_id = getattr(pipeline, "host_model_id", None)
+        if host_model_id is not None:
+            host_d_model, host_model_type = resolve_host_d_model(host_model_id)
+        else:
+            host_d_model = None
+
+    if host_d_model is not None:
+        advisory = advise_sweep_quality(
+            encodings=encodings,
+            host_d_model=host_d_model,
+            thresholds=thresholds,
+            manifest_loader=_load_pareto_manifest,
+            basis_rank_loader=basis_rank_from_safetensors,
+            model_type=host_model_type,
+        )
+        if advisory is not None:
+            print(advisory, file=sys.stderr)
+
+        if quality_floor is not None:
+            # Refuse the sweep BEFORE any forge work when any encoding's
+            # smallest-K basis falls below the floor.
+            for label, enc_path in encodings:
+                checkpoints = _enumerate_checkpoints(Path(enc_path))
+                smallest_k, smallest_ckpt = checkpoints[0]
+                try:
+                    rank = basis_rank_from_safetensors(smallest_ckpt)
+                except Exception:  # noqa: BLE001
+                    continue
+                ratio = rank / host_d_model
+                if ratio < quality_floor:
+                    raise RuntimeError(
+                        f"sweep_pareto: quality_floor={quality_floor} rejects "
+                        f"encoding={label!r} at smallest K={smallest_k} "
+                        f"(basis_rank={rank}, host_d_model={host_d_model}, "
+                        f"ratio={ratio:.4f}). Re-run with a higher K floor "
+                        f"or drop the --quality-floor flag to proceed anyway."
+                    )
+
     completed = _load_completed_rows(frontier_path)
     failures = 0
 
@@ -426,6 +581,9 @@ def sweep_pareto(
                     continue
 
                 entry = manifest.get(target_k)
+                basis_rank, quality_ratio, quality_tier = _compute_row_diagnostics(
+                    ckpt_path, host_d_model, thresholds
+                )
                 row = _process_row(
                     pipeline=pipeline,
                     label=label,
@@ -435,6 +593,10 @@ def sweep_pareto(
                     sweep_output_dir=output_dir,
                     frontier_only=frontier_only,
                     forge_kwargs=forge_kwargs,
+                    host_d_model=host_d_model,
+                    basis_rank=basis_rank,
+                    quality_ratio=quality_ratio,
+                    quality_tier=quality_tier,
                 )
                 fh.write(json.dumps(row.to_json_dict()) + "\n")
                 fh.flush()
@@ -459,9 +621,18 @@ def _process_row(
     sweep_output_dir: Path,
     frontier_only: bool,
     forge_kwargs: dict[str, Any],
+    host_d_model: int | None = None,
+    basis_rank: int | None = None,
+    quality_ratio: float | None = None,
+    quality_tier: str | None = None,
 ) -> ParetoFrontierRow:
     """Build one frontier row — manifest-only when ``frontier_only``, otherwise
     invoke ``pipeline.run`` inside a try/except.
+
+    The four diagnostic fields (``host_d_model``, ``basis_rank``,
+    ``quality_ratio``, ``quality_tier``) are computed pre-forge by the caller
+    and passed in; this function just propagates them onto every emitted row
+    regardless of lifecycle state.
     """
     n_features_actual: int | None
     reached: bool | None
@@ -489,6 +660,10 @@ def _process_row(
             forged_model_path=None,
             elapsed_seconds=0.0,
             error_message=None,
+            host_d_model=host_d_model,
+            basis_rank=basis_rank,
+            quality_ratio=quality_ratio,
+            quality_tier=quality_tier,
         )
 
     row_output_dir = sweep_output_dir / label / f"k_{target_k}"
@@ -513,6 +688,10 @@ def _process_row(
             forged_model_path=None,
             elapsed_seconds=elapsed,
             error_message=repr(exc),
+            host_d_model=host_d_model,
+            basis_rank=basis_rank,
+            quality_ratio=quality_ratio,
+            quality_tier=quality_tier,
         )
 
     elapsed = time.monotonic() - started
@@ -529,4 +708,8 @@ def _process_row(
         forged_model_path=str(Path(result.output_dir).resolve()),
         elapsed_seconds=elapsed,
         error_message=None,
+        host_d_model=host_d_model,
+        basis_rank=basis_rank,
+        quality_ratio=quality_ratio,
+        quality_tier=quality_tier,
     )

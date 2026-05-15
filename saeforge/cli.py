@@ -6,8 +6,12 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from saeforge import __version__
+
+if TYPE_CHECKING:
+    from saeforge.forge_quality import QualityThresholds  # noqa: F401
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -189,6 +193,35 @@ def _build_parser() -> argparse.ArgumentParser:
             "stderr advisory about GPU memory pressure (large sweeps "
             "should split by encoding into separate processes). "
             "Default: 2."
+        ),
+    )
+    sweep.add_argument(
+        "--quality-floor",
+        type=float,
+        default=None,
+        metavar="RATIO",
+        help=(
+            "Refuse the sweep if any encoding's smallest-K quality_ratio "
+            "(basis_rank / host_d_model) falls below this float in [0, 1]. "
+            "Without this flag, an advisory is printed but the sweep "
+            "proceeds (default behaviour). Suggested usage: 0.5 for "
+            "'I only want sweeps where every row is at least in the "
+            "good tier'. Note: 'degenerate' describes the rank ratio, "
+            "not the validity of the run — exploratory low-rank smokes "
+            "remain valid."
+        ),
+    )
+    sweep.add_argument(
+        "--quality-tier-thresholds",
+        type=str,
+        default=None,
+        metavar="STR",
+        help=(
+            "Override the default quality-tier boundaries. Format: "
+            "'saturated:VAL,good:VAL,undersized:VAL'. All three names "
+            "required; ordering constraint: saturated > good > "
+            "undersized >= 0. Example: --quality-tier-thresholds "
+            "saturated:1.0,good:0.5,undersized:0.0625 (defaults)."
         ),
     )
 
@@ -383,6 +416,67 @@ def _cmd_forge(args: argparse.Namespace) -> int:
     return 0
 
 
+def _parse_quality_tier_thresholds(raw: str) -> "QualityThresholds":
+    """Parse ``saturated:VAL,good:VAL,undersized:VAL`` into a QualityThresholds.
+
+    All three names required; ordering constraint enforced by
+    QualityThresholds.__post_init__. Raises ``ValueError`` with a clear
+    message + corrected example on any malformation.
+    """
+    from saeforge.forge_quality import QualityThresholds
+
+    expected_names = {"saturated", "good", "undersized"}
+    parts: dict[str, float] = {}
+    for chunk in raw.split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        if ":" not in chunk:
+            raise ValueError(
+                f"--quality-tier-thresholds: malformed entry {chunk!r} "
+                f"(expected 'name:value'). Format: "
+                f"'saturated:VAL,good:VAL,undersized:VAL'. "
+                f"Example: --quality-tier-thresholds "
+                f"saturated:1.0,good:0.5,undersized:0.0625"
+            )
+        name, _, value_str = chunk.partition(":")
+        name = name.strip()
+        if name not in expected_names:
+            raise ValueError(
+                f"--quality-tier-thresholds: unknown name {name!r}; "
+                f"required names are saturated, good, undersized. "
+                f"Example: --quality-tier-thresholds "
+                f"saturated:1.0,good:0.5,undersized:0.0625"
+            )
+        try:
+            parts[name] = float(value_str.strip())
+        except ValueError as exc:
+            raise ValueError(
+                f"--quality-tier-thresholds: cannot parse {value_str!r} as "
+                f"float for name {name!r}: {exc}. Example: "
+                f"--quality-tier-thresholds "
+                f"saturated:1.0,good:0.5,undersized:0.0625"
+            ) from None
+
+    missing = expected_names - parts.keys()
+    if missing:
+        raise ValueError(
+            f"--quality-tier-thresholds: missing required name(s) "
+            f"{sorted(missing)}; all three (saturated, good, undersized) "
+            f"must be present. Ordering constraint: saturated > good > "
+            f"undersized >= 0. Example: --quality-tier-thresholds "
+            f"saturated:1.0,good:0.5,undersized:0.0625"
+        )
+
+    # Lets QualityThresholds.__post_init__ enforce the ordering invariant
+    # and raise a focused error if violated.
+    return QualityThresholds(
+        saturated=parts["saturated"],
+        good=parts["good"],
+        undersized=parts["undersized"],
+    )
+
+
 def _parse_encoding_specs(raw: list[str]) -> list[tuple[str, Path]]:
     """Parse repeated ``--encoding LABEL:PATH`` into normalized tuples.
 
@@ -414,6 +508,24 @@ def _cmd_sweep_pareto(args: argparse.Namespace) -> int:
     except ValueError as exc:
         print(f"sae-forge sweep-pareto: {exc}", file=sys.stderr)
         return 2
+
+    # Forge-quality argument parsing.
+    if args.quality_floor is not None:
+        if not (0.0 <= args.quality_floor <= 1.0):
+            print(
+                f"sae-forge sweep-pareto: --quality-floor must be in [0, 1]; "
+                f"got {args.quality_floor}",
+                file=sys.stderr,
+            )
+            return 2
+
+    quality_thresholds = None
+    if args.quality_tier_thresholds is not None:
+        try:
+            quality_thresholds = _parse_quality_tier_thresholds(args.quality_tier_thresholds)
+        except ValueError as exc:
+            print(f"sae-forge sweep-pareto: {exc}", file=sys.stderr)
+            return 2
 
     if len(encodings) > args.max_encoding_warning:
         print(
@@ -457,6 +569,8 @@ def _cmd_sweep_pareto(args: argparse.Namespace) -> int:
             encodings=encodings,
             output_dir=Path(args.output_dir),
             frontier_only=args.frontier_only,
+            quality_floor=args.quality_floor,
+            quality_thresholds=quality_thresholds,
         )
     except RuntimeError as exc:
         # At-end failure: rows are still written to frontier.jsonl.

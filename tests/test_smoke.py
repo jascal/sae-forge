@@ -28,6 +28,9 @@ def test_public_surface_is_frozen() -> None:
         "NativeModel",
         # ParetoFrontierRow + sweep_pareto added by add-pareto-sweep-driver.
         "ParetoFrontierRow",
+        # QualityThresholds + QualityTier added by add-forge-quality-diagnostics.
+        "QualityThresholds",
+        "QualityTier",
         "SubspaceProjector",
         "__version__",
         "sweep_pareto",

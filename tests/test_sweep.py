@@ -630,3 +630,247 @@ class TestCLI:
         rows = [json.loads(line) for line in (out / "frontier.jsonl").read_text().splitlines()]
         assert len(rows) == 2
         assert {r["target_n_features_kept"] for r in rows} == {2, 5}
+
+
+# ---------------------------------------------------------------------------
+# Forge-quality diagnostics
+# ---------------------------------------------------------------------------
+
+
+class TestForgeQualityDiagnostics:
+    def test_rows_carry_diagnostics_when_d_model_resolved(
+        self, tmp_path, synthetic_compressed_sae, stub_basis_swap, monkeypatch
+    ):
+        """When `host_d_model_override` is supplied, every row populates the
+        four diagnostic fields (host_d_model, basis_rank, quality_ratio,
+        quality_tier).
+        """
+        encoding_dir = _make_pareto_dir(
+            tmp_path / "rung4",
+            synthetic_compressed_sae["checkpoint"],
+            targets=[2, 5, 8],
+        )
+        pipeline = _StubPipeline()
+        out = tmp_path / "out"
+
+        from saeforge.sweep import sweep_pareto
+
+        sweep_pareto(
+            pipeline,
+            encodings=[("rung4", encoding_dir)],
+            output_dir=out,
+            host_d_model_override=16,  # synthetic SAE has d_model=16
+        )
+        rows = [json.loads(line) for line in (out / "frontier.jsonl").read_text().splitlines()]
+        assert len(rows) == 3
+        for r in rows:
+            assert r["host_d_model"] == 16
+            assert r["basis_rank"] is not None
+            assert r["quality_ratio"] is not None
+            assert r["quality_tier"] in {"degenerate", "undersized", "good", "saturated"}
+
+    def test_rows_diagnostic_fields_null_when_d_model_unresolvable(
+        self, tmp_path, synthetic_compressed_sae, stub_basis_swap
+    ):
+        """When `resolve_host_d_model` returns None and no override given,
+        diagnostic fields are all None across rows.
+        """
+        encoding_dir = _make_pareto_dir(
+            tmp_path / "rung4",
+            synthetic_compressed_sae["checkpoint"],
+            targets=[2],
+        )
+        pipeline = _StubPipeline()
+        # The stub pipeline has no host_model_id, so resolution is short-
+        # circuited to None.
+        from saeforge.sweep import sweep_pareto
+
+        sweep_pareto(
+            pipeline,
+            encodings=[("rung4", encoding_dir)],
+            output_dir=tmp_path / "out",
+        )
+        rows = [
+            json.loads(line)
+            for line in (tmp_path / "out" / "frontier.jsonl").read_text().splitlines()
+        ]
+        for r in rows:
+            assert r["host_d_model"] is None
+            assert r["basis_rank"] is None
+            assert r["quality_ratio"] is None
+            assert r["quality_tier"] is None
+
+    def test_quality_floor_refuses_before_any_forge(
+        self, tmp_path, synthetic_compressed_sae, stub_basis_swap
+    ):
+        """`quality_floor=0.5` against a tiny synthetic SAE refuses before
+        any forge call (mocked pipeline.run sees zero invocations).
+        """
+        encoding_dir = _make_pareto_dir(
+            tmp_path / "rung4",
+            synthetic_compressed_sae["checkpoint"],
+            targets=[2],
+        )
+        pipeline = _StubPipeline()
+        from saeforge.sweep import sweep_pareto
+
+        with pytest.raises(RuntimeError, match="quality_floor"):
+            sweep_pareto(
+                pipeline,
+                encodings=[("rung4", encoding_dir)],
+                output_dir=tmp_path / "out",
+                quality_floor=0.5,
+                host_d_model_override=768,  # synthetic SAE is ~6 features
+            )
+        assert pipeline._call_count == 0
+
+    def test_quality_floor_accepts_good_setup(
+        self, tmp_path, synthetic_compressed_sae, stub_basis_swap
+    ):
+        """When the smallest-K basis is in the good/saturated tier under the
+        override, the floor passes and the sweep proceeds.
+        """
+        encoding_dir = _make_pareto_dir(
+            tmp_path / "rung4",
+            synthetic_compressed_sae["checkpoint"],
+            targets=[2],
+        )
+        pipeline = _StubPipeline()
+        from saeforge.sweep import sweep_pareto
+
+        # host_d_model=8 means ratio = 6/8 = 0.75 → good; floor 0.5 passes.
+        sweep_pareto(
+            pipeline,
+            encodings=[("rung4", encoding_dir)],
+            output_dir=tmp_path / "out",
+            quality_floor=0.5,
+            host_d_model_override=8,
+        )
+        assert pipeline._call_count == 1
+
+    def test_advisory_does_not_refuse_by_default(
+        self, tmp_path, synthetic_compressed_sae, stub_basis_swap, capsys
+    ):
+        """Degenerate setup without `--quality-floor` prints advisory but the
+        sweep runs all rows.
+        """
+        encoding_dir = _make_pareto_dir(
+            tmp_path / "rung4",
+            synthetic_compressed_sae["checkpoint"],
+            targets=[2],
+        )
+        pipeline = _StubPipeline()
+        from saeforge.sweep import sweep_pareto
+
+        sweep_pareto(
+            pipeline,
+            encodings=[("rung4", encoding_dir)],
+            output_dir=tmp_path / "out",
+            host_d_model_override=768,  # synthetic SAE → degenerate
+        )
+        captured = capsys.readouterr()
+        # The advisory goes to stderr.
+        assert "forge-quality advisory" in captured.err
+        assert "degenerate" in captured.err.lower()
+        assert pipeline._call_count == 1  # sweep still ran
+
+    def test_failure_rows_carry_diagnostics(
+        self, tmp_path, synthetic_compressed_sae, stub_basis_swap
+    ):
+        """Per-row failures still emit rows with the four diagnostic fields
+        populated. The diagnostic is computed pre-forge so it survives even
+        when the forge raises.
+        """
+        encoding_dir = _make_pareto_dir(
+            tmp_path / "rung4",
+            synthetic_compressed_sae["checkpoint"],
+            targets=[2],
+        )
+        pipeline = _StubPipeline(raise_on_calls=(1,))
+        from saeforge.sweep import sweep_pareto
+
+        with pytest.raises(RuntimeError, match="1 row"):
+            sweep_pareto(
+                pipeline,
+                encodings=[("rung4", encoding_dir)],
+                output_dir=tmp_path / "out",
+                host_d_model_override=16,
+            )
+        rows = [
+            json.loads(line)
+            for line in (tmp_path / "out" / "frontier.jsonl").read_text().splitlines()
+        ]
+        assert len(rows) == 1
+        assert rows[0]["error_message"] is not None
+        assert rows[0]["faithfulness_kl"] is None
+        # Diagnostics still populated.
+        assert rows[0]["host_d_model"] == 16
+        assert rows[0]["basis_rank"] is not None
+        assert rows[0]["quality_tier"] in {"degenerate", "undersized", "good", "saturated"}
+
+
+# ---------------------------------------------------------------------------
+# CLI: quality flags
+# ---------------------------------------------------------------------------
+
+
+class TestCLIQualityFlags:
+    def test_quality_floor_out_of_range_exits_2(
+        self, tmp_path, synthetic_compressed_sae
+    ):
+        encoding_dir = _make_pareto_dir(
+            tmp_path / "rung4",
+            synthetic_compressed_sae["checkpoint"],
+            targets=[2],
+        )
+        from saeforge.cli import main
+
+        rc = main([
+            "sweep-pareto",
+            "--encoding", f"rung4:{encoding_dir}",
+            "--host-model", "gpt2",
+            "--output-dir", str(tmp_path / "out"),
+            "--frontier-only",
+            "--quality-floor", "1.5",
+        ])
+        assert rc == 2
+
+    def test_quality_tier_thresholds_malformed_exits_2(
+        self, tmp_path, synthetic_compressed_sae
+    ):
+        encoding_dir = _make_pareto_dir(
+            tmp_path / "rung4",
+            synthetic_compressed_sae["checkpoint"],
+            targets=[2],
+        )
+        from saeforge.cli import main
+
+        rc = main([
+            "sweep-pareto",
+            "--encoding", f"rung4:{encoding_dir}",
+            "--host-model", "gpt2",
+            "--output-dir", str(tmp_path / "out"),
+            "--frontier-only",
+            "--quality-tier-thresholds", "bogus",
+        ])
+        assert rc == 2
+
+    def test_quality_tier_thresholds_ordering_violation_exits_2(
+        self, tmp_path, synthetic_compressed_sae
+    ):
+        encoding_dir = _make_pareto_dir(
+            tmp_path / "rung4",
+            synthetic_compressed_sae["checkpoint"],
+            targets=[2],
+        )
+        from saeforge.cli import main
+
+        rc = main([
+            "sweep-pareto",
+            "--encoding", f"rung4:{encoding_dir}",
+            "--host-model", "gpt2",
+            "--output-dir", str(tmp_path / "out"),
+            "--frontier-only",
+            "--quality-tier-thresholds", "saturated:0.5,good:1.0,undersized:0.25",
+        ])
+        assert rc == 2

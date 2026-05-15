@@ -447,6 +447,9 @@ class ForgePipeline:
         output_dir: "str | Path",
         *,
         frontier_only: bool = False,
+        quality_floor: float | None = None,
+        quality_thresholds: Any = None,
+        host_d_model_override: int | None = None,
         **forge_kwargs: Any,
     ) -> Path:
         """Forge across per-K materialised SAE checkpoints; emit a JSONL frontier.
@@ -460,6 +463,13 @@ class ForgePipeline:
         duration of one ``self.run`` call, then restores them — so the host
         model, eval config, and fine-tune knobs persist across rows while
         the SAE varies per K.
+
+        Forge-quality diagnostics: ``quality_floor`` and
+        ``quality_thresholds`` are forwarded to the sweep driver.
+        ``host_d_model_override`` short-circuits the
+        ``transformers.AutoConfig`` lookup for hosts whose config doesn't
+        expose ``hidden_size`` canonically. See
+        :mod:`saeforge.forge_quality`.
         """
         from saeforge.sweep import sweep_pareto as _sweep_pareto
 
@@ -469,6 +479,9 @@ class ForgePipeline:
             encodings=normalized,
             output_dir=Path(output_dir),
             frontier_only=frontier_only,
+            quality_floor=quality_floor,
+            quality_thresholds=quality_thresholds,
+            host_d_model_override=host_d_model_override,
             **forge_kwargs,
         )
 
