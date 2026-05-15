@@ -416,6 +416,41 @@ into one invocation — every row inside a single sweep loads the
 host + per-K forged model into the same process, and transient
 state accumulates across rows.
 
+##### Forge-quality diagnostics
+
+Every sweep row carries four diagnostic fields telling you whether
+the row's KL is worth reading at all:
+
+- `host_d_model` — host transformer's residual stream width
+  (`AutoConfig.hidden_size`)
+- `basis_rank` — numerical rank of the kept-features `W_dec`
+- `quality_ratio` — `basis_rank / host_d_model`
+- `quality_tier` — one of `saturated` / `good` / `undersized` /
+  `degenerate` (heuristic thresholds: 1.0 / 0.5 / 0.0625)
+
+The recommended frontier-triage workflow is to filter on
+`quality_tier` *before* reading `faithfulness_kl`:
+
+```bash
+jq -r 'select(.quality_tier == "good" or .quality_tier == "saturated") |
+    [.encoding_label, .target_n_features_kept, .quality_tier, .faithfulness_kl]
+    | @tsv' runs/axis4/frontier.jsonl | sort -t$'\t' -k2 -n
+```
+
+When the smallest K's basis falls into the `undersized` or
+`degenerate` tier for any encoding, the sweep prints a stderr
+advisory before doing any forge work and suggests a higher K floor.
+For strict refusal (exit non-zero before any forge cost), add
+`--quality-floor 0.5` — sweeps only proceed if every row would be
+at least in the `good` tier. `--quality-tier-thresholds
+saturated:1.0,good:0.5,undersized:0.0625` overrides the heuristic
+boundaries for callers running specific research.
+
+The wording note in the advisory body matters: `degenerate`
+describes the **rank ratio**, not the validity of the run.
+Exploratory low-rank smokes remain valid for impl validation; the
+advisory is informational, not a refusal by default.
+
 ### Inspect
 
 `sae-forge inspect` is the no-torch triage command: it loads the basis,

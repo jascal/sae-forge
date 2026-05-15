@@ -2,6 +2,7 @@
 
 from saeforge.basis import FeatureBasis
 from saeforge.forge import ForgeFailed, ForgePipeline, ForgeResult
+from saeforge.forge_quality import QualityThresholds, QualityTier
 from saeforge.model import NativeModel
 from saeforge.projector import SubspaceProjector
 from saeforge.sweep import ParetoFrontierRow, sweep_pareto
@@ -15,6 +16,8 @@ __all__ = [
     "ForgeResult",
     "NativeModel",
     "ParetoFrontierRow",
+    "QualityThresholds",
+    "QualityTier",
     "SubspaceProjector",
     "__version__",
     "sweep_pareto",
