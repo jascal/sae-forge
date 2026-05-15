@@ -346,6 +346,78 @@ sae-forge inspect sae.compressed.safetensors --report basis_report.md
 sae-forge --version
 ```
 
+#### Pareto sweep (Axis 4)
+
+`sae-forge sweep-pareto` forges across the per-K SAE checkpoints
+produced by `polygram compress --pareto --pareto-materialize`,
+optionally spanning multiple labelled encodings. It is the
+load-bearing primitive for Axis 4 of polygram's rung-viability
+methodology — end-to-end downstream confirmation that the
+compression-coverage lift visible in EpochCompressor cashes out in
+forged-model KL space.
+
+The workflow is two-step. **Step 1 (polygram, cheap-then-expensive):**
+
+```bash
+# Plan + materialise N SAEs per encoding. Pareto planning is
+# O(one validator pass) per encoding amortised across all K.
+polygram compress --sae-checkpoint mps_sae.safetensors \
+    --validation-report mps_report.json \
+    --pareto 200,500,1000,2000 --pareto-materialize \
+    --out runs/mps/
+
+polygram compress --sae-checkpoint rung4_sae.safetensors \
+    --validation-report rung4_report.json \
+    --pareto 200,500,1000,2000 --pareto-materialize \
+    --out runs/rung4/
+```
+
+**Step 2 (sae-forge, the actual sweep):**
+
+```bash
+sae-forge sweep-pareto \
+    --encoding mps:runs/mps/pareto \
+    --encoding rung4:runs/rung4/pareto \
+    --host-model gpt2 \
+    --output-dir runs/axis4/ \
+    --eval-prompts data/eval.jsonl
+```
+
+This writes `runs/axis4/frontier.jsonl` (one row per `(encoding, K)`)
+and per-forge directories under `runs/axis4/<label>/k_{K}/`. The
+JSONL row schema is in
+`openspec/specs/pareto-sweep/spec.md`; the key fields are
+`encoding_label`, `target_n_features_kept`, `n_features_kept_actual`,
+`faithfulness_kl`, `perplexity`, `final_fine_tune_loss`. Filter on
+`error_message is None` before reading metric fields.
+
+The sweep is **resumable** (rerun the same command after a crash —
+completed rows are skipped) and **per-row failure-isolated** (one
+bad K records `error_message` and the sweep continues). It exits
+non-zero if any row errored, with `frontier.jsonl` still written.
+
+For cheap exploratory triage before committing forge compute, add
+`--frontier-only` — it emits a JSONL with only the manifest-derived
+columns (no forge calls). Pipe through `jq` to find candidate K
+values:
+
+```bash
+sae-forge sweep-pareto --encoding mps:runs/mps/pareto \
+    --host-model gpt2 --output-dir runs/triage/ --frontier-only
+
+jq -r 'select(.error_message == null) |
+    [.encoding_label, .target_n_features_kept, .n_features_kept_actual]
+    | @tsv' runs/triage/frontier.jsonl | sort -t$'\t' -k2 -n
+```
+
+For large hosts (Gemma-2-2B / 8B-tier), split sweeps by encoding
+into separate processes rather than packing many `--encoding` flags
+into one invocation — every row inside a single sweep loads the
+host + per-K forged model into the same process, and transient
+state accumulates across rows.
+
+### Inspect
+
 `sae-forge inspect` is the no-torch triage command: it loads the basis,
 prints kept-id count, decoder-norm distribution, scale-compression ratio
 (from Polygram's `CompressionReport`), and a quick rank estimate of the
