@@ -26,6 +26,8 @@ When a field is `None`, sae-forge SHALL continue to call the corresponding polyg
 - **WHEN** the FSM runs through `compress_with_polygram` against the existing toy fixture
 - **THEN** the output is byte-identical to the pre-polygram-0.4.0 reference
 
+## ADDED Requirements
+
 ### Requirement: Polygram minimum version
 
 The `polygram` dependency in `pyproject.toml` SHALL specify `polygram>=0.4.0` (lines 20, 66, 89). Earlier polygram versions SHALL NOT be supported; the new `CompressionConfig` fields are required by the `pareto-sweep` capability.
