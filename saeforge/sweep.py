@@ -207,13 +207,18 @@ def _parse_pareto_manifest(path: Path) -> dict[int, _ManifestEntry]:
 def _count_surviving_features(sae_checkpoint: Path) -> int:
     """Count non-zero feature rows in ``W_dec`` of a polygram-compressed SAE.
 
-    Used as the fallback when ``pareto.json`` is absent. Imports
-    ``polygram.sae_import`` lazily so the sweep driver itself can be imported
-    without torch/polygram present.
+    Used as the fallback when ``pareto.json`` is absent. Reads
+    ``safetensors`` directly rather than going through
+    ``polygram.sae_import``, so the sweep driver doesn't require polygram at
+    enumeration time (CI on the no-extras install would otherwise return
+    None here and miss the fallback). The `W_dec` key contract is the same
+    one ``FeatureBasis.from_polygram_checkpoint`` reads from.
     """
-    from polygram.sae_import import _load_sae_checkpoint  # type: ignore[attr-defined]
+    from safetensors.numpy import load_file
 
-    state = _load_sae_checkpoint(sae_checkpoint, ["W_dec"])
+    state = load_file(str(sae_checkpoint))
+    if "W_dec" not in state:
+        raise KeyError(f"sweep: {sae_checkpoint} is missing required key 'W_dec'")
     w_dec = state["W_dec"]
     # Survivor = any non-zero entry on the decoder row.
     nonzero_rows = (w_dec != 0).any(axis=1)
