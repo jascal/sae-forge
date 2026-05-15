@@ -10,21 +10,25 @@ The sweep is sequential, resumable, and isolates per-row failures. The actual co
 
 ### Requirement: ParetoFrontierRow dataclass
 
-The `saeforge.sweep.ParetoFrontierRow` SHALL be a frozen dataclass with fields:
+The `saeforge.sweep.ParetoFrontierRow` SHALL be a frozen dataclass capturing one row of the sweep output. The class SHALL expose `.to_json_dict()` and classmethod `.from_json_dict(cls, data: Mapping[str, Any]) -> Self`. `__post_init__` SHALL validate `target_n_features_kept >= 1` and `elapsed_seconds >= 0`.
 
-- `encoding_label: str` — caller-supplied label from `--encoding LABEL:PATH`.
-- `target_n_features_kept: int` — the K requested upstream of polygram.
-- `n_features_kept_actual: int | None` — the actual count from the polygram plan manifest (or counted from the SAE checkpoint if manifest absent); `None` if undetermined.
-- `pareto_reached_target: bool | None` — from the polygram plan manifest; `None` if manifest absent.
-- `faithfulness_kl: float | None` — post-forge KL(host ‖ forged); `None` on row failure or `--frontier-only`.
-- `perplexity: float | None` — post-forge perplexity on the eval set; `None` on row failure or `--frontier-only`.
-- `final_fine_tune_loss: float | None` — last training-loss value; `None` on row failure or `--frontier-only`.
-- `sae_checkpoint: str` — absolute path to the per-K SAE the forge consumed.
-- `forged_model_path: str | None` — absolute path to the forged-model output dir; `None` on row failure or `--frontier-only`.
-- `elapsed_seconds: float` — wall-clock for the forge run; `0.0` for `--frontier-only` and failure-before-forge cases.
-- `error_message: str | None` — the exception's `repr()` if the forge raised; `None` on success.
+The row schema (in declaration order):
 
-The class SHALL expose `.to_json_dict()` and classmethod `.from_json_dict(cls, data: Mapping[str, Any]) -> Self`. `__post_init__` SHALL validate `target_n_features_kept >= 1` and `elapsed_seconds >= 0`.
+| Field | Type | Success | Frontier-only | Row failure | Description |
+|-------|------|---------|---------------|-------------|-------------|
+| `encoding_label` | `str` | populated | populated | populated | Caller-supplied label from `--encoding LABEL:PATH` |
+| `target_n_features_kept` | `int` | populated | populated | populated | K requested upstream of polygram |
+| `n_features_kept_actual` | `int \| None` | populated | populated | `None` if pre-forge failure; populated if forge ran | Per-K `n_features_kept` from polygram's `pareto.json` manifest (representatives count, polygram semantic); falls back to non-zero SAE row count when manifest absent |
+| `pareto_reached_target` | `bool \| None` | populated | populated if manifest present, else `None` | `None` if pre-forge failure | Per-K `reached_target` from manifest |
+| `faithfulness_kl` | `float \| None` | populated | `None` | `None` | Post-forge KL(host ‖ forged) |
+| `perplexity` | `float \| None` | populated | `None` | `None` | Post-forge perplexity on eval set |
+| `final_fine_tune_loss` | `float \| None` | populated | `None` | `None` | Last training-loss value |
+| `sae_checkpoint` | `str` | populated | populated | populated | Absolute path to the per-K SAE consumed |
+| `forged_model_path` | `str \| None` | populated | `None` | `None` | Absolute path to forged-model output dir |
+| `elapsed_seconds` | `float` | populated (forge wall-clock) | `0.0` | populated (time-to-failure) or `0.0` | Wall-clock; `>= 0` |
+| `error_message` | `str \| None` | `None` | `None` | populated (`repr(exception)`) | Set iff the forge raised |
+
+Three lifecycle states are normative: **success** (forge ran to completion), **frontier-only** (`frontier_only=True`, no forge invoked), and **row failure** (forge raised). The nullability column above is the contract — downstream consumers SHALL filter on `error_message is None` before reading metric fields.
 
 #### Scenario: ParetoFrontierRow is importable from saeforge
 

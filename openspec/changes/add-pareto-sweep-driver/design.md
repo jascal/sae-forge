@@ -63,7 +63,7 @@ A row that raises (OOM, NaN gradient, missing SAE key, etc.) writes a JSONL row 
 
 `--frontier-only` is for exploring the Pareto plan space before paying the forge cost. It enumerates the same checkpoints the full sweep would and emits a JSONL with only `encoding_label`, `target_n_features_kept`, `n_features_kept_actual`, `pareto_reached_target`. The other fields (faithfulness, perplexity, ...) are null.
 
-The `n_features_kept_actual` and `pareto_reached_target` values come from the `pareto.json` manifest written alongside the `k_{K}.safetensors` files by `polygram compress --pareto-materialize`. If the manifest is missing, `--frontier-only` reads the per-checkpoint SAE metadata directly to count surviving features.
+The `n_features_kept_actual` value comes from the per-K entry of the `pareto.json` manifest's `n_features_kept` field (the polygram-side `CompressionReport.n_features_kept` semantic — count of cluster representatives, per polygram#67 Decision 1), and `pareto_reached_target` comes from the per-K `reached_target` field of the same manifest. If the manifest is missing, `--frontier-only` falls back to reading the per-checkpoint SAE metadata directly and counts non-zero feature rows; in that fallback, `pareto_reached_target` is `None` (undeterminable without the manifest).
 
 **Why**: an analyst inspecting a fresh `polygram compress --pareto` output wants to see the shape of the plan family before deciding which K values are worth forging. `--frontier-only` is the cheap-look API.
 
@@ -98,5 +98,7 @@ Frozen dataclass with explicit `to_json_dict()` / `from_json_dict(cls, data)` me
 - **Frontier non-monotonicity is preserved, not papered over**: the [[project_kl_nonmonotonic]] finding (KL got worse going 25→211 features on GPT-2 layer-8) means individual rows may not be monotonic in K. The sweep emits the data as-is. Smoothing or post-hoc Pareto-front filtering is an analyst's job, not the driver's.
 
 - **Sequential by design**: the sweep is single-process. A user with 4 GPUs runs 4 sweeps with different `--encoding` flags. Cross-process coordination (a shared output JSONL) is not provided — encode the parallelism in the output directory layout instead.
+
+- **GPU memory pressure on large sweeps**: every row inside a single sweep loads the host model + a per-K forged model into the same process. Long sweeps (many K, large hosts) accumulate transient state across rows — the driver SHALL release per-row tensors before advancing, but users targeting Gemma-2-2B / 8B-tier hosts on a single GPU should split sweeps by encoding (one process per `--encoding`) rather than packing many encodings into one invocation. Documented in CLI help; not enforced.
 
 - **`--frontier-only` accuracy depends on polygram's manifest**: if `polygram compress --pareto-materialize` doesn't write the `pareto.json` manifest with `n_features_kept_actual` and `pareto_reached_target` per K, the `--frontier-only` mode falls back to reading SAE metadata. The polygram-side spec (PR polygram#67, `pareto-compression`) requires this manifest, so the fallback is defensive.

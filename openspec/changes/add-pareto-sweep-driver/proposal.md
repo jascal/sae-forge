@@ -48,7 +48,7 @@ The Step 1 cost is dominated by **one BehaviouralValidator pass per encoding**; 
 - `--output-dir DIR` — sweep output root; contains `frontier.jsonl` + per-forge subdirectories (`<dir>/<encoding>/k_{K}/`).
 - `--eval-prompts PATH` — same JSONL schema as `forge` (already supports dict-shorthand + raw text per CHANGELOG e1f1246).
 - Standard forge knobs (`--dtype`, `--device`, `--finetune-steps`, `--seed`, etc.) — passthrough.
-- `--frontier-only` — skip forge runs; emit a JSONL with `target_n_features_kept` and `n_features_kept_actual` columns only, populated from each checkpoint's polygram metadata. Cheap exploratory mode.
+- `--frontier-only` — skip forge runs; emit a JSONL with `target_n_features_kept` and `n_features_kept_actual` columns only, populated from each checkpoint's polygram metadata. Cheap exploratory mode. Pairs naturally with `jq` for quick triage, e.g. `jq -r 'select(.error_message == null) | [.encoding_label, .target_n_features_kept, .n_features_kept_actual] | @tsv' frontier.jsonl | sort -t$'\t' -k2 -n` to find candidate K values before committing forge compute.
 
 ### Polygram version bump
 
