@@ -451,6 +451,16 @@ describes the **rank ratio**, not the validity of the run.
 Exploratory low-rank smokes remain valid for impl validation; the
 advisory is informational, not a refusal by default.
 
+**Custom hosts**: `host_d_model` is resolved automatically from
+`AutoConfig.from_pretrained(host_model_id).hidden_size`. For hosts
+whose config doesn't expose `hidden_size` canonically (Whisper
+encoder, encoder-decoder architectures, non-transformer hosts), the
+resolution returns `None` and diagnostics fall back gracefully —
+all four row fields stay `None` and no advisory prints. If you know
+the residual width for your host, the Python API accepts
+`host_d_model_override=N` on `ForgePipeline.sweep_pareto(...)` to
+short-circuit the AutoConfig lookup and force diagnostics on.
+
 ### Inspect
 
 `sae-forge inspect` is the no-torch triage command: it loads the basis,

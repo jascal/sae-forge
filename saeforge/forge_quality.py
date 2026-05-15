@@ -45,9 +45,21 @@ class QualityTier(str, Enum):
 class QualityThresholds:
     """Three boundary values that partition ``quality_ratio`` into four tiers.
 
-    Defaults are heuristic from a small empirical base (PR #33's GPT-2 + jbloom
-    SAE smokes); tweakable via the CLI ``--quality-tier-thresholds`` flag for
-    callers running specific research. See `design.md` Decision 3.
+    **Empirical anchor for the defaults**: PR #33's live N=32 Rung4 smoke
+    (jbloom GPT-2 layer-8 SAE, threshold=0.95) produced rank-1 bases against
+    GPT-2's 768-dim residual stream — ``quality_ratio ≈ 1/768 ≈ 0.0013`` —
+    and the resulting forge faithfulness_kl was ~6.99 (near-random output
+    entropy). That puts the empirically-observed "catastrophic" floor two
+    orders of magnitude below the ``undersized``/``degenerate`` boundary of
+    ``0.0625`` (= 1/16). The other two boundaries (``saturated`` = 1.0
+    "basis fully spans residual"; ``good`` = 0.5 "half-coverage") are
+    symmetric anchors above that empirical floor. Cross-host empirical
+    calibration is open follow-up work (see
+    ``openspec/changes/archive/2026-05-15-add-forge-quality-diagnostics/tasks.md``
+    §10.2).
+
+    Tweakable via the CLI ``--quality-tier-thresholds`` flag for callers
+    running specific research. See `design.md` Decision 3.
 
     Invariants enforced in ``__post_init__``: ``saturated > good > undersized >= 0``.
     """
@@ -87,8 +99,21 @@ def compute_basis_rank(w_dec_kept: np.ndarray) -> int:
     less than the row count if surviving features have linearly dependent
     decoder rows (rare but possible).
 
-    Raises ``ValueError`` on empty input — callers should detect zero
-    surviving features before reaching the rank computation.
+    Edge cases:
+    - **Empty input** (``shape[0] == 0``): raises ``ValueError``. Callers
+      with no surviving features should detect this upstream and emit a
+      ``basis_rank=0`` row directly rather than calling this function.
+      ``basis_rank_from_safetensors`` handles the all-zeroed-W_dec case
+      and returns 0 without calling here.
+    - **All-zero rows**: returns 0 (every row is zero, no span). Caller's
+      polygram pipeline should not produce this normally — the polygram
+      compressor zeroes *non-representative* rows but keeps at least one
+      representative per cluster.
+    - **Linearly dependent rows**: returns the true span (lower than row
+      count). E.g. four rows where row 4 = 2 * row 0 → rank 3.
+    - **Very small matrices** (1 or 2 rows): handled correctly by
+      ``matrix_rank``'s machine-precision tolerance. A single non-zero
+      row has rank 1; a single zero row has rank 0.
     """
     if w_dec_kept.shape[0] == 0:
         raise ValueError("compute_basis_rank: input has 0 rows")

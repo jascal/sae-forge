@@ -41,6 +41,38 @@ class TestComputeBasisRank:
         with pytest.raises(ValueError, match="0 rows"):
             compute_basis_rank(W)
 
+    def test_all_zero_rows_returns_zero(self):
+        """Edge case: rows present but all zero (catastrophic SAE state).
+        Polygram's pipeline shouldn't normally produce this — at least one
+        representative per cluster is retained — but the rank computation
+        handles it gracefully and returns 0 (no span).
+        """
+        W = np.zeros((4, 16), dtype=np.float64)
+        assert compute_basis_rank(W) == 0
+
+    def test_single_nonzero_row_returns_one(self):
+        """Edge case: minimum non-degenerate basis."""
+        W = np.zeros((1, 16), dtype=np.float64)
+        W[0, 5] = 1.0
+        assert compute_basis_rank(W) == 1
+
+    def test_single_zero_row_returns_zero(self):
+        """Edge case: 1-row all-zero matrix."""
+        W = np.zeros((1, 16), dtype=np.float64)
+        assert compute_basis_rank(W) == 0
+
+    def test_basis_rank_from_safetensors_all_zero_returns_zero(self, tmp_path):
+        """Documented contract: when every row in W_dec is zero,
+        basis_rank_from_safetensors returns 0 directly without calling
+        compute_basis_rank (which would raise on the empty post-filter array).
+        """
+        from safetensors.numpy import save_file
+
+        W = np.zeros((4, 16), dtype=np.float32)
+        path = tmp_path / "all_zero.safetensors"
+        save_file({"W_dec": W}, str(path))
+        assert basis_rank_from_safetensors(path) == 0
+
 
 # ---------------------------------------------------------------------------
 # classify_quality
