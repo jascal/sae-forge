@@ -26,8 +26,11 @@ def test_public_surface_is_frozen() -> None:
         "ForgePipeline",
         "ForgeResult",
         "NativeModel",
+        # ParetoFrontierRow + sweep_pareto added by add-pareto-sweep-driver.
+        "ParetoFrontierRow",
         "SubspaceProjector",
         "__version__",
+        "sweep_pareto",
     }
     assert set(saeforge.__all__) == expected
 

@@ -63,7 +63,13 @@ intel = ["torch==2.2.2", "transformers>=4.46,<4.50", "numpy<2"]
 # adds the GeometricProfile registry (clustered / uniform-sphere) and
 # the bf16 safetensors slice-path fix; the upgrade is non-breaking
 # (default profile="clustered" is byte-identical to the 0.1.0 path).
-polygram = ["polygram>=0.3.0"]
+# Polygram 0.4.0 adds target-K compression (CompressionConfig grows
+# `target_n_features_kept` + `score_field`, Compressor gains
+# `plan_with_target` / `plan_pareto`, ParetoReport is exported);
+# required for the `pareto-sweep` capability that consumes the
+# `k_{K}.safetensors` artifacts emitted by
+# `polygram compress --pareto --pareto-materialize`.
+polygram = ["polygram>=0.4.0"]
 # orca-runtime-python — the classical orca-lang FSM runtime that drives
 # the v0.1 forge-outer-loop-fsm orchestrator. Required only for the
 # `--fsm` opt-in path; the default imperative ForgePipeline does not
@@ -86,7 +92,7 @@ all = [
     "jupyter",
     "torch>=2.2",
     "transformers>=4.46",
-    "polygram>=0.3.0",
+    "polygram>=0.4.0",
     "orca-runtime-python>=0.1.27",
     "datasets>=2.16",
     "librosa>=0.10",

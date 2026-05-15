@@ -441,6 +441,37 @@ class ForgePipeline:
             )
         return self._run_real_imperative(output_dir)
 
+    def sweep_pareto(
+        self,
+        encodings: list[tuple[str, "str | Path"]],
+        output_dir: "str | Path",
+        *,
+        frontier_only: bool = False,
+        **forge_kwargs: Any,
+    ) -> Path:
+        """Forge across per-K materialised SAE checkpoints; emit a JSONL frontier.
+
+        Delegates to :func:`saeforge.sweep.sweep_pareto`. See the
+        ``pareto-sweep`` capability spec for the row contract, lifecycle
+        states (success / frontier-only / row failure), and resumability
+        semantics.
+
+        Each row hot-swaps ``self.basis`` and ``self.projector`` for the
+        duration of one ``self.run`` call, then restores them — so the host
+        model, eval config, and fine-tune knobs persist across rows while
+        the SAE varies per K.
+        """
+        from saeforge.sweep import sweep_pareto as _sweep_pareto
+
+        normalized = [(label, Path(path)) for label, path in encodings]
+        return _sweep_pareto(
+            self,
+            encodings=normalized,
+            output_dir=Path(output_dir),
+            frontier_only=frontier_only,
+            **forge_kwargs,
+        )
+
     def _build_hybrid_bundle(self, host) -> "HybridBasisBundle | None":
         """Return a hybrid bundle when enabled, else None. Enforces tied-embedding refusal.
 
@@ -507,7 +538,7 @@ class ForgePipeline:
         # any host_model_id, which silently produced a randomly-initialised
         # GPT-2 for non-GPT-2 inputs (e.g. ``google/gemma-2-2b``).
         host = transformers.AutoModelForCausalLM.from_pretrained(
-            self.host_model_id, dtype=_torch_dtype(self.dtype)
+            self.host_model_id, torch_dtype=_torch_dtype(self.dtype)
         ).eval()
         bundle = self._build_hybrid_bundle(host)
         weights = self.projector.project_module(
@@ -576,7 +607,7 @@ class ForgePipeline:
         _write_basis_as_checkpoint(self.basis, sae_checkpoint)
 
         host = transformers.AutoModelForCausalLM.from_pretrained(
-            self.host_model_id, dtype=_torch_dtype(self.dtype)
+            self.host_model_id, torch_dtype=_torch_dtype(self.dtype)
         ).eval()
 
         # Pre-tokenise eval_prompts with the host's tokenizer so the FSM

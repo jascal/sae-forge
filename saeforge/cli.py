@@ -130,6 +130,68 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Disable the pre-LayerNorm in BridgeModule (default: enabled).",
     )
 
+    sweep = sub.add_parser(
+        "sweep-pareto",
+        help=(
+            "Forge across per-K materialised SAE checkpoints (Pareto sweep). "
+            "Consumes `polygram compress --pareto --pareto-materialize` "
+            "output; emits a JSONL frontier."
+        ),
+    )
+    sweep.add_argument(
+        "--encoding",
+        action="append",
+        required=True,
+        metavar="LABEL:PATH",
+        help=(
+            "Repeatable. LABEL is a free-form name (e.g. mps, rung4); PATH "
+            "is either a .safetensors file or a directory containing "
+            "k_<K>.safetensors files (and optionally pareto.json). "
+            "Pass --encoding once per encoding to sweep multiple "
+            "encodings on the same coordinate system."
+        ),
+    )
+    sweep.add_argument("--host-model", required=True, help="HuggingFace host model id.")
+    sweep.add_argument(
+        "--output-dir",
+        required=True,
+        help=(
+            "Sweep output root. frontier.jsonl is written here; per-row "
+            "forge outputs land under <output-dir>/<label>/k_<K>/."
+        ),
+    )
+    sweep.add_argument(
+        "--eval-prompts",
+        help="JSONL file of prompts for the faithfulness eval; optional.",
+    )
+    sweep.add_argument(
+        "--frontier-only",
+        action="store_true",
+        help=(
+            "Skip forge runs; emit a JSONL with manifest-derived columns "
+            "only (target_n_features_kept, n_features_kept_actual, "
+            "pareto_reached_target). Cheap exploratory mode."
+        ),
+    )
+    sweep.add_argument("--dtype", default="float32", choices=("float32", "float16", "bfloat16"))
+    sweep.add_argument("--device", default="cpu")
+    sweep.add_argument(
+        "--feature-native-attention",
+        action="store_true",
+        help="opt in to v0.2 feature-native attention; default is host-inherited internal width",
+    )
+    sweep.add_argument(
+        "--max-encoding-warning",
+        type=int,
+        default=2,
+        help=(
+            "When --encoding is passed more than this many times, emit a "
+            "stderr advisory about GPU memory pressure (large sweeps "
+            "should split by encoding into separate processes). "
+            "Default: 2."
+        ),
+    )
+
     inspect = sub.add_parser(
         "inspect",
         help="Triage a compressed checkpoint without torch — basis stats only.",
@@ -321,6 +383,92 @@ def _cmd_forge(args: argparse.Namespace) -> int:
     return 0
 
 
+def _parse_encoding_specs(raw: list[str]) -> list[tuple[str, Path]]:
+    """Parse repeated ``--encoding LABEL:PATH`` into normalized tuples.
+
+    Splits on the FIRST ``:`` so paths containing colons (Windows-style
+    drives, URIs) work. Raises ``ValueError`` on malformed specs — the CLI
+    handler converts that to a non-zero exit.
+    """
+    out: list[tuple[str, Path]] = []
+    for spec in raw:
+        if ":" not in spec:
+            raise ValueError(
+                f"--encoding spec must be LABEL:PATH (no colon found): {spec!r}"
+            )
+        label, _, path = spec.partition(":")
+        if not label:
+            raise ValueError(f"--encoding spec has empty label: {spec!r}")
+        if not path:
+            raise ValueError(f"--encoding spec has empty path: {spec!r}")
+        out.append((label, Path(path)))
+    return out
+
+
+def _cmd_sweep_pareto(args: argparse.Namespace) -> int:
+    from saeforge import FeatureBasis, ForgePipeline, SubspaceProjector
+    from saeforge.sweep import _enumerate_checkpoints
+
+    try:
+        encodings = _parse_encoding_specs(args.encoding)
+    except ValueError as exc:
+        print(f"sae-forge sweep-pareto: {exc}", file=sys.stderr)
+        return 2
+
+    if len(encodings) > args.max_encoding_warning:
+        print(
+            f"sae-forge sweep-pareto: warning — {len(encodings)} encodings in one "
+            f"process; large hosts may hit GPU memory limits. Consider splitting "
+            f"into one process per --encoding (see design.md Risks).",
+            file=sys.stderr,
+        )
+
+    # Bootstrap: use the first encoding's first checkpoint as the basis the
+    # ForgePipeline is constructed with. The sweep driver hot-swaps basis +
+    # projector per row, so this is purely a construction-time placeholder.
+    try:
+        first_checkpoints = _enumerate_checkpoints(encodings[0][1])
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"sae-forge sweep-pareto: {exc}", file=sys.stderr)
+        return 2
+
+    bootstrap_ckpt = first_checkpoints[0][1]
+    basis = FeatureBasis.from_polygram_checkpoint(bootstrap_ckpt)
+    projector = SubspaceProjector(basis)
+
+    eval_prompts = (
+        _parse_eval_prompts(Path(args.eval_prompts))
+        if args.eval_prompts
+        else []
+    )
+
+    pipeline = ForgePipeline(
+        basis=basis,
+        projector=projector,
+        host_model_id=args.host_model,
+        dtype=args.dtype,
+        device=args.device,
+        attention_width="feature_native" if args.feature_native_attention else "host",
+        eval_prompts=eval_prompts,
+    )
+
+    try:
+        frontier_path = pipeline.sweep_pareto(
+            encodings=encodings,
+            output_dir=Path(args.output_dir),
+            frontier_only=args.frontier_only,
+        )
+    except RuntimeError as exc:
+        # At-end failure: rows are still written to frontier.jsonl.
+        print(f"sae-forge sweep-pareto: {exc}", file=sys.stderr)
+        # Find the frontier.jsonl path the driver wrote even when raising.
+        print(str(Path(args.output_dir) / "frontier.jsonl"))
+        return 1
+
+    print(str(frontier_path))
+    return 0
+
+
 def _cmd_inspect(args: argparse.Namespace) -> int:
     if getattr(args, "fsm_diagram", False):
         from saeforge.machines.visualize import to_mermaid
@@ -362,6 +510,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "forge":
         return _cmd_forge(args)
+    if args.command == "sweep-pareto":
+        return _cmd_sweep_pareto(args)
     if args.command == "inspect":
         return _cmd_inspect(args)
     parser.error(f"unknown command: {args.command}")

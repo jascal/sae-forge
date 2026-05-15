@@ -1,0 +1,632 @@
+"""Tests for the Pareto sweep driver.
+
+Covers: ParetoFrontierRow validation + round-trip, manifest parsing,
+checkpoint enumeration, multi-K sweeps, resumability, multi-encoding,
+per-row failure isolation, truncated-JSONL recovery, frontier-only mode
+(with and without manifest), and CLI smoke.
+
+Most tests use a stub pipeline with monkey-patched ``_basis_swap`` so they
+don't require torch or full forge runs. The byte-equivalence scenario from
+the spec is exercised at integration level (gated behind torch availability);
+unit tests verify the driver's orchestration contract.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import json
+import shutil
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import pytest
+
+from saeforge.sweep import (
+    ParetoFrontierRow,
+    _enumerate_checkpoints,
+    _load_completed_rows,
+    _parse_pareto_manifest,
+    sweep_pareto,
+)
+
+
+# ---------------------------------------------------------------------------
+# Stub pipeline — replaces ForgePipeline for orchestration unit tests
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _StubResult:
+    output_dir: Path
+    faithfulness_kl: float | None = 0.5
+    extras: dict = field(default_factory=lambda: {"perplexity": 1.5, "final_loss": 2.7})
+
+
+@dataclass
+class _StubPipeline:
+    """A minimal stand-in for ForgePipeline.
+
+    The sweep driver's ``_basis_swap`` is monkey-patched to a no-op for tests
+    that use this stub, so we never touch the real ``FeatureBasis`` /
+    ``SubspaceProjector`` factories.
+    """
+
+    raise_on_calls: tuple[int, ...] = ()  # 1-indexed call numbers that raise
+    basis: object = None
+    projector: object = None
+    _call_count: int = 0
+    _calls: list[tuple[Path, Path]] = field(default_factory=list)
+
+    def run(self, output_dir, **kwargs):
+        self._call_count += 1
+        # In the real driver, the SAE is already swapped into self.basis. We
+        # don't have access to that here, so we record output_dir and rely on
+        # the caller's `_basis_swap` monkey-patch for assertions.
+        self._calls.append((Path(output_dir),))
+        if self._call_count in self.raise_on_calls:
+            raise RuntimeError(f"stub forge failure on call {self._call_count}")
+        result_dir = Path(output_dir)
+        result_dir.mkdir(parents=True, exist_ok=True)
+        return _StubResult(output_dir=result_dir)
+
+
+@pytest.fixture
+def stub_basis_swap(monkeypatch):
+    """No-op the ``_basis_swap`` context manager for orchestration tests.
+
+    The real ``_basis_swap`` rebuilds basis + projector from a checkpoint,
+    which requires ``FeatureBasis.from_polygram_checkpoint``. For tests that
+    don't care about the swap itself (most), this fixture replaces it with a
+    no-op so we can use the ``_StubPipeline`` without real SAE files.
+    """
+    @contextlib.contextmanager
+    def _noop(pipeline, sae_checkpoint):
+        yield
+
+    monkeypatch.setattr("saeforge.sweep._basis_swap", _noop)
+
+
+# ---------------------------------------------------------------------------
+# Fixtures: per-K SAE directories + manifests
+# ---------------------------------------------------------------------------
+
+
+def _make_pareto_dir(
+    root: Path,
+    sae_template: Path,
+    *,
+    targets: list[int],
+    actuals: list[int] | None = None,
+    reached: list[bool] | None = None,
+    write_manifest: bool = True,
+    layout: str = "pareto_subdir",
+) -> Path:
+    """Materialise a fake polygram-pareto output directory.
+
+    ``layout="pareto_subdir"`` mimics ``polygram compress --pareto-materialize``:
+    ``<root>/pareto.json`` + ``<root>/pareto/k_<K>.safetensors``.
+    ``layout="flat"`` puts ``k_<K>.safetensors`` at the root for the
+    single-directory caller variant.
+    """
+    root.mkdir(parents=True, exist_ok=True)
+    actuals = actuals if actuals is not None else targets
+    reached = reached if reached is not None else [True] * len(targets)
+
+    per_k_dir = root / "pareto" if layout == "pareto_subdir" else root
+    per_k_dir.mkdir(parents=True, exist_ok=True)
+    for k in targets:
+        shutil.copy(sae_template, per_k_dir / f"k_{k}.safetensors")
+
+    if write_manifest:
+        # Polygram's actual ParetoReport JSON schema: each outcome carries
+        # a flat `clusters` list (one entry per cluster representative),
+        # `feature_ids`, `target_k`, `reached_target`. `n_features_kept`
+        # is `len(clusters)`, not a stored field. See sweep.py
+        # `_parse_pareto_manifest` for the parser this matches.
+        manifest = {
+            "schema_version": 1,
+            "sae_checkpoint": str(sae_template),
+            "sae_checkpoint_sha256": "0" * 64,
+            "score_field": "polygram_overlap",
+            "targets": targets,
+            "outcomes": [
+                {
+                    "target_k": k,
+                    "reached_target": r,
+                    "clusters": [
+                        {
+                            "cluster_id": cid,
+                            "members": [cid],
+                            "representative": cid,
+                            "zeroed": [],
+                            "cluster_norm_mean": None,
+                            "cluster_norm_std": None,
+                            "merged_norm": None,
+                        }
+                        for cid in range(a)
+                    ],
+                    "feature_ids": list(range(a)),
+                }
+                for k, a, r in zip(targets, actuals, reached)
+            ],
+        }
+        (root / "pareto.json").write_text(json.dumps(manifest))
+
+    return root
+
+
+# ---------------------------------------------------------------------------
+# ParetoFrontierRow
+# ---------------------------------------------------------------------------
+
+
+class TestParetoFrontierRow:
+    def test_importable_from_saeforge(self):
+        from saeforge import ParetoFrontierRow as Top
+
+        assert Top is ParetoFrontierRow
+
+    def test_rejects_zero_target(self):
+        with pytest.raises(ValueError, match="target_n_features_kept"):
+            ParetoFrontierRow(
+                encoding_label="x",
+                target_n_features_kept=0,
+                n_features_kept_actual=0,
+                pareto_reached_target=False,
+                faithfulness_kl=None,
+                perplexity=None,
+                final_fine_tune_loss=None,
+                sae_checkpoint="x",
+                forged_model_path=None,
+                elapsed_seconds=0.0,
+                error_message=None,
+            )
+
+    def test_rejects_negative_elapsed(self):
+        with pytest.raises(ValueError, match="elapsed_seconds"):
+            ParetoFrontierRow(
+                encoding_label="x",
+                target_n_features_kept=1,
+                n_features_kept_actual=0,
+                pareto_reached_target=False,
+                faithfulness_kl=None,
+                perplexity=None,
+                final_fine_tune_loss=None,
+                sae_checkpoint="x",
+                forged_model_path=None,
+                elapsed_seconds=-1.0,
+                error_message=None,
+            )
+
+    def test_json_round_trip(self):
+        row = ParetoFrontierRow(
+            encoding_label="rung4",
+            target_n_features_kept=200,
+            n_features_kept_actual=180,
+            pareto_reached_target=True,
+            faithfulness_kl=0.42,
+            perplexity=1.5,
+            final_fine_tune_loss=2.7,
+            sae_checkpoint="/tmp/k_200.safetensors",
+            forged_model_path="/tmp/out",
+            elapsed_seconds=12.5,
+            error_message=None,
+        )
+        rt = ParetoFrontierRow.from_json_dict(json.loads(json.dumps(row.to_json_dict())))
+        assert rt == row
+
+    def test_non_finite_floats_become_null(self):
+        row = ParetoFrontierRow(
+            encoding_label="x",
+            target_n_features_kept=1,
+            n_features_kept_actual=1,
+            pareto_reached_target=True,
+            faithfulness_kl=float("inf"),
+            perplexity=float("nan"),
+            final_fine_tune_loss=float("-inf"),
+            sae_checkpoint="x",
+            forged_model_path="x",
+            elapsed_seconds=0.0,
+            error_message=None,
+        )
+        d = row.to_json_dict()
+        assert d["faithfulness_kl"] is None
+        assert d["perplexity"] is None
+        assert d["final_fine_tune_loss"] is None
+
+
+# ---------------------------------------------------------------------------
+# Manifest + checkpoint enumeration
+# ---------------------------------------------------------------------------
+
+
+class TestEnumerateCheckpoints:
+    def test_pareto_subdir_layout(self, tmp_path, synthetic_compressed_sae):
+        d = _make_pareto_dir(
+            tmp_path / "rung4",
+            synthetic_compressed_sae["checkpoint"],
+            targets=[2, 5, 8],
+        )
+        result = _enumerate_checkpoints(d)
+        ks = [k for k, _ in result]
+        assert ks == [2, 5, 8]  # ascending
+
+    def test_flat_layout(self, tmp_path, synthetic_compressed_sae):
+        d = _make_pareto_dir(
+            tmp_path / "rung4",
+            synthetic_compressed_sae["checkpoint"],
+            targets=[2, 5, 8],
+            write_manifest=False,
+            layout="flat",
+        )
+        result = _enumerate_checkpoints(d)
+        ks = [k for k, _ in result]
+        assert ks == [2, 5, 8]
+
+    def test_missing_path_raises(self, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            _enumerate_checkpoints(tmp_path / "nonexistent")
+
+    def test_directory_with_no_kN_files_raises(self, tmp_path):
+        (tmp_path / "empty").mkdir()
+        with pytest.raises(FileNotFoundError, match="no k_<K>"):
+            _enumerate_checkpoints(tmp_path / "empty")
+
+
+class TestParetoManifest:
+    def test_parses_outcomes(self, tmp_path):
+        manifest = {
+            "schema_version": 1,
+            "sae_checkpoint": "x",
+            "sae_checkpoint_sha256": "0" * 64,
+            "score_field": "polygram_overlap",
+            "targets": [2, 5],
+            "outcomes": [
+                {
+                    "target_k": 2,
+                    "reached_target": True,
+                    "clusters": [{"cluster_id": 0, "members": [0], "representative": 0, "zeroed": []},
+                                 {"cluster_id": 1, "members": [1], "representative": 1, "zeroed": []}],
+                    "feature_ids": [0, 1],
+                },
+                {
+                    "target_k": 5,
+                    "reached_target": False,
+                    "clusters": [{"cluster_id": i, "members": [i], "representative": i, "zeroed": []} for i in range(4)],
+                    "feature_ids": [0, 1, 2, 3],
+                },
+            ],
+        }
+        p = tmp_path / "pareto.json"
+        p.write_text(json.dumps(manifest))
+        result = _parse_pareto_manifest(p)
+        assert set(result.keys()) == {2, 5}
+        assert result[2].n_features_kept == 2
+        assert result[2].reached_target is True
+        assert result[5].reached_target is False
+
+
+# ---------------------------------------------------------------------------
+# Resumability scan
+# ---------------------------------------------------------------------------
+
+
+class TestLoadCompletedRows:
+    def test_missing_file_returns_empty(self, tmp_path):
+        assert _load_completed_rows(tmp_path / "missing.jsonl") == set()
+
+    def test_reads_labelled_pairs(self, tmp_path):
+        p = tmp_path / "frontier.jsonl"
+        p.write_text(
+            json.dumps({"encoding_label": "mps", "target_n_features_kept": 200, "error_message": None}) + "\n"
+            + json.dumps({"encoding_label": "mps", "target_n_features_kept": 500, "error_message": None}) + "\n"
+        )
+        assert _load_completed_rows(p) == {("mps", 200), ("mps", 500)}
+
+    def test_skips_error_rows(self, tmp_path):
+        """Failure rows are retryable — not marked as completed."""
+        p = tmp_path / "frontier.jsonl"
+        p.write_text(
+            json.dumps({"encoding_label": "mps", "target_n_features_kept": 200, "error_message": None}) + "\n"
+            + json.dumps({"encoding_label": "mps", "target_n_features_kept": 500, "error_message": "boom"}) + "\n"
+        )
+        assert _load_completed_rows(p) == {("mps", 200)}
+
+    def test_truncated_last_line_is_dropped(self, tmp_path):
+        p = tmp_path / "frontier.jsonl"
+        p.write_text(
+            json.dumps({"encoding_label": "mps", "target_n_features_kept": 200, "error_message": None}) + "\n"
+            + '{"encoding_label": "mps", "target_n_'  # truncated mid-write
+        )
+        assert _load_completed_rows(p) == {("mps", 200)}
+        # File should be rewritten without the bad line.
+        remaining = p.read_text().strip().splitlines()
+        assert len(remaining) == 1
+        json.loads(remaining[0])  # parses cleanly
+
+
+# ---------------------------------------------------------------------------
+# Driver: multi-K, multi-encoding, failure isolation, resumability
+# ---------------------------------------------------------------------------
+
+
+class TestSweepMultiK:
+    def test_emits_one_row_per_k(
+        self, tmp_path, synthetic_compressed_sae, stub_basis_swap
+    ):
+        encoding_dir = _make_pareto_dir(
+            tmp_path / "rung4",
+            synthetic_compressed_sae["checkpoint"],
+            targets=[2, 5, 8],
+        )
+        pipeline = _StubPipeline()
+        out = tmp_path / "out"
+        frontier = sweep_pareto(
+            pipeline,
+            encodings=[("rung4", encoding_dir)],
+            output_dir=out,
+        )
+        assert frontier == out / "frontier.jsonl"
+        rows = [json.loads(line) for line in frontier.read_text().splitlines()]
+        assert len(rows) == 3
+        assert [r["target_n_features_kept"] for r in rows] == [2, 5, 8]
+        assert all(r["encoding_label"] == "rung4" for r in rows)
+        assert all(r["error_message"] is None for r in rows)
+        assert all(r["faithfulness_kl"] == 0.5 for r in rows)
+        # Each row's actual count comes from the manifest.
+        assert [r["n_features_kept_actual"] for r in rows] == [2, 5, 8]
+        # Manifest reached_target propagates.
+        assert all(r["pareto_reached_target"] is True for r in rows)
+        # pipeline.run was invoked once per row.
+        assert pipeline._call_count == 3
+
+
+class TestSweepResumability:
+    def test_skips_completed_rows(
+        self, tmp_path, synthetic_compressed_sae, stub_basis_swap
+    ):
+        encoding_dir = _make_pareto_dir(
+            tmp_path / "rung4",
+            synthetic_compressed_sae["checkpoint"],
+            targets=[2, 5, 8],
+        )
+        out = tmp_path / "out"
+        out.mkdir()
+        # Pre-populate frontier.jsonl with two completed rows.
+        (out / "frontier.jsonl").write_text(
+            json.dumps({
+                "encoding_label": "rung4",
+                "target_n_features_kept": 2,
+                "n_features_kept_actual": 2,
+                "pareto_reached_target": True,
+                "faithfulness_kl": 0.1,
+                "perplexity": 1.0,
+                "final_fine_tune_loss": 0.2,
+                "sae_checkpoint": "x",
+                "forged_model_path": "x",
+                "elapsed_seconds": 1.0,
+                "error_message": None,
+            }) + "\n"
+            + json.dumps({
+                "encoding_label": "rung4",
+                "target_n_features_kept": 5,
+                "n_features_kept_actual": 5,
+                "pareto_reached_target": True,
+                "faithfulness_kl": 0.2,
+                "perplexity": 1.1,
+                "final_fine_tune_loss": 0.3,
+                "sae_checkpoint": "x",
+                "forged_model_path": "x",
+                "elapsed_seconds": 1.0,
+                "error_message": None,
+            }) + "\n"
+        )
+        pipeline = _StubPipeline()
+        sweep_pareto(
+            pipeline,
+            encodings=[("rung4", encoding_dir)],
+            output_dir=out,
+        )
+        # Only K=8 should be forged.
+        assert pipeline._call_count == 1
+        rows = [json.loads(line) for line in (out / "frontier.jsonl").read_text().splitlines()]
+        assert [r["target_n_features_kept"] for r in rows] == [2, 5, 8]
+
+
+class TestSweepMultiEncoding:
+    def test_two_encodings_two_k_each(
+        self, tmp_path, synthetic_compressed_sae, stub_basis_swap
+    ):
+        mps_dir = _make_pareto_dir(
+            tmp_path / "mps", synthetic_compressed_sae["checkpoint"], targets=[3, 6]
+        )
+        rung4_dir = _make_pareto_dir(
+            tmp_path / "rung4", synthetic_compressed_sae["checkpoint"], targets=[3, 6]
+        )
+        pipeline = _StubPipeline()
+        out = tmp_path / "out"
+        sweep_pareto(
+            pipeline,
+            encodings=[("mps", mps_dir), ("rung4", rung4_dir)],
+            output_dir=out,
+        )
+        rows = [json.loads(line) for line in (out / "frontier.jsonl").read_text().splitlines()]
+        assert len(rows) == 4
+        labels = [r["encoding_label"] for r in rows]
+        assert labels.count("mps") == 2
+        assert labels.count("rung4") == 2
+
+
+class TestSweepFailures:
+    def test_one_row_failure_does_not_abort(
+        self, tmp_path, synthetic_compressed_sae, stub_basis_swap
+    ):
+        encoding_dir = _make_pareto_dir(
+            tmp_path / "rung4",
+            synthetic_compressed_sae["checkpoint"],
+            targets=[2, 5, 8],
+        )
+        pipeline = _StubPipeline(raise_on_calls=(2,))  # second row raises
+        out = tmp_path / "out"
+        with pytest.raises(RuntimeError, match="1 row"):
+            sweep_pareto(
+                pipeline,
+                encodings=[("rung4", encoding_dir)],
+                output_dir=out,
+            )
+        rows = [json.loads(line) for line in (out / "frontier.jsonl").read_text().splitlines()]
+        assert len(rows) == 3
+        assert rows[0]["error_message"] is None
+        assert rows[1]["error_message"] is not None
+        assert "stub forge failure" in rows[1]["error_message"]
+        assert rows[1]["faithfulness_kl"] is None
+        assert rows[2]["error_message"] is None
+        # Subsequent rows still produced finite metrics.
+        assert rows[2]["faithfulness_kl"] == 0.5
+
+    def test_failure_row_is_retried_on_next_sweep(
+        self, tmp_path, synthetic_compressed_sae, stub_basis_swap
+    ):
+        encoding_dir = _make_pareto_dir(
+            tmp_path / "rung4",
+            synthetic_compressed_sae["checkpoint"],
+            targets=[2, 5],
+        )
+        out = tmp_path / "out"
+        # First sweep: K=5 fails.
+        pipeline_1 = _StubPipeline(raise_on_calls=(2,))
+        with pytest.raises(RuntimeError):
+            sweep_pareto(pipeline_1, encodings=[("rung4", encoding_dir)], output_dir=out)
+        # Second sweep: K=5 retries (and succeeds with a fresh pipeline).
+        pipeline_2 = _StubPipeline()
+        sweep_pareto(pipeline_2, encodings=[("rung4", encoding_dir)], output_dir=out)
+        # K=2 was completed first time, so pipeline_2 only forges K=5.
+        assert pipeline_2._call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Frontier-only mode
+# ---------------------------------------------------------------------------
+
+
+class TestFrontierOnly:
+    def test_no_forge_calls(
+        self, tmp_path, synthetic_compressed_sae, stub_basis_swap
+    ):
+        encoding_dir = _make_pareto_dir(
+            tmp_path / "rung4",
+            synthetic_compressed_sae["checkpoint"],
+            targets=[2, 5, 8],
+        )
+        pipeline = _StubPipeline()
+        out = tmp_path / "out"
+        sweep_pareto(
+            pipeline,
+            encodings=[("rung4", encoding_dir)],
+            output_dir=out,
+            frontier_only=True,
+        )
+        assert pipeline._call_count == 0
+        rows = [json.loads(line) for line in (out / "frontier.jsonl").read_text().splitlines()]
+        assert len(rows) == 3
+        for r in rows:
+            assert r["faithfulness_kl"] is None
+            assert r["perplexity"] is None
+            assert r["forged_model_path"] is None
+            assert r["n_features_kept_actual"] is not None  # from manifest
+            assert r["pareto_reached_target"] is True
+
+    def test_manifest_fallback(
+        self, tmp_path, synthetic_compressed_sae, stub_basis_swap
+    ):
+        """Without pareto.json, n_features_kept_actual falls back to SAE counting."""
+        encoding_dir = _make_pareto_dir(
+            tmp_path / "rung4",
+            synthetic_compressed_sae["checkpoint"],
+            targets=[2, 5],
+            write_manifest=False,
+        )
+        pipeline = _StubPipeline()
+        out = tmp_path / "out"
+        sweep_pareto(
+            pipeline,
+            encodings=[("rung4", encoding_dir)],
+            output_dir=out,
+            frontier_only=True,
+        )
+        rows = [json.loads(line) for line in (out / "frontier.jsonl").read_text().splitlines()]
+        # All rows use the same synthetic SAE template, so n_features_kept_actual
+        # is the same non-zero count and pareto_reached_target is None
+        # (undeterminable without manifest).
+        for r in rows:
+            assert r["n_features_kept_actual"] is not None
+            assert r["pareto_reached_target"] is None
+
+
+# ---------------------------------------------------------------------------
+# CLI smoke
+# ---------------------------------------------------------------------------
+
+
+class TestCLI:
+    def test_parse_encoding_specs(self):
+        from saeforge.cli import _parse_encoding_specs
+
+        result = _parse_encoding_specs(["mps:/path/to/mps", "rung4:/other/path"])
+        assert result == [("mps", Path("/path/to/mps")), ("rung4", Path("/other/path"))]
+
+    def test_parse_encoding_rejects_no_colon(self):
+        from saeforge.cli import _parse_encoding_specs
+
+        with pytest.raises(ValueError, match="no colon found"):
+            _parse_encoding_specs(["bogus"])
+
+    def test_parse_encoding_rejects_empty_label(self):
+        from saeforge.cli import _parse_encoding_specs
+
+        with pytest.raises(ValueError, match="empty label"):
+            _parse_encoding_specs([":/path"])
+
+    def test_parse_encoding_rejects_empty_path(self):
+        from saeforge.cli import _parse_encoding_specs
+
+        with pytest.raises(ValueError, match="empty path"):
+            _parse_encoding_specs(["label:"])
+
+    def test_parse_encoding_accepts_path_with_colon(self):
+        """Paths with internal colons (e.g. Windows drive letters) split on the first."""
+        from saeforge.cli import _parse_encoding_specs
+
+        result = _parse_encoding_specs(["mps:C:/path/to/sae"])
+        assert result == [("mps", Path("C:/path/to/sae"))]
+
+    def test_cli_frontier_only_smoke(
+        self, tmp_path, synthetic_compressed_sae, monkeypatch
+    ):
+        """End-to-end: argv → frontier.jsonl with --frontier-only.
+
+        Doesn't construct a real ForgePipeline.run path because the bootstrap
+        basis (the first K SAE) is loaded via FeatureBasis.from_polygram_checkpoint
+        — that's fine, the fixture is a real safetensors file. --frontier-only
+        skips the actual forge call.
+        """
+        encoding_dir = _make_pareto_dir(
+            tmp_path / "rung4",
+            synthetic_compressed_sae["checkpoint"],
+            targets=[2, 5],
+        )
+        out = tmp_path / "out"
+        from saeforge.cli import main
+
+        rc = main([
+            "sweep-pareto",
+            "--encoding", f"rung4:{encoding_dir}",
+            "--host-model", "gpt2",  # unused with --frontier-only
+            "--output-dir", str(out),
+            "--frontier-only",
+        ])
+        assert rc == 0
+        assert (out / "frontier.jsonl").is_file()
+        rows = [json.loads(line) for line in (out / "frontier.jsonl").read_text().splitlines()]
+        assert len(rows) == 2
+        assert {r["target_n_features_kept"] for r in rows} == {2, 5}

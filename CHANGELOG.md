@@ -5,6 +5,65 @@ their corresponding OpenSpec change is archived.
 
 ## [Unreleased]
 
+### Added (add-pareto-sweep-driver)
+
+- **Bundled fix: `torch_dtype=` for transformers compat.** Two
+  `AutoModelForCausalLM.from_pretrained(..., dtype=...)` call sites
+  (`forge.py` `_run_real_imperative` and `_run_real_fsm`) used the
+  transformers≥4.50 `dtype=` alias, which doesn't exist on the
+  `[intel]` extra's pinned `transformers>=4.46,<4.50`. Switched both
+  to `torch_dtype=` — canonical name, works on both pin lines. Caught
+  during the live Axis-4 MBP smoke for this PR (latent regression from
+  PR #9, surfaced because the sweep is the first user-facing
+  multi-row path that triggers `from_pretrained` repeatedly on Intel).
+- **Pareto sweep driver.** New `saeforge sweep-pareto` CLI subcommand
+  and `ForgePipeline.sweep_pareto()` method that forge across per-K
+  materialised SAE checkpoints produced by
+  `polygram compress --pareto --pareto-materialize`. Optionally spans
+  multiple labelled encodings (e.g. MPS vs Rung4) — pass
+  `--encoding LABEL:PATH` repeatedly. Emits one JSONL row per
+  `(encoding, target_n_features_kept)` capturing kept-feature count,
+  downstream KL, perplexity, fine-tune loss, and elapsed seconds.
+  The load-bearing primitive for Axis 4 of polygram's rung-viability
+  methodology — end-to-end downstream confirmation that the Axis 1
+  compression-coverage lift cashes out in forged-model KL space.
+- **Three lifecycle states per row.** *Success* (forge ran),
+  *frontier-only* (`--frontier-only` flag, no forge), and
+  *row failure* (forge raised). Downstream consumers filter on
+  `error_message is None` before reading metric fields. Failure rows
+  are recorded with `error_message` populated; the sweep continues to
+  the next row.
+- **Resumable.** `frontier.jsonl` is append-only; rerunning the sweep
+  skips already-completed `(label, K)` pairs. Truncated last lines
+  (mid-write crashes) are detected, dropped, and rewritten on the
+  next invocation. No lockfiles or sentinel files.
+- **`--frontier-only` mode** emits manifest-derived columns only
+  (`target_n_features_kept`, `n_features_kept_actual`,
+  `pareto_reached_target`) without invoking the forge — cheap
+  exploratory triage. Pipe through `jq` to find candidate K values
+  before committing forge compute. Falls back to non-zero-row counting
+  on the SAE checkpoint when `pareto.json` is absent.
+- **`ParetoFrontierRow` dataclass** exported from `saeforge`, with
+  `to_json_dict` / `from_json_dict` round-trip. Schema documented in
+  the `pareto-sweep` capability spec.
+- **Polygram pin bumped to `>=0.4.0`.** The new
+  `CompressionConfig.target_n_features_kept` and `score_field` fields
+  flow through the existing `_ConfigMixin.to_dict/from_dict` ctx
+  round-trip in `polygram-tuning-passthrough` with no sae-forge-side
+  code change — `Compressor` dispatches to `plan_with_target` when
+  the field is set.
+- **No FSM change.** The sweep is a flat Python loop; each row's
+  forge call uses the existing `StreamMachine → RefineMachine →
+  BasisMachine` hierarchy. The driver hot-swaps `pipeline.basis` and
+  `pipeline.projector` per row via a context manager that restores
+  the originals afterwards.
+- Tests: `tests/test_sweep.py` — 27 tests covering row validation +
+  JSON round-trip, manifest parsing, checkpoint enumeration (both
+  `pareto/` subdir and flat layouts), multi-K sweep, resumability,
+  multi-encoding, per-row failure isolation, retry-on-next-sweep,
+  frontier-only with and without manifest, CLI argument parsing,
+  and a `--frontier-only` end-to-end CLI smoke.
+
 ### Added (add-host-distillation-finetune-loss)
 
 - **Host distillation in fine-tune.** `TrainingConfig` gains
