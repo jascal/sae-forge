@@ -1,4 +1,4 @@
-# M4 Axis-4 runbook — Rung4 + cross-encoding on real GPT-2
+# M4 Axis-4 runbook — HEA_Rung2(n_qubits=9) + cross-encoding on real GPT-2
 
 End-to-end recipe for running a real Axis-4 sweep on the M4 box. Targets
 the **first empirical measurement** of whether
@@ -8,21 +8,38 @@ rows that the `quality_tier` diagnostic tags as `good` or `saturated`.
 
 The Intel Mac validated the chain end-to-end (PR #32–#39 all merged) but
 was capped at the `degenerate` regime because of compute limits. The M4
-unblocks larger feature counts (N≥512) where the basis can actually
+unblocks larger feature counts (N=512) where the basis can actually
 span GPT-2-small's 768-dim residual.
 
 ## Clarification on rungs
 
-Polygram's encoding ladder: `MPSRung1` (cap=8), `Rung3` (cap=16),
-`Rung4` (cap=32), `HEA_Rung2(n_qubits=N)` (cap=2^N). **There is no
-`Rung5`.** When this doc refers to a "higher-than-Rung4" comparison,
-it means `HEA_Rung2(n_qubits=9)` (cap=512), which is the natural
-above-Rung4 tier on this fixture.
+Polygram's encoding ladder, with **max-features caps**:
 
-If you want to compare **Rung4(bond_dim=2) vs Rung4(bond_dim=4)** —
-which is sometimes informally called "Rung 5" — the CLI does not
-currently expose `--encoding-bond-dim`. You'd need the Python API
-(see *Python escape hatch* at the bottom of this doc).
+| Encoding | Cap |
+|---|---|
+| `MPSRung1` | 8 |
+| `Rung3` | 16 |
+| `Rung4` | **32 — the ceiling, not negotiable** |
+| `HEA_Rung2(n_qubits=N)` | `2^N` (e.g., `n_qubits=9` → 512) |
+
+**There is no `Rung5`.** "Higher-than-Rung4" requires either
+`HEA_Rung2(n_qubits=N)` with N ≥ 6 (cap=64+) or `Rung4(bond_dim=K)`
+with K > 2 (more rank capacity at fixed N≤32).
+
+The primary M4 protocol below uses `HEA_Rung2(n_qubits=9)` (cap=512)
+because that's the only polygram encoding that can fit the N=512
+feature count needed to escape the `degenerate` tier on GPT-2-small.
+**Rung4 mechanically cannot reach the `good` tier on a 768-dim host** —
+its cap of 32 features puts the best-case `quality_ratio` at 32/768 ≈
+0.04, below the 0.0625 `degenerate` boundary.
+
+Rung4 still has a role: see **Run #4 (optional)** for a Rung4-vs-
+HEA_Rung2(n_qubits=5) capability-surface test at N=32 (both
+encodings' native or near-native caps).
+
+If you want to compare **`Rung4(bond_dim=2)` vs `Rung4(bond_dim=4)`** —
+informally "Rung 5" — the CLI doesn't expose `--encoding-bond-dim`.
+Use the Python API (*Python escape hatch* at the bottom).
 
 ## Prereqs (one-off)
 
@@ -178,19 +195,58 @@ print(f'wrote {len(prompts.splitlines())} eval prompts')
 PY
 ```
 
+## Critical: encoding caps vs N
+
+**Rung4 caps the Dictionary at 32 features. It cannot fit N=512.** This
+runbook's earlier draft (pre-fix) incorrectly recommended `Rung4` at
+N=512, which fails with:
+
+```
+ValueError: selected 512 features, but the Rung4 encoding caps a
+Dictionary at 32 features.
+```
+
+The encoding cap ladder (polygram 0.5.0):
+
+| Encoding | Cap |
+|---|---|
+| `MPSRung1` | 8 |
+| `Rung3` | 16 |
+| `Rung4` | **32** (this is the ceiling — not negotiable) |
+| `HEA_Rung2(n_qubits=N)` | `2^N` (e.g., `n_qubits=9` → 512) |
+
+To escape `quality_tier="degenerate"` on GPT-2-small's 768-dim residual
+(`basis_rank ≥ 384` for the `good` tier), we need N ≥ ~512 features.
+**The only polygram encoding that supports N=512 is `HEA_Rung2(n_qubits=9)`.**
+Rung4 mechanically cannot reach the `good` tier on this host.
+
+The runbook below uses `HEA_Rung2(n_qubits=9)` as the primary encoding.
+Cross-encoding comparisons against `Rung4` happen at N=32 (Rung4's
+native cap), where both rep_selection arms will land in `degenerate`
+tier — informative as a capability-surface test, not a research-grade
+comparison.
+
+## Sanity-check the encoding BEFORE every run
+
+A real-world footgun: if `--encoding LABEL:PATH` and `--encoding-qubits
+LABEL:N` use different `LABEL` strings, the CLI silently falls back to
+polygram's `HEA_Rung2()` default (`n_qubits=3`, cap=8) — no error.
+**Always run `--plan-only` first and inspect the `encoding_kwargs=` line**
+in the per-encoding plan block. If it shows `{'depth': 2}` or
+`{'n_qubits': 3, 'depth': 2}`, the labels don't match.
+
+Expected `encoding_kwargs=` line for the primary run below:
+**`{'n_qubits': 9, 'depth': 2}`**.
+
 ## The runs
 
-### Pre-flight (~free)
-
-Sanity-check inputs before paying validator cost. `--plan-only` prints
-per-encoding cache status, SHA-256 fingerprints of the SAE + prompts,
-target K list, and a validator-forward-count estimate, then exits 0
-without running anything heavy.
+### Pre-flight (free)
 
 ```bash
 .venv/bin/python -m saeforge.cli sweep-pareto --auto-materialise --plan-only \
-    --encoding rung4:/tmp/axis4_m4/sae_N512.safetensors \
-    --encoding-class rung4:Rung4 \
+    --encoding hea9:/tmp/axis4_m4/sae_N512.safetensors \
+    --encoding-class hea9:HEA_Rung2 \
+    --encoding-qubits hea9:9 \
     --host-model gpt2 --layer 8 \
     --pareto 64,128,256,512 \
     --validation-prompts /tmp/axis4_m4/validation_prompts.jsonl \
@@ -201,15 +257,25 @@ without running anything heavy.
     --output-dir /tmp/axis4_m4/scale_aware/
 ```
 
-Expected output: `cache_status=MISS (cold)`, `targets=[64, 128, 256, 512]`,
-`validator_forward_count_estimate=~600` (60 prompts × ~10 tokens avg).
+Expected output keys:
 
-### Run #1 — Rung4 with scale_aware (~10–15 min on M4)
+- `cache_status=MISS (cold)` (first run only)
+- `targets=[64, 128, 256, 512]`
+- `encoding_class=HEA_Rung2`
+- `encoding_kwargs={'n_qubits': 9, 'depth': 2}` ← **verify this**
+- `validator_forward_count_estimate=~600` (60 prompts × ~10 tokens avg)
+
+If `encoding_kwargs` is missing `n_qubits` or shows `n_qubits=3`,
+DOUBLE-CHECK that the `--encoding` and `--encoding-qubits` flags use
+the **identical** label string (case-sensitive, no whitespace).
+
+### Run #1 — HEA_Rung2(n_qubits=9) with scale_aware (~15–25 min on M4)
 
 ```bash
 .venv/bin/python -m saeforge.cli sweep-pareto --auto-materialise \
-    --encoding rung4:/tmp/axis4_m4/sae_N512.safetensors \
-    --encoding-class rung4:Rung4 \
+    --encoding hea9:/tmp/axis4_m4/sae_N512.safetensors \
+    --encoding-class hea9:HEA_Rung2 \
+    --encoding-qubits hea9:9 \
     --host-model gpt2 --layer 8 \
     --pareto 64,128,256,512 \
     --validation-prompts /tmp/axis4_m4/validation_prompts.jsonl \
@@ -220,15 +286,19 @@ Expected output: `cache_status=MISS (cold)`, `targets=[64, 128, 256, 512]`,
     --output-dir /tmp/axis4_m4/scale_aware/
 ```
 
-### Run #2 — Rung4 with kl_attribution (~10–15 min, fresh cache key)
+### Run #2 — HEA_Rung2(n_qubits=9) with kl_attribution (~15–25 min, fresh cache key)
 
 `rep_selection` is part of the cache key, so this re-materialises
-cleanly without contaminating Run #1's artifacts.
+cleanly without contaminating Run #1's artifacts. **This is the
+load-bearing comparison** — the K=512 row in this output, compared to
+the K=512 row in Run #1, is the first empirical signal on whether
+`kl_attribution` Pareto-dominates `scale_aware` in the good tier.
 
 ```bash
 .venv/bin/python -m saeforge.cli sweep-pareto --auto-materialise \
-    --encoding rung4:/tmp/axis4_m4/sae_N512.safetensors \
-    --encoding-class rung4:Rung4 \
+    --encoding hea9:/tmp/axis4_m4/sae_N512.safetensors \
+    --encoding-class hea9:HEA_Rung2 \
+    --encoding-qubits hea9:9 \
     --host-model gpt2 --layer 8 \
     --pareto 64,128,256,512 \
     --validation-prompts /tmp/axis4_m4/validation_prompts.jsonl \
@@ -239,20 +309,27 @@ cleanly without contaminating Run #1's artifacts.
     --output-dir /tmp/axis4_m4/kl_attribution/
 ```
 
-### Run #3 — Cross-encoding (Rung4 vs HEA_Rung2(n_qubits=9), ~20–30 min)
+### Run #3 (optional) — Cross-encoding HEA_Rung2(n_qubits=9) vs (n_qubits=10) at N=512 (~30–40 min)
 
-The closest analog to "Rung4 vs Rung5" in polygram's lineup. Both
-encodings consume the same N=512 SAE but produce different gram
-structures, so the validator's confirmed-pair set may diverge — that's
-the Axis-4 cross-encoding question.
+The "Rung 4 vs Rung 5" intuition. Both encodings fit N=512; the
+n_qubits=10 has more rank slack (cap=1024 vs cap=512). If the higher-
+qubit encoding produces a meaningfully different validator-confirmed-
+pair set, that's the Axis-4 cross-encoding signal.
+
+You'll need to slice a second SAE (or pad the existing one with extra
+features) for the n_qubits=10 path, since both encodings need their
+input feature count to be within their cap. The simplest path: reuse
+the N=512 slice for both labels — n_qubits=10 will have empty rank
+headroom but the comparison is still valid.
 
 ```bash
 .venv/bin/python -m saeforge.cli sweep-pareto --auto-materialise \
-    --encoding rung4:/tmp/axis4_m4/sae_N512.safetensors \
-    --encoding hea:/tmp/axis4_m4/sae_N512.safetensors \
-    --encoding-class rung4:Rung4 \
-    --encoding-class hea:HEA_Rung2 \
-    --encoding-qubits hea:9 \
+    --encoding hea9:/tmp/axis4_m4/sae_N512.safetensors \
+    --encoding hea10:/tmp/axis4_m4/sae_N512.safetensors \
+    --encoding-class hea9:HEA_Rung2 \
+    --encoding-class hea10:HEA_Rung2 \
+    --encoding-qubits hea9:9 \
+    --encoding-qubits hea10:10 \
     --host-model gpt2 --layer 8 \
     --pareto 64,128,256,512 \
     --validation-prompts /tmp/axis4_m4/validation_prompts.jsonl \
@@ -261,6 +338,57 @@ the Axis-4 cross-encoding question.
     --rep-selection kl_attribution \
     --device mps --dtype float32 \
     --output-dir /tmp/axis4_m4/cross_encoding/
+```
+
+### Run #4 (optional) — Rung4 vs HEA_Rung2(n_qubits=5) at N=32 (capability-surface test)
+
+This is the **only honest "Rung4 in the comparison" command**, run at
+Rung4's native cap of 32. Both encodings will land in the `degenerate`
+tier (32/768 ≈ 0.04 < 0.0625 threshold), so this is **not the
+rep_selection research question** — it's a capability-surface test
+that verifies multi-encoding sweep mechanics work on a real fixture.
+
+Requires a separate N=32 slice:
+
+```bash
+.venv/bin/python <<'PY'
+"""Slice jbloom SAE to N=32 (for the Rung4-native cross-encoding test)."""
+from pathlib import Path
+from huggingface_hub import hf_hub_download
+from safetensors.numpy import load_file, save_file
+
+sae_path = Path(hf_hub_download(
+    repo_id="jbloom/GPT2-Small-SAEs-Reformatted",
+    filename="blocks.8.hook_resid_pre/sae_weights.safetensors",
+))
+state = load_file(str(sae_path))
+N = 32
+STRIDE = max(1, state["W_dec"].shape[0] // N)
+fids = [i * STRIDE for i in range(N)]
+out = Path("/tmp/axis4_m4/sae_N32.safetensors")
+save_file({
+    "W_dec": state["W_dec"][fids],
+    "W_enc": state["W_enc"][:, fids] if state["W_enc"].shape[1] == state["W_dec"].shape[0] else state["W_enc"][fids],
+    "b_enc": state["b_enc"][fids],
+    "b_dec": state["b_dec"],
+}, str(out))
+print(f"sliced N={N} → {out}")
+PY
+
+.venv/bin/python -m saeforge.cli sweep-pareto --auto-materialise \
+    --encoding rung4:/tmp/axis4_m4/sae_N32.safetensors \
+    --encoding hea5:/tmp/axis4_m4/sae_N32.safetensors \
+    --encoding-class rung4:Rung4 \
+    --encoding-class hea5:HEA_Rung2 \
+    --encoding-qubits hea5:5 \
+    --host-model gpt2 --layer 8 \
+    --pareto 4,8,16,32 \
+    --validation-prompts /tmp/axis4_m4/validation_prompts.jsonl \
+    --eval-prompts /tmp/axis4_m4/eval_prompts.jsonl \
+    --validation-threshold 0.95 \
+    --rep-selection kl_attribution \
+    --device mps --dtype float32 \
+    --output-dir /tmp/axis4_m4/rung4_native/
 ```
 
 ## Reading the results
