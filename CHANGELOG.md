@@ -272,6 +272,43 @@ their corresponding OpenSpec change is archived.
   weights through three bases, and then silently dropped the bridges
   on the forward pass. Llama, Gemma-2, and Qwen2 hybrid forges now
   work end-to-end. Default-off behavior is byte-identical to today.
+### Added (adaptive-regrow)
+
+- **Adaptive regrow controller** in `BasisMachine`. Opt-in via
+  `--adaptive-regrow` (or `ForgePipeline(adaptive_regrow=True)`).
+  Consumes the polygram-side `n_features_kept` signal and grows the
+  basis toward `--n-features-target`, bounded by
+  `[regrow_count, regrow_max]` and damped by `--regrow-damping`.
+  Defaults preserve byte-equivalence with the v0.2 fixed-regrow path
+  (the master toggle is off by default; the byte-equivalence gate
+  continues to pass unmodified).
+- `saeforge.basis.RegrowController.next_count(...)` — deterministic
+  pure-function controller; testable in isolation.
+- `saeforge.actions.adapt_and_regrow` — composed action that wraps
+  `perform_regrowth` with the controller. Short-circuits to
+  `perform_regrowth` under disabled / cold-start, so v0.2 behavior is
+  bit-for-bit identical.
+- Four new CLI flags on `sae-forge forge`: `--adaptive-regrow`,
+  `--regrow-max`, `--n-features-target`, `--regrow-damping`.
+- Four new `ForgePipeline` fields: `adaptive_regrow`, `regrow_max`,
+  `n_features_target`, `regrow_damping`. Validated in
+  `__post_init__` when the master toggle is on (require
+  `regrow_max > regrow_count` AND `n_features_target > 0`); silently
+  inert otherwise.
+
+### Changed (adaptive-regrow)
+
+- `BasisMachine`'s `compressed → regrown` transition action renames
+  from `perform_regrowth` to `adapt_and_regrow`. State set,
+  transition graph, and guard expressions are unchanged — the
+  topology test (`tests/fsm/test_topology.py`) continues to pass.
+  The committed Mermaid diagram in `docs/advanced-fsm-options.md`
+  regenerates with one label change.
+- `transitions_log` schema is additive — under
+  `adaptive_regrow=True`, each regrow cycle gains one extra entry
+  (`adapt_regrow_count`) before the existing `perform_regrowth`
+  entry. Under `adaptive_regrow=False` the log shape is byte-identical
+  to v0.2.
 
 ### Changed (hierarchical-fsm)
 

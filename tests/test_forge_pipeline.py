@@ -224,6 +224,80 @@ def test_run_imperative_warns_when_finetune_corpus_set(
 # ---------------------------------------------------------------------------
 
 
+def _minimal_regrow_config():
+    """Cheap RegrowConfig stand-in so the adaptive validation matrix can
+    exercise the new ``__post_init__`` branch without tripping the older
+    ``regrow_count > 0 requires regrow`` check.
+    """
+    pytest.importorskip("polygram")
+    from polygram import RegrowConfig
+
+    return RegrowConfig(model_name="gpt2", layer=0)
+
+
+def test_adaptive_regrow_without_regrow_max_raises_value_error(tiny_synthetic_basis):
+    """``adaptive_regrow=True`` requires ``regrow_max > regrow_count``."""
+    projector = SubspaceProjector(tiny_synthetic_basis)
+    with pytest.raises(ValueError, match=r"regrow_max"):
+        ForgePipeline(
+            basis=tiny_synthetic_basis,
+            projector=projector,
+            regrow=_minimal_regrow_config(),
+            adaptive_regrow=True,
+            regrow_count=5,
+            regrow_max=0,
+            n_features_target=128,
+        )
+
+
+def test_adaptive_regrow_with_regrow_max_below_regrow_count_raises(tiny_synthetic_basis):
+    """``regrow_max <= regrow_count`` is incoherent under adaptation."""
+    projector = SubspaceProjector(tiny_synthetic_basis)
+    with pytest.raises(ValueError, match=r"regrow_max"):
+        ForgePipeline(
+            basis=tiny_synthetic_basis,
+            projector=projector,
+            regrow=_minimal_regrow_config(),
+            adaptive_regrow=True,
+            regrow_count=10,
+            regrow_max=10,
+            n_features_target=128,
+        )
+
+
+def test_adaptive_regrow_without_n_features_target_raises(tiny_synthetic_basis):
+    """``adaptive_regrow=True`` requires ``n_features_target > 0``."""
+    projector = SubspaceProjector(tiny_synthetic_basis)
+    with pytest.raises(ValueError, match=r"n_features_target"):
+        ForgePipeline(
+            basis=tiny_synthetic_basis,
+            projector=projector,
+            regrow=_minimal_regrow_config(),
+            adaptive_regrow=True,
+            regrow_count=5,
+            regrow_max=32,
+            n_features_target=0,
+        )
+
+
+def test_adaptive_regrow_disabled_silently_accepts_other_knobs(tiny_synthetic_basis):
+    """When master toggle is off, the dependent knobs are inert (no validation)."""
+    projector = SubspaceProjector(tiny_synthetic_basis)
+    # Should construct without error even with ostensibly-incoherent knobs;
+    # no ``regrow=`` is needed because ``regrow_count`` is the default 0.
+    pipeline = ForgePipeline(
+        basis=tiny_synthetic_basis,
+        projector=projector,
+        adaptive_regrow=False,
+        regrow_max=99,
+        n_features_target=999,
+        regrow_damping=0.7,
+    )
+    assert pipeline.adaptive_regrow is False
+    assert pipeline.regrow_max == 99
+    assert pipeline.n_features_target == 999
+
+
 def test_run_fsm_raises_forge_failed_on_action_error(
     tiny_gpt2, tiny_synthetic_basis, tmp_path
 ):

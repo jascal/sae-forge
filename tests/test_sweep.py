@@ -1125,9 +1125,7 @@ class TestProvenanceRowPopulation:
     def test_success_path_carries_provenance(
         self, tmp_path, synthetic_compressed_sae, stub_basis_swap, monkeypatch
     ):
-        from saeforge.auto_materialise import AutoMaterialiseSpec
         from saeforge.sweep import _process_row
-        from unittest import mock
 
         pipeline = _StubPipeline()  # .run succeeds, returns _StubResult
         result = _process_row(

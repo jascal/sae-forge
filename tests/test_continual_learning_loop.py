@@ -55,6 +55,19 @@ def _build_stub_table(transcript: list[str], advance_predicate=None):
         transcript.append("scan_activations")
         return {}
 
+    def adapt_and_regrow_stub(c, _payload=None):
+        # adaptive-regrow: the FSM's `compressed → regrown` transition
+        # now dispatches `adapt_and_regrow`, which short-circuits to
+        # `perform_regrowth` when adaptive_regrow=False (the v0.2
+        # byte-equivalent path). When adaptive_regrow=True, the
+        # controller logs one extra `adapt_regrow_count` entry BEFORE
+        # the perform_regrowth log entry. The stub mirrors that
+        # transcript-shape contract.
+        if c.get("adaptive_regrow"):
+            transcript.append("adapt_regrow_count")
+        transcript.append("perform_regrowth")
+        return {"inner_refine_idx": c.get("inner_refine_idx", 0) + 1}
+
     table = {
         name: make(name)
         for name in (
@@ -72,6 +85,7 @@ def _build_stub_table(transcript: list[str], advance_predicate=None):
         )
     }
     table["load_and_scan"] = load_and_scan_stub
+    table["adapt_and_regrow"] = adapt_and_regrow_stub
     return table
 
 
