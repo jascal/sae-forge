@@ -1105,3 +1105,94 @@ class TestAutoMaterialiseCLIValidation:
             "--force-rematerialise",
         ])
         assert rc == 2
+
+
+# ---------------------------------------------------------------------------
+# Provenance row population (live regression for the indent-mismatch bug
+# the first MBP Axis-4 smoke surfaced: the success-path ParetoFrontierRow
+# construction was missing the three provenance kwargs because an
+# earlier replace_all only matched 8-space-indent sites and missed the
+# 4-space-indent function-level return.)
+# ---------------------------------------------------------------------------
+
+
+class TestProvenanceRowPopulation:
+    """Pin that provenance fields flow through to ALL three _process_row
+    exit paths: success, failure, frontier-only. The first MBP smoke
+    revealed the success path was missing them.
+    """
+
+    def test_success_path_carries_provenance(
+        self, tmp_path, synthetic_compressed_sae, stub_basis_swap, monkeypatch
+    ):
+        from saeforge.auto_materialise import AutoMaterialiseSpec
+        from saeforge.sweep import _process_row
+        from unittest import mock
+
+        pipeline = _StubPipeline()  # .run succeeds, returns _StubResult
+        result = _process_row(
+            pipeline=pipeline,
+            label="rung4",
+            target_k=2,
+            ckpt_path=tmp_path / "fake.safetensors",
+            manifest_entry=None,
+            sweep_output_dir=tmp_path,
+            frontier_only=False,
+            forge_kwargs={},
+            host_d_model=768,
+            basis_rank=4,
+            quality_ratio=0.005,
+            quality_tier="degenerate",
+            provenance_validation_threshold=0.95,
+            provenance_encoding_class="Rung4",
+            provenance_validation_eval_overlap=False,
+        )
+        # Pre-fix, validation_threshold/encoding_class/validation_eval_overlap
+        # would all be None here. Post-fix, they carry through.
+        assert result.validation_threshold == 0.95
+        assert result.encoding_class == "Rung4"
+        assert result.validation_eval_overlap is False
+
+    def test_failure_path_carries_provenance(self, tmp_path, stub_basis_swap):
+        from saeforge.sweep import _process_row
+
+        pipeline = _StubPipeline(raise_on_calls=(1,))
+        result = _process_row(
+            pipeline=pipeline,
+            label="rung4",
+            target_k=2,
+            ckpt_path=tmp_path / "fake.safetensors",
+            manifest_entry=None,
+            sweep_output_dir=tmp_path,
+            frontier_only=False,
+            forge_kwargs={},
+            provenance_validation_threshold=0.7,
+            provenance_encoding_class="MPSRung1",
+            provenance_validation_eval_overlap=True,
+        )
+        assert result.error_message is not None  # forge raised
+        assert result.validation_threshold == 0.7
+        assert result.encoding_class == "MPSRung1"
+        assert result.validation_eval_overlap is True
+
+    def test_frontier_only_path_carries_provenance(self, tmp_path, stub_basis_swap):
+        from saeforge.sweep import _process_row
+
+        pipeline = _StubPipeline()  # never called under frontier_only
+        result = _process_row(
+            pipeline=pipeline,
+            label="rung4",
+            target_k=2,
+            ckpt_path=tmp_path / "fake.safetensors",
+            manifest_entry=None,
+            sweep_output_dir=tmp_path,
+            frontier_only=True,
+            forge_kwargs={},
+            provenance_validation_threshold=0.95,
+            provenance_encoding_class="HEA_Rung2",
+            provenance_validation_eval_overlap=False,
+        )
+        assert pipeline._call_count == 0
+        assert result.validation_threshold == 0.95
+        assert result.encoding_class == "HEA_Rung2"
+        assert result.validation_eval_overlap is False

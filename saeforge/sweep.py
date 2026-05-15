@@ -860,4 +860,7 @@ def _process_row(
         basis_rank=basis_rank,
         quality_ratio=quality_ratio,
         quality_tier=quality_tier,
+        validation_threshold=provenance_validation_threshold,
+        encoding_class=provenance_encoding_class,
+        validation_eval_overlap=provenance_validation_eval_overlap,
     )
