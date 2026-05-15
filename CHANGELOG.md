@@ -5,6 +5,54 @@ their corresponding OpenSpec change is archived.
 
 ## [Unreleased]
 
+### Added (add-auto-materialise-sweep)
+
+- **One-tool Axis-4 workflow.** `sae-forge sweep-pareto --auto-materialise`
+  bundles polygram's `BehaviouralValidator → Compressor.plan_pareto →
+  apply` into the same invocation, with the
+  validation-vs-eval-prompts leakage firewall as a first-class API
+  constraint (refused same-path resolution by default;
+  `--allow-validation-eval-overlap` surfaces the choice in every
+  frontier row's `validation_eval_overlap` field).
+- **New CLI flags** on `sweep-pareto`: `--auto-materialise`,
+  `--validation-prompts`, `--pareto`, `--layer`,
+  `--validation-threshold`, `--validation-jaccard-threshold`,
+  `--score-field`, `--rep-selection` (passes polygram 0.5.0's
+  `kl_attribution` through), `--encoding-class LABEL:CLASS`
+  (repeatable), `--encoding-qubits LABEL:N` (repeatable),
+  `--allow-validation-eval-overlap`, `--force-rematerialise`,
+  `--plan-only`.
+- **`ParetoFrontierRow` gains three methodological provenance
+  fields**: `validation_threshold`, `encoding_class`,
+  `validation_eval_overlap`. Populated only under
+  `--auto-materialise`; default `None`. Backwards-compatible (old
+  consumers see null).
+- **Cache under `<output-dir>/_materialised/<label>/`**, content-
+  addressed via SHA-256 of the SAE checkpoint and validation prompts
+  plus the threshold/encoding/layer/targets fields. Reruns with
+  unchanged inputs skip the validator + Compressor entirely.
+  `--force-rematerialise` is the escape hatch.
+- **`--plan-only`**: prints per-encoding cache status
+  (`HIT` / `MISS` with diffing-fields), SHA-256 fingerprints,
+  target K list, validator-forward-count estimate, then exits 0
+  without invoking validator / Compressor / forge. Mutually
+  exclusive with `--frontier-only` (different lifecycle stages).
+- **`saeforge.auto_materialise` module**: `AutoMaterialiseSpec`
+  dataclass, `compute_cache_key`, `is_cache_hit`,
+  `materialise()`, `format_plan_only_block`. Numpy-only on the cold
+  paths; lazy polygram + transformers imports.
+- **CLI refusal behaviour** spelled out in the spec: validator-tuning
+  flags require `--auto-materialise`; mixed mode (auto + directory
+  encoding paths) refused; same-path validation/eval prompts refused
+  unless overridden; unknown encoding class names refused at parse
+  time with the supported set listed; `HEA_Rung2` without
+  `--encoding-qubits` defaults `n_qubits=3` (polygram default).
+- **ClusteredDictionary explicitly excluded.** The supported encoding
+  class set is `MPSRung1` / `Rung3` / `Rung4` / `HEA_Rung2` —
+  `BehaviouralValidator.__post_init__` requires `.features` access
+  that `ClusteredDictionary` doesn't satisfy. For N>8 SAEs, use
+  `HEA_Rung2(n_qubits=N)`.
+
 ### Added (add-forge-quality-diagnostics)
 
 - **Forge-quality diagnostics on every sweep row.** `ParetoFrontierRow`

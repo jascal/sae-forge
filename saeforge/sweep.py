@@ -26,10 +26,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterator, Mapping
 
 if TYPE_CHECKING:
-    from saeforge.forge_quality import QualityThresholds  # noqa: F401
-
-if TYPE_CHECKING:
+    from saeforge.auto_materialise import AutoMaterialiseSpec  # noqa: F401
     from saeforge.forge import ForgePipeline
+    from saeforge.forge_quality import QualityThresholds  # noqa: F401
 
 
 _K_FROM_FILENAME = re.compile(r"^k_(\d+)\.safetensors$")
@@ -63,6 +62,12 @@ class ParetoFrontierRow:
     basis_rank: int | None = None
     quality_ratio: float | None = None
     quality_tier: str | None = None
+    # Methodological provenance, populated when the sweep ran under
+    # `--auto-materialise`. See ``saeforge.auto_materialise`` and the
+    # ``add-auto-materialise-sweep`` capability for the contract.
+    validation_threshold: float | None = None
+    encoding_class: str | None = None
+    validation_eval_overlap: bool | None = None
 
     def __post_init__(self) -> None:
         if int(self.target_n_features_kept) < 1:
@@ -136,6 +141,9 @@ class ParetoFrontierRow:
             ),
             "quality_ratio": _finite_or_none(self.quality_ratio),
             "quality_tier": self.quality_tier,
+            "validation_threshold": _finite_or_none(self.validation_threshold),
+            "encoding_class": self.encoding_class,
+            "validation_eval_overlap": self.validation_eval_overlap,
         }
 
     @classmethod
@@ -194,6 +202,21 @@ class ParetoFrontierRow:
             quality_tier=(
                 str(data["quality_tier"])
                 if data.get("quality_tier") is not None
+                else None
+            ),
+            validation_threshold=(
+                float(data["validation_threshold"])
+                if data.get("validation_threshold") is not None
+                else None
+            ),
+            encoding_class=(
+                str(data["encoding_class"])
+                if data.get("encoding_class") is not None
+                else None
+            ),
+            validation_eval_overlap=(
+                bool(data["validation_eval_overlap"])
+                if data.get("validation_eval_overlap") is not None
                 else None
             ),
         )
@@ -475,6 +498,17 @@ def sweep_pareto(
     quality_floor: float | None = None,
     quality_thresholds: "QualityThresholds | None" = None,
     host_d_model_override: int | None = None,
+    auto_materialise_specs: "list[AutoMaterialiseSpec] | None" = None,
+    validation_prompts: Path | None = None,
+    validation_threshold: float = 0.7,
+    validation_jaccard_threshold: float = 0.3,
+    layer: int | None = None,
+    targets: list[int] | None = None,
+    score_field: str = "polygram_overlap",
+    rep_selection: str = "scale_aware",
+    validation_eval_overlap: bool = False,
+    force_rematerialise: bool = False,
+    plan_only: bool = False,
     **forge_kwargs: Any,
 ) -> Path:
     """Run the forge pipeline across per-K SAE checkpoints.
@@ -513,6 +547,105 @@ def sweep_pareto(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     frontier_path = output_dir / "frontier.jsonl"
+
+    # Auto-materialise pre-step. When auto_materialise_specs is supplied,
+    # run polygram's validator + plan_pareto + apply chain per spec,
+    # writing artifacts to `<output_dir>/_materialised/<label>/`. Then
+    # override the `encodings` arg's interpretation: each (label, path)
+    # gets remapped to the materialised dir for the subsequent sweep
+    # loop. Methodological provenance fields (validation_threshold,
+    # encoding_class, validation_eval_overlap) are accumulated per label
+    # and propagated to every row.
+    per_label_provenance: dict[str, dict[str, Any]] = {}
+    if auto_materialise_specs is not None:
+        if validation_prompts is None:
+            raise ValueError(
+                "sweep_pareto: auto_materialise_specs requires "
+                "validation_prompts to be set"
+            )
+        if layer is None:
+            raise ValueError(
+                "sweep_pareto: auto_materialise_specs requires layer to be set"
+            )
+        if targets is None or not targets:
+            raise ValueError(
+                "sweep_pareto: auto_materialise_specs requires non-empty targets"
+            )
+        host_model_id = getattr(pipeline, "host_model_id", None)
+        if host_model_id is None:
+            raise ValueError(
+                "sweep_pareto: auto_materialise_specs requires pipeline.host_model_id"
+            )
+
+        from saeforge.auto_materialise import (
+            AutoMaterialiseSpec as _AutoMaterialiseSpec,  # noqa: F401
+            estimate_prompt_token_count,
+            format_plan_only_block,
+            is_cache_hit as _is_cache_hit,
+            materialise as _materialise,
+            compute_cache_key as _compute_cache_key,
+        )
+
+        # --plan-only: short-circuit BEFORE doing any expensive work.
+        if plan_only:
+            plan_blocks: list[str] = []
+            for spec in auto_materialise_specs:
+                cache_key = _compute_cache_key(
+                    spec=spec,
+                    validation_prompts_path=validation_prompts,
+                    validation_threshold=validation_threshold,
+                    jaccard_threshold=validation_jaccard_threshold,
+                    layer=layer,
+                    model_name=host_model_id,
+                    targets=targets,
+                    score_field=score_field,
+                    rep_selection=rep_selection,
+                )
+                materialised_dir = output_dir / "_materialised" / spec.label
+                if force_rematerialise:
+                    cache_hit, diff_fields = False, ["forced"]
+                else:
+                    cache_hit, diff_fields = _is_cache_hit(materialised_dir, cache_key)
+                n_prompts, avg_tokens = estimate_prompt_token_count(validation_prompts)
+                plan_blocks.append(
+                    format_plan_only_block(
+                        spec=spec,
+                        cache_key=cache_key,
+                        diff_fields=diff_fields,
+                        cache_hit=cache_hit,
+                        n_prompts=n_prompts,
+                        avg_prompt_tokens=avg_tokens,
+                    )
+                )
+
+            print("sweep-pareto --plan-only: per-encoding plan", file=sys.stderr)
+            for block in plan_blocks:
+                print(block, file=sys.stderr)
+            return frontier_path  # No frontier.jsonl written under --plan-only
+
+        # Real materialisation pass — produces per-label materialised dirs.
+        remapped_encodings: list[tuple[str, Path]] = []
+        for spec in auto_materialise_specs:
+            materialised_dir, cache_key, _diff = _materialise(
+                spec,
+                validation_prompts_path=validation_prompts,
+                validation_threshold=validation_threshold,
+                jaccard_threshold=validation_jaccard_threshold,
+                layer=layer,
+                model_name=host_model_id,
+                targets=targets,
+                score_field=score_field,
+                rep_selection=rep_selection,
+                output_root=output_dir,
+                force_rematerialise=force_rematerialise,
+            )
+            remapped_encodings.append((spec.label, materialised_dir))
+            per_label_provenance[spec.label] = {
+                "validation_threshold": float(validation_threshold),
+                "encoding_class": spec.encoding_class,
+                "validation_eval_overlap": bool(validation_eval_overlap),
+            }
+        encodings = remapped_encodings
 
     # Forge-quality diagnostics: resolve host d_model once, build the
     # advisory, enforce --quality-floor if set. All three are best-effort
@@ -584,6 +717,7 @@ def sweep_pareto(
                 basis_rank, quality_ratio, quality_tier = _compute_row_diagnostics(
                     ckpt_path, host_d_model, thresholds
                 )
+                provenance = per_label_provenance.get(label, {})
                 row = _process_row(
                     pipeline=pipeline,
                     label=label,
@@ -597,6 +731,11 @@ def sweep_pareto(
                     basis_rank=basis_rank,
                     quality_ratio=quality_ratio,
                     quality_tier=quality_tier,
+                    provenance_validation_threshold=provenance.get("validation_threshold"),
+                    provenance_encoding_class=provenance.get("encoding_class"),
+                    provenance_validation_eval_overlap=provenance.get(
+                        "validation_eval_overlap"
+                    ),
                 )
                 fh.write(json.dumps(row.to_json_dict()) + "\n")
                 fh.flush()
@@ -625,6 +764,9 @@ def _process_row(
     basis_rank: int | None = None,
     quality_ratio: float | None = None,
     quality_tier: str | None = None,
+    provenance_validation_threshold: float | None = None,
+    provenance_encoding_class: str | None = None,
+    provenance_validation_eval_overlap: bool | None = None,
 ) -> ParetoFrontierRow:
     """Build one frontier row — manifest-only when ``frontier_only``, otherwise
     invoke ``pipeline.run`` inside a try/except.
@@ -664,6 +806,9 @@ def _process_row(
             basis_rank=basis_rank,
             quality_ratio=quality_ratio,
             quality_tier=quality_tier,
+            validation_threshold=provenance_validation_threshold,
+            encoding_class=provenance_encoding_class,
+            validation_eval_overlap=provenance_validation_eval_overlap,
         )
 
     row_output_dir = sweep_output_dir / label / f"k_{target_k}"
@@ -692,6 +837,9 @@ def _process_row(
             basis_rank=basis_rank,
             quality_ratio=quality_ratio,
             quality_tier=quality_tier,
+            validation_threshold=provenance_validation_threshold,
+            encoding_class=provenance_encoding_class,
+            validation_eval_overlap=provenance_validation_eval_overlap,
         )
 
     elapsed = time.monotonic() - started

@@ -874,3 +874,234 @@ class TestCLIQualityFlags:
             "--quality-tier-thresholds", "saturated:0.5,good:1.0,undersized:0.25",
         ])
         assert rc == 2
+
+
+# ---------------------------------------------------------------------------
+# Auto-materialise CLI validation
+# ---------------------------------------------------------------------------
+
+
+class TestAutoMaterialiseCLIValidation:
+    """Refusal scenarios for the new --auto-materialise CLI flags.
+
+    These tests don't run materialisation end-to-end — that requires real
+    torch + a host model. They focus on the validation/refusal contract
+    spelled out in the spec.
+    """
+
+    def _common_args(self, tmp_path, sae_file):
+        return [
+            "sweep-pareto",
+            "--encoding", f"mps:{sae_file}",
+            "--host-model", "gpt2",
+            "--output-dir", str(tmp_path / "out"),
+        ]
+
+    def _make_sae_file(self, tmp_path, synthetic_compressed_sae):
+        """Provide a single .safetensors file path (no dir layout)."""
+        return synthetic_compressed_sae["checkpoint"]
+
+    def test_validator_flags_without_auto_materialise_refused(
+        self, tmp_path, synthetic_compressed_sae
+    ):
+        sae_file = self._make_sae_file(tmp_path, synthetic_compressed_sae)
+        from saeforge.cli import main
+
+        # Build a directory layout for the non-auto-materialise mode.
+        encoding_dir = _make_pareto_dir(
+            tmp_path / "mps", sae_file, targets=[2],
+        )
+        rc = main([
+            "sweep-pareto",
+            "--encoding", f"mps:{encoding_dir}",
+            "--host-model", "gpt2",
+            "--output-dir", str(tmp_path / "out"),
+            "--frontier-only",
+            "--validation-threshold", "0.95",
+        ])
+        assert rc == 2
+
+    def test_auto_materialise_with_dir_path_refused(
+        self, tmp_path, synthetic_compressed_sae, capsys
+    ):
+        """--auto-materialise + --encoding LABEL:DIR is mixed mode → refuse."""
+        sae_file = self._make_sae_file(tmp_path, synthetic_compressed_sae)
+        encoding_dir = _make_pareto_dir(tmp_path / "mps", sae_file, targets=[2])
+        validation = tmp_path / "v.txt"
+        validation.write_text("hello\n")
+        eval_p = tmp_path / "e.txt"
+        eval_p.write_text("world\n")
+        from saeforge.cli import main
+
+        rc = main([
+            "sweep-pareto",
+            "--auto-materialise",
+            "--encoding", f"mps:{encoding_dir}",
+            "--host-model", "gpt2",
+            "--output-dir", str(tmp_path / "out"),
+            "--validation-prompts", str(validation),
+            "--eval-prompts", str(eval_p),
+            "--pareto", "2",
+            "--layer", "8",
+        ])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "single .safetensors file" in err or "Mixed mode" in err
+
+    def test_same_path_validation_eval_refused_by_default(
+        self, tmp_path, synthetic_compressed_sae, capsys
+    ):
+        """--validation-prompts == --eval-prompts → refused unless --allow-...overlap."""
+        sae_file = self._make_sae_file(tmp_path, synthetic_compressed_sae)
+        shared = tmp_path / "shared.txt"
+        shared.write_text("hello\n")
+        from saeforge.cli import main
+
+        rc = main([
+            "sweep-pareto",
+            "--auto-materialise",
+            "--encoding", f"mps:{sae_file}",
+            "--host-model", "gpt2",
+            "--output-dir", str(tmp_path / "out"),
+            "--validation-prompts", str(shared),
+            "--eval-prompts", str(shared),
+            "--pareto", "2",
+            "--layer", "8",
+        ])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "leakage" in err.lower()
+
+    def test_missing_required_flags_refused(
+        self, tmp_path, synthetic_compressed_sae, capsys
+    ):
+        """--auto-materialise without --pareto/--layer/--validation-prompts → refuse."""
+        sae_file = self._make_sae_file(tmp_path, synthetic_compressed_sae)
+        from saeforge.cli import main
+
+        rc = main([
+            "sweep-pareto",
+            "--auto-materialise",
+            "--encoding", f"mps:{sae_file}",
+            "--host-model", "gpt2",
+            "--output-dir", str(tmp_path / "out"),
+        ])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "requires" in err.lower()
+
+    def test_plan_only_and_frontier_only_mutually_exclusive(
+        self, tmp_path, synthetic_compressed_sae, capsys
+    ):
+        sae_file = self._make_sae_file(tmp_path, synthetic_compressed_sae)
+        validation = tmp_path / "v.txt"
+        validation.write_text("hello\n")
+        eval_p = tmp_path / "e.txt"
+        eval_p.write_text("world\n")
+        from saeforge.cli import main
+
+        rc = main([
+            "sweep-pareto",
+            "--auto-materialise",
+            "--encoding", f"mps:{sae_file}",
+            "--host-model", "gpt2",
+            "--output-dir", str(tmp_path / "out"),
+            "--validation-prompts", str(validation),
+            "--eval-prompts", str(eval_p),
+            "--pareto", "2",
+            "--layer", "8",
+            "--frontier-only",
+            "--plan-only",
+        ])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "mutually exclusive" in err.lower()
+
+    def test_plan_only_without_auto_materialise_refused(
+        self, tmp_path, synthetic_compressed_sae
+    ):
+        sae_file = self._make_sae_file(tmp_path, synthetic_compressed_sae)
+        encoding_dir = _make_pareto_dir(tmp_path / "mps", sae_file, targets=[2])
+        from saeforge.cli import main
+
+        rc = main([
+            "sweep-pareto",
+            "--encoding", f"mps:{encoding_dir}",
+            "--host-model", "gpt2",
+            "--output-dir", str(tmp_path / "out"),
+            "--plan-only",
+        ])
+        assert rc == 2
+
+    def test_unknown_encoding_class_refused(
+        self, tmp_path, synthetic_compressed_sae, capsys
+    ):
+        sae_file = self._make_sae_file(tmp_path, synthetic_compressed_sae)
+        validation = tmp_path / "v.txt"
+        validation.write_text("hello\n")
+        eval_p = tmp_path / "e.txt"
+        eval_p.write_text("world\n")
+        from saeforge.cli import main
+
+        rc = main([
+            "sweep-pareto",
+            "--auto-materialise",
+            "--encoding", f"mps:{sae_file}",
+            "--encoding-class", "mps:Bogus",
+            "--host-model", "gpt2",
+            "--output-dir", str(tmp_path / "out"),
+            "--validation-prompts", str(validation),
+            "--eval-prompts", str(eval_p),
+            "--pareto", "2",
+            "--layer", "8",
+        ])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "Bogus" in err or "supported" in err.lower()
+
+    def test_plan_only_on_cold_cache_prints_miss(
+        self, tmp_path, synthetic_compressed_sae, capsys
+    ):
+        """--plan-only with no prior materialisation prints MISS (cold) to stderr."""
+        sae_file = self._make_sae_file(tmp_path, synthetic_compressed_sae)
+        validation = tmp_path / "v.txt"
+        validation.write_text("hello\n")
+        eval_p = tmp_path / "e.txt"
+        eval_p.write_text("world\n")
+        from saeforge.cli import main
+
+        rc = main([
+            "sweep-pareto",
+            "--auto-materialise",
+            "--encoding", f"mps:{sae_file}",
+            "--host-model", "gpt2",
+            "--output-dir", str(tmp_path / "out"),
+            "--validation-prompts", str(validation),
+            "--eval-prompts", str(eval_p),
+            "--pareto", "2,4",
+            "--layer", "8",
+            "--plan-only",
+        ])
+        assert rc == 0
+        err = capsys.readouterr().err
+        assert "label=mps" in err
+        assert "cache_status=MISS" in err
+        assert "cold" in err
+        # No frontier.jsonl written.
+        assert not (tmp_path / "out" / "frontier.jsonl").is_file()
+
+    def test_force_rematerialise_without_auto_materialise_refused(
+        self, tmp_path, synthetic_compressed_sae
+    ):
+        sae_file = self._make_sae_file(tmp_path, synthetic_compressed_sae)
+        encoding_dir = _make_pareto_dir(tmp_path / "mps", sae_file, targets=[2])
+        from saeforge.cli import main
+
+        rc = main([
+            "sweep-pareto",
+            "--encoding", f"mps:{encoding_dir}",
+            "--host-model", "gpt2",
+            "--output-dir", str(tmp_path / "out"),
+            "--force-rematerialise",
+        ])
+        assert rc == 2

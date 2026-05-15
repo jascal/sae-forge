@@ -450,6 +450,17 @@ class ForgePipeline:
         quality_floor: float | None = None,
         quality_thresholds: Any = None,
         host_d_model_override: int | None = None,
+        auto_materialise_specs: Any = None,
+        validation_prompts: "str | Path | None" = None,
+        validation_threshold: float = 0.7,
+        validation_jaccard_threshold: float = 0.3,
+        layer: int | None = None,
+        targets: list[int] | None = None,
+        score_field: str = "polygram_overlap",
+        rep_selection: str = "scale_aware",
+        validation_eval_overlap: bool = False,
+        force_rematerialise: bool = False,
+        plan_only: bool = False,
         **forge_kwargs: Any,
     ) -> Path:
         """Forge across per-K materialised SAE checkpoints; emit a JSONL frontier.
@@ -474,6 +485,9 @@ class ForgePipeline:
         from saeforge.sweep import sweep_pareto as _sweep_pareto
 
         normalized = [(label, Path(path)) for label, path in encodings]
+        validation_prompts_path = (
+            Path(validation_prompts) if validation_prompts is not None else None
+        )
         return _sweep_pareto(
             self,
             encodings=normalized,
@@ -482,6 +496,17 @@ class ForgePipeline:
             quality_floor=quality_floor,
             quality_thresholds=quality_thresholds,
             host_d_model_override=host_d_model_override,
+            auto_materialise_specs=auto_materialise_specs,
+            validation_prompts=validation_prompts_path,
+            validation_threshold=validation_threshold,
+            validation_jaccard_threshold=validation_jaccard_threshold,
+            layer=layer,
+            targets=targets,
+            score_field=score_field,
+            rep_selection=rep_selection,
+            validation_eval_overlap=validation_eval_overlap,
+            force_rematerialise=force_rematerialise,
+            plan_only=plan_only,
             **forge_kwargs,
         )
 
