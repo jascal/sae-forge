@@ -182,15 +182,33 @@ class RegrowController:
         """Return the per-cycle ``effective_regrow_count`` bounded by
         ``[regrow_count, regrow_max]``.
 
-        Equation (linear, damped, bounded):
+        Equation (linear, damped, bounded; integer-valued):
 
             gap     = max(0, n_features_target - n_features_kept)
-            damped  = round(gap * regrow_damping)
+            damped  = int(round(gap * regrow_damping))
             return    max(regrow_count, min(damped, regrow_max))
+
+        The ``int(round(...))`` coercion is load-bearing: ``regrow_count``
+        is a feature count (integer), so the controller's return type is
+        ``int`` even when the inputs include ``regrow_damping`` as a
+        float. Tiebreak follows Python's banker's rounding (e.g.,
+        ``round(0.5) == 0``); in practice ``gap * regrow_damping`` is
+        rarely a half-integer, so this is determinism-preserving rather
+        than load-bearing semantically.
 
         When the basis already exceeds the target (``gap == 0``) the
         controller returns ``regrow_count`` — the v0.2 fallback. No
-        growth pressure beyond the configured base.
+        growth pressure beyond the configured base. See
+        ``tests/fsm/test_adaptive_regrow.py::TestController::test_target_reached_returns_regrow_count``.
+
+        **First-cycle handling** (before any compression has run): the
+        composed action ``adapt_and_regrow`` short-circuits to
+        ``perform_regrowth`` when the controller has no signal yet
+        (``current_feature_count`` is still 0 at the start of the
+        basis loop). The first regrow uses ``regrow_count`` verbatim;
+        the controller only kicks in once a compression pass has
+        written ``current_feature_count`` to ctx. See
+        ``tests/fsm/test_adaptive_regrow.py::TestComposedAction::test_cold_start_short_circuits_to_perform_regrowth``.
         """
         gap = max(0, int(n_features_target) - int(n_features_kept))
         damped = int(round(gap * float(regrow_damping)))
