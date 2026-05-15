@@ -177,12 +177,20 @@ def _load_pareto_manifest(checkpoint_dir: Path) -> dict[int, _ManifestEntry]:
 def _parse_pareto_manifest(path: Path) -> dict[int, _ManifestEntry]:
     """Parse polygram's ``pareto.json`` into a per-K lookup.
 
-    Uses the file's documented JSON schema (``outcomes`` list of objects with
-    ``target_k``, ``reached_target``, and a nested ``plan`` whose
-    ``n_features_kept`` is the representative count). We parse the JSON
-    directly rather than calling ``polygram.ParetoReport.from_json`` so a
-    schema mismatch surfaces as a focused ``KeyError`` rather than an opaque
-    polygram-side validation error.
+    The JSON schema (polygram 0.4.0 ``ParetoReport._serialize`` /
+    ``_outcome_to_dict``) emits each outcome as a flat object with
+    ``target_k``, ``reached_target``, ``clusters`` (list of cluster dicts),
+    and ``feature_ids``. ``n_features_kept`` is the count of cluster
+    representatives — ``len(outcome.clusters)`` — matching polygram's
+    own ``CompressionPlan.n_features_kept`` semantic (one survivor per
+    cluster, plus all the singleton features outside any cluster which
+    are not modelled here because the manifest's `feature_ids` already
+    enumerates only the features touched by compression).
+
+    We parse the JSON directly rather than calling
+    ``polygram.ParetoReport.from_json`` so a schema mismatch surfaces as
+    a focused ``KeyError`` rather than an opaque polygram-side validation
+    error.
     """
     payload = json.loads(path.read_text())
     out: dict[int, _ManifestEntry] = {}
@@ -190,7 +198,7 @@ def _parse_pareto_manifest(path: Path) -> dict[int, _ManifestEntry]:
         target_k = int(outcome["target_k"])
         out[target_k] = _ManifestEntry(
             target_k=target_k,
-            n_features_kept=int(outcome["plan"]["n_features_kept"]),
+            n_features_kept=int(len(outcome["clusters"])),
             reached_target=bool(outcome["reached_target"]),
         )
     return out

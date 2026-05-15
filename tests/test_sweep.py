@@ -118,6 +118,11 @@ def _make_pareto_dir(
         shutil.copy(sae_template, per_k_dir / f"k_{k}.safetensors")
 
     if write_manifest:
+        # Polygram's actual ParetoReport JSON schema: each outcome carries
+        # a flat `clusters` list (one entry per cluster representative),
+        # `feature_ids`, `target_k`, `reached_target`. `n_features_kept`
+        # is `len(clusters)`, not a stored field. See sweep.py
+        # `_parse_pareto_manifest` for the parser this matches.
         manifest = {
             "schema_version": 1,
             "sae_checkpoint": str(sae_template),
@@ -128,7 +133,19 @@ def _make_pareto_dir(
                 {
                     "target_k": k,
                     "reached_target": r,
-                    "plan": {"n_features_kept": a},
+                    "clusters": [
+                        {
+                            "cluster_id": cid,
+                            "members": [cid],
+                            "representative": cid,
+                            "zeroed": [],
+                            "cluster_norm_mean": None,
+                            "cluster_norm_std": None,
+                            "merged_norm": None,
+                        }
+                        for cid in range(a)
+                    ],
+                    "feature_ids": list(range(a)),
                 }
                 for k, a, r in zip(targets, actuals, reached)
             ],
@@ -265,8 +282,19 @@ class TestParetoManifest:
             "score_field": "polygram_overlap",
             "targets": [2, 5],
             "outcomes": [
-                {"target_k": 2, "reached_target": True, "plan": {"n_features_kept": 2}},
-                {"target_k": 5, "reached_target": False, "plan": {"n_features_kept": 4}},
+                {
+                    "target_k": 2,
+                    "reached_target": True,
+                    "clusters": [{"cluster_id": 0, "members": [0], "representative": 0, "zeroed": []},
+                                 {"cluster_id": 1, "members": [1], "representative": 1, "zeroed": []}],
+                    "feature_ids": [0, 1],
+                },
+                {
+                    "target_k": 5,
+                    "reached_target": False,
+                    "clusters": [{"cluster_id": i, "members": [i], "representative": i, "zeroed": []} for i in range(4)],
+                    "feature_ids": [0, 1, 2, 3],
+                },
             ],
         }
         p = tmp_path / "pareto.json"
