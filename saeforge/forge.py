@@ -538,7 +538,7 @@ class ForgePipeline:
         # any host_model_id, which silently produced a randomly-initialised
         # GPT-2 for non-GPT-2 inputs (e.g. ``google/gemma-2-2b``).
         host = transformers.AutoModelForCausalLM.from_pretrained(
-            self.host_model_id, dtype=_torch_dtype(self.dtype)
+            self.host_model_id, torch_dtype=_torch_dtype(self.dtype)
         ).eval()
         bundle = self._build_hybrid_bundle(host)
         weights = self.projector.project_module(
@@ -607,7 +607,7 @@ class ForgePipeline:
         _write_basis_as_checkpoint(self.basis, sae_checkpoint)
 
         host = transformers.AutoModelForCausalLM.from_pretrained(
-            self.host_model_id, dtype=_torch_dtype(self.dtype)
+            self.host_model_id, torch_dtype=_torch_dtype(self.dtype)
         ).eval()
 
         # Pre-tokenise eval_prompts with the host's tokenizer so the FSM

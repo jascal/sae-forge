@@ -7,6 +7,15 @@ their corresponding OpenSpec change is archived.
 
 ### Added (add-pareto-sweep-driver)
 
+- **Bundled fix: `torch_dtype=` for transformers compat.** Two
+  `AutoModelForCausalLM.from_pretrained(..., dtype=...)` call sites
+  (`forge.py` `_run_real_imperative` and `_run_real_fsm`) used the
+  transformers≥4.50 `dtype=` alias, which doesn't exist on the
+  `[intel]` extra's pinned `transformers>=4.46,<4.50`. Switched both
+  to `torch_dtype=` — canonical name, works on both pin lines. Caught
+  during the live Axis-4 MBP smoke for this PR (latent regression from
+  PR #9, surfaced because the sweep is the first user-facing
+  multi-row path that triggers `from_pretrained` repeatedly on Intel).
 - **Pareto sweep driver.** New `saeforge sweep-pareto` CLI subcommand
   and `ForgePipeline.sweep_pareto()` method that forge across per-K
   materialised SAE checkpoints produced by
