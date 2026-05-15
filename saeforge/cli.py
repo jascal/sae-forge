@@ -333,7 +333,11 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="LABEL:N",
         help=(
             "[--auto-materialise only, repeatable, HEA_Rung2 only] "
-            "n_qubits for the named encoding. cap=2^N."
+            "n_qubits for the named encoding. cap=2^N. When omitted, "
+            "the encoding is constructed with polygram's default "
+            "(n_qubits=3, cap=8) — usually too small for stride-sampled "
+            "SAEs; pass --encoding-qubits LABEL:5 (cap=32) or higher "
+            "to match your sliced feature count."
         ),
     )
     sweep.add_argument(
@@ -849,6 +853,11 @@ def _cmd_sweep_pareto(args: argparse.Namespace) -> int:
                         file=sys.stderr,
                     )
                     return 2
+            # HEA_Rung2 requires `depth` (no polygram default). Default to
+            # depth=2, the standard HEA depth; expose --encoding-depth in a
+            # future PR if real callers need to tune it.
+            if enc_class == "HEA_Rung2":
+                enc_kwargs.setdefault("depth", 2)
             auto_materialise_specs.append(
                 AutoMaterialiseSpec(
                     label=label,

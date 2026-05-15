@@ -363,7 +363,38 @@ There are two ways to run an Axis-4 sweep:
 `sae-forge sweep-pareto --auto-materialise` collapses polygram-side
 compression and the per-K forge sweep into a single invocation, with
 the validation-vs-eval-prompts leakage firewall as a first-class API
-constraint:
+constraint.
+
+**Pre-flight first**: before paying validator cost, dry-run with
+`--plan-only` to inspect what would happen — per-encoding cache
+status, SHA-256 fingerprints of the SAE and validation prompts, the
+target K list, and an estimated validator-forward count:
+
+```bash
+sae-forge sweep-pareto --auto-materialise --plan-only \
+    --encoding mps:mps_sae.safetensors \
+    --host-model gpt2 --layer 8 \
+    --pareto 8,16,24,32 \
+    --validation-prompts data/validation.jsonl \
+    --eval-prompts data/eval.jsonl \
+    --output-dir runs/axis4/
+```
+
+Output (cold cache):
+
+```
+sweep-pareto --plan-only: per-encoding plan
+  label=mps
+    cache_status=MISS (cold)
+    sae_sha256=4f3a...
+    validation_prompts_sha256=1b9c...
+    targets=[8, 16, 24, 32]
+    encoding_class=MPSRung1
+    encoding_kwargs={}
+    validator_forward_count_estimate=2400
+```
+
+If everything looks right, drop `--plan-only` and run for real:
 
 ```bash
 sae-forge sweep-pareto \

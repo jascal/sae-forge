@@ -103,10 +103,18 @@ def compute_cache_key(
     """Compute the cache key for a materialisation run.
 
     Content-addressed via SHA-256 of the SAE checkpoint and the validation
-    prompts file — moving or renaming a file with identical content does
-    NOT invalidate the cache. Validator-tuning fields, encoding choice,
-    layer, model_name, and target K list are all included so any change
-    invalidates the cache.
+    prompts file (rather than their paths). Rationale: an analyst who
+    reorganises their data directory or symlinks a corpus into a new
+    location shouldn't trigger a multi-minute revalidation — the actual
+    bits the validator consumes haven't changed. Conversely, an in-place
+    edit to either file (e.g. appending prompts) updates the SHA and
+    correctly invalidates the cache. The path strings are also recorded
+    in the meta for human readability but they're not part of the cache
+    decision.
+
+    Validator-tuning fields, encoding choice, layer, model_name, and
+    target K list (sorted, deduplicated) are all included so any
+    meaningful change invalidates the cache.
     """
     return {
         "sae_checkpoint_sha256": _file_sha256(spec.sae_checkpoint),
@@ -137,8 +145,14 @@ def is_cache_hit(
     Returns ``(False, ["cold"])`` when ``auto_materialise_meta.json`` is
     absent. Returns ``(False, [...])`` listing any disk-vs-expected
     differences when the meta exists. Returns ``(True, [])`` when all
-    cache-key fields match AND every expected ``pareto/k_<K>.safetensors``
-    is present.
+    cache-decision fields match AND every expected
+    ``pareto/k_<K>.safetensors`` is present.
+
+    Path fields (``sae_checkpoint_path``, ``validation_prompts_path``) are
+    recorded in the meta for human readability but are **excluded from
+    the diff** — the cache is content-addressed via the corresponding
+    SHA-256 fields. Renaming or moving an input file with identical
+    content does NOT invalidate the cache.
     """
     meta_path = materialised_dir / "auto_materialise_meta.json"
     if not meta_path.is_file():
@@ -148,7 +162,15 @@ def is_cache_hit(
     except (OSError, json.JSONDecodeError):
         return False, ["meta_unreadable"]
 
-    diff_fields = [k for k in expected_key if on_disk.get(k) != expected_key[k]]
+    # Path fields are informational; they're not part of the cache
+    # decision. SHA-256 of the file content is the load-bearing check.
+    cache_decision_fields = [
+        k for k in expected_key if not k.endswith("_path")
+    ]
+    diff_fields = [
+        k for k in cache_decision_fields
+        if on_disk.get(k) != expected_key[k]
+    ]
     if diff_fields:
         return False, diff_fields
 

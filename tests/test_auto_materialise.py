@@ -83,6 +83,23 @@ class TestAutoMaterialiseSpec:
         )
         assert spec.encoding_kwargs["n_qubits"] == 5
 
+    def test_hea_rung2_polygram_default_is_n_qubits_3(self, tmp_path):
+        """Pins polygram's HEA_Rung2 default n_qubits=3 (cap=8). The CLI
+        help text describes the fallback users hit when --encoding-qubits
+        is omitted; this test guards against a silent polygram default
+        change.
+
+        Note: HEA_Rung2 also requires `depth`. The CLI handler defaults
+        depth=2 (standard) when --encoding-class HEA_Rung2 is set, so
+        callers only need to pass --encoding-qubits to fully configure
+        the encoding.
+        """
+        from polygram import HEA_Rung2
+
+        # depth=2 is the CLI's internal default; n_qubits=3 is polygram's.
+        default_instance = HEA_Rung2(depth=2)
+        assert default_instance.max_features == 8
+
 
 # ---------------------------------------------------------------------------
 # Encoding class registry
@@ -239,6 +256,26 @@ class TestIsCacheHit:
         hit, diff = is_cache_hit(materialised_dir, key)
         assert hit is False
         assert any("missing_k_4" in d for d in diff)
+
+    def test_hit_when_only_paths_differ(self, tmp_path):
+        """The cache is content-addressed: renaming or moving an input file
+        with identical content does NOT invalidate the cache. The
+        ``*_path`` fields are recorded in the meta for human inspection
+        but excluded from the cache-hit diff.
+        """
+        materialised_dir, key = self._setup(tmp_path)
+        # Write meta with different paths but same SHAs / other fields.
+        on_disk = dict(key)
+        on_disk["sae_checkpoint_path"] = "/somewhere/else/sae.safetensors"
+        on_disk["validation_prompts_path"] = "/elsewhere/prompts.txt"
+        (materialised_dir / "auto_materialise_meta.json").write_text(json.dumps(on_disk))
+        (materialised_dir / "pareto").mkdir()
+        for k in key["targets"]:
+            (materialised_dir / "pareto" / f"k_{k}.safetensors").write_text("")
+        hit, diff = is_cache_hit(materialised_dir, key)
+        assert hit is True, (
+            f"expected cache hit when only path fields differ; got diff={diff}"
+        )
 
 
 # ---------------------------------------------------------------------------
