@@ -76,6 +76,87 @@ class TestParserAcceptsTuningFlags:
         assert args.regrow_layer is None
 
 
+class TestParserAcceptsAdaptiveRegrowFlags:
+    def test_adaptive_regrow_flag_defaults_to_false(self):
+        parser = _build_parser()
+        args = parser.parse_args(
+            [
+                "forge",
+                "ckpt.safetensors",
+                "--host-model", "gpt2",
+                "--output-dir", "/tmp/out",
+            ]
+        )
+        assert args.adaptive_regrow is False
+        assert args.regrow_max == 0
+        assert args.n_features_target == 0
+        assert args.regrow_damping == 0.5
+
+    def test_all_adaptive_flags_recorded(self):
+        parser = _build_parser()
+        args = parser.parse_args(
+            [
+                "forge",
+                "ckpt.safetensors",
+                "--host-model", "gpt2",
+                "--output-dir", "/tmp/out",
+                "--regrow-count", "5",
+                "--regrow-layer", "8",
+                "--adaptive-regrow",
+                "--regrow-max", "64",
+                "--n-features-target", "300",
+                "--regrow-damping", "0.75",
+            ]
+        )
+        assert args.adaptive_regrow is True
+        assert args.regrow_max == 64
+        assert args.n_features_target == 300
+        assert args.regrow_damping == 0.75
+
+
+class TestAdaptiveRegrowMutuallyRequired:
+    def test_adaptive_regrow_without_regrow_max_exits_2(self, tmp_path, capsys):
+        ckpt = tmp_path / "fake.safetensors"
+        ckpt.write_bytes(b"")
+        from saeforge.cli import main
+
+        rc = main(
+            [
+                "forge",
+                str(ckpt),
+                "--host-model", "gpt2",
+                "--output-dir", str(tmp_path / "out"),
+                "--adaptive-regrow",
+                "--n-features-target", "300",
+                # NB: no --regrow-max.
+            ]
+        )
+        assert rc == 2
+        captured = capsys.readouterr()
+        assert "--adaptive-regrow" in captured.err
+        assert "--regrow-max" in captured.err
+
+    def test_adaptive_regrow_without_n_features_target_exits_2(self, tmp_path, capsys):
+        ckpt = tmp_path / "fake.safetensors"
+        ckpt.write_bytes(b"")
+        from saeforge.cli import main
+
+        rc = main(
+            [
+                "forge",
+                str(ckpt),
+                "--host-model", "gpt2",
+                "--output-dir", str(tmp_path / "out"),
+                "--adaptive-regrow",
+                "--regrow-max", "64",
+                # NB: no --n-features-target.
+            ]
+        )
+        assert rc == 2
+        captured = capsys.readouterr()
+        assert "--n-features-target" in captured.err
+
+
 class TestRegrowLayerRequiredWhenRegrowCountSet:
     def test_regrow_count_without_regrow_layer_exits_2(self, tmp_path, capsys):
         # Need a real-looking checkpoint path for FeatureBasis to fail

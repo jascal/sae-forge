@@ -205,6 +205,16 @@ class ForgePipeline:
     basis_lm_head: FeatureBasis | None = None
     bridge_config: BridgeConfig = field(default_factory=BridgeConfig)
 
+    # v0.5 adaptive-regrow knobs. All default to values that recover the
+    # v0.2 fixed-regrow behavior. The master toggle is ``adaptive_regrow``;
+    # when False, the other three are inert (silently ignored). When True,
+    # ``regrow_max > regrow_count`` and ``n_features_target > 0`` are
+    # required (validated in ``__post_init__``).
+    adaptive_regrow: bool = False
+    regrow_max: int = 0
+    n_features_target: int = 0
+    regrow_damping: float = 0.5
+
     # ----------------------------------------------------------------
     # Construction-time validation + dict round-trip
     # ----------------------------------------------------------------
@@ -329,6 +339,24 @@ class ForgePipeline:
                     f"d_model; got basis_embed.d_model={self.basis_embed.d_model}, "
                     f"basis.d_model={d_model}, "
                     f"basis_lm_head.d_model={self.basis_lm_head.d_model}"
+                )
+        if self.adaptive_regrow:
+            if self.regrow_max <= self.regrow_count:
+                raise ValueError(
+                    "ForgePipeline: adaptive_regrow=True requires "
+                    f"regrow_max > regrow_count (got regrow_max="
+                    f"{self.regrow_max}, regrow_count={self.regrow_count}). "
+                    "Pick a regrow_max that caps the largest per-cycle "
+                    "growth you'll tolerate; regrow_count is the base "
+                    "floor / fallback the controller honors when the "
+                    "target is reached."
+                )
+            if self.n_features_target <= 0:
+                raise ValueError(
+                    "ForgePipeline: adaptive_regrow=True requires "
+                    f"n_features_target > 0 (got {self.n_features_target}). "
+                    "Pick the target basis size the controller should "
+                    "grow toward."
                 )
 
     @classmethod
@@ -911,6 +939,13 @@ class ForgePipeline:
             "finetune_log_every": self.finetune_log_every,
             "finetune_distill_alpha": self.finetune_distill_alpha,
             "finetune_distill_temperature": self.finetune_distill_temperature,
+            # Adaptive-regrow knobs. Always written so the action layer
+            # can read them with ``ctx.get(...)``; ``adaptive_regrow=False``
+            # makes the other three inert.
+            "adaptive_regrow": self.adaptive_regrow,
+            "regrow_max": self.regrow_max,
+            "n_features_target": self.n_features_target,
+            "regrow_damping": self.regrow_damping,
             **self._build_continual_ctx(),
         }
 

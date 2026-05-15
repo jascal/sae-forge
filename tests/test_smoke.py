@@ -31,6 +31,8 @@ def test_public_surface_is_frozen() -> None:
         # QualityThresholds + QualityTier added by add-forge-quality-diagnostics.
         "QualityThresholds",
         "QualityTier",
+        # RegrowController added by adaptive-regrow.
+        "RegrowController",
         "SubspaceProjector",
         "__version__",
         "sweep_pareto",

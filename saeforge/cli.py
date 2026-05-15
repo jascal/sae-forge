@@ -372,6 +372,49 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    # Adaptive-regrow knobs. ``--adaptive-regrow`` is the master toggle;
+    # without it the other three are inert. With it, ``--regrow-max``
+    # and ``--n-features-target`` are mutually required (checked at
+    # argparse level for a fast CLI failure before any model is loaded).
+    forge.add_argument(
+        "--adaptive-regrow",
+        action="store_true",
+        help=(
+            "Opt in to the adaptive-regrow controller. Requires "
+            "--regrow-max and --n-features-target. Defaults to off; "
+            "with --adaptive-regrow off the v0.2 fixed-regrow path is "
+            "byte-identical."
+        ),
+    )
+    forge.add_argument(
+        "--regrow-max",
+        type=int,
+        default=0,
+        help=(
+            "Upper bound on per-cycle effective_regrow_count when "
+            "--adaptive-regrow is set. Must exceed --regrow-count."
+        ),
+    )
+    forge.add_argument(
+        "--n-features-target",
+        type=int,
+        default=0,
+        help=(
+            "Target basis size the adaptive controller grows toward. "
+            "Required when --adaptive-regrow is set."
+        ),
+    )
+    forge.add_argument(
+        "--regrow-damping",
+        type=float,
+        default=0.5,
+        help=(
+            "Damping factor for the adaptive controller (default 0.5, "
+            "range [0.0, 1.0]). 1.0 jumps straight to target; lower "
+            "values grow asymptotically across basis-loop cycles."
+        ),
+    )
+
     inspect = sub.add_parser(
         "inspect",
         help="Triage a compressed checkpoint without torch — basis stats only.",
@@ -453,6 +496,19 @@ def _parse_eval_prompts(path: Path) -> list[str]:
 
 def _cmd_forge(args: argparse.Namespace) -> int:
     from saeforge import FeatureBasis, ForgePipeline, SubspaceProjector
+
+    # Adaptive-regrow argparse-level cross-flag validation. ``argparse``
+    # itself can't express "A requires B AND C" cleanly, so the check
+    # lives here — runs before any basis load so the CLI fails fast.
+    if args.adaptive_regrow and (
+        args.regrow_max <= 0 or args.n_features_target <= 0
+    ):
+        print(
+            "sae-forge forge: --adaptive-regrow requires both "
+            "--regrow-max and --n-features-target (each > 0).",
+            file=sys.stderr,
+        )
+        return 2
 
     # Build the polygram tuning bundles from the high-frequency CLI flags.
     # Long-tail tuning (jaccard_threshold, min_both_fire, …) lives behind
@@ -552,6 +608,10 @@ def _cmd_forge(args: argparse.Namespace) -> int:
         epoch_compression=epoch_compression,
         regrow=regrow,
         regrow_count=args.regrow_count,
+        adaptive_regrow=args.adaptive_regrow,
+        regrow_max=args.regrow_max,
+        n_features_target=args.n_features_target,
+        regrow_damping=args.regrow_damping,
         eval_prompts=eval_prompts,
         eval_audio_features=eval_audio_features,
         **hybrid_kwargs,
