@@ -96,7 +96,19 @@ This widens the row schema in a backwards-compatible way: existing `frontier.jso
 
 Validator-tuning flags only make sense in auto-materialise mode. If the user passes `--validation-threshold` without `--auto-materialise`, the CLI refuses with a message pointing at `polygram compress` as the place to tune thresholds for pre-materialised flows. Prevents silent mis-config.
 
-### Decision 7 — `BehaviouralValidator` dictionary-type gotcha
+### Decision 7 — `--force-rematerialise` and `--plan-only` escape hatches
+
+Two operational flags, both opt-in, both cheap:
+
+- **`--force-rematerialise`** bypasses the cache regardless of whether `auto_materialise_meta.json` matches. The cache key fingerprints validator-influencing inputs (SAE checkpoint content, validation prompts content, threshold, encoding, layer, targets) but cannot detect every drift mode — a user who edits polygram's source code in a sibling checkout, for example, won't invalidate the cache. The flag is the documented escape hatch for "I know the cache is stale, just rebuild it." It does NOT clear the cache directory before writing; existing files are overwritten in place so partial-write recovery still works.
+
+- **`--plan-only`** prints the per-encoding cache-hit/miss decision plus the validator's prompt-fingerprint and target list, then exits 0 without doing any expensive work. Inspired by `terraform plan`: lets the user verify "yes, this is the run I think it is" before paying for it. Mutually exclusive with `--frontier-only` (the two modes overlap conceptually — both skip the forge — but `--frontier-only` still reads materialised manifests, while `--plan-only` skips even those).
+
+**Alternative considered for `--force-rematerialise`**: a `rm -rf` of the encoding's cache directory before the run. Rejected — partial-write footgun (a Ctrl-C during cache-clear could leave the directory half-deleted), and overwriting in place is idempotent.
+
+**Alternative considered for `--plan-only`**: fold into `--frontier-only`. Rejected — `--frontier-only` is for "show me the per-K manifest data without forging," which presumes materialisation already happened. `--plan-only` is for "show me what materialisation would do without doing it." Different lifecycle stages; different flag.
+
+### Decision 8 — `BehaviouralValidator` dictionary-type gotcha
 
 `BehaviouralValidator` accepts a `Dictionary` (not `ClusteredDictionary`), so `from_sae_lens(records, ids, clustered=True)` is incompatible with auto-materialise. Live evidence from the N=32 smoke during PR #33 implementation.
 

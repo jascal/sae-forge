@@ -35,9 +35,12 @@
 - [ ] 4.3 Add the encoding-class plumbing: `--encoding-class LABEL:CLASS` (repeatable), `--encoding-qubits LABEL:N` (repeatable, for HEA_Rung2).
 - [ ] 4.4 Add `--pareto K1,K2,K3,...` and `--layer N` (both required iff `--auto-materialise`).
 - [ ] 4.5 Add `--allow-validation-eval-overlap` (store_true).
+- [ ] 4.5a Add `--force-rematerialise` (store_true). When set, the driver SHALL skip the cache-hit check and re-run validator + plan_pareto + apply for every encoding regardless of `auto_materialise_meta.json` content. Existing files are overwritten in place (no pre-clean step). Has no effect without `--auto-materialise` — refused at parse time if combined alone.
+- [ ] 4.5b Add `--plan-only` (store_true). When set, the driver SHALL print per-encoding cache decisions (`HIT` / `MISS` with the diffing field list) plus the resolved target K list and the SHA-256 fingerprints of the SAE checkpoint and validation prompts to stderr, then exit 0. No validator, no Compressor, no forge calls. Mutually exclusive with `--frontier-only` and refused unless `--auto-materialise` is set.
 - [ ] 4.6 Validation in `_cmd_sweep_pareto`:
-  - Refuse if `--validation-threshold` / `--validation-prompts` / `--pareto` / `--layer` are passed without `--auto-materialise` (Decision 6).
+  - Refuse if `--validation-threshold` / `--validation-prompts` / `--pareto` / `--layer` / `--force-rematerialise` / `--plan-only` are passed without `--auto-materialise` (Decision 6 + Decision 7).
   - Refuse if `--validation-prompts` and `--eval-prompts` resolve to the same path without `--allow-validation-eval-overlap` (Decision 1).
+  - Refuse if both `--frontier-only` and `--plan-only` are set (mutually exclusive, Decision 7).
   - Refuse mixed mode: if `--auto-materialise`, every `--encoding LABEL:PATH` PATH must be a single `.safetensors` file, not a directory.
 - [ ] 4.7 Build per-encoding `AutoMateriliseSpec` instances from the encoding flags + class flags; hand off to `sweep_pareto` via the new kwargs.
 
@@ -70,6 +73,20 @@
 - [ ] 6.4.2 `--validation-prompts` and `--eval-prompts` same file path → non-zero exit with leakage warning; passes with `--allow-validation-eval-overlap`.
 - [ ] 6.4.3 `--auto-materialise --encoding LABEL:DIR` (directory, not file) → non-zero exit with mixed-mode error.
 - [ ] 6.4.4 No `--auto-materialise` and `--encoding LABEL:FILE` (file, not dir) continues to work via the existing single-file path (regression check).
+- [ ] 6.4.5 `--force-rematerialise` or `--plan-only` without `--auto-materialise` → non-zero exit naming the conflict.
+- [ ] 6.4.6 `--frontier-only --plan-only` together → non-zero exit with the mutually-exclusive error message.
+
+### 6.4a `--force-rematerialise` behaviour
+
+- [ ] 6.4a.1 With a populated cache that would normally hit, `--force-rematerialise` makes the driver re-invoke validator + Compressor (mocked, count their calls). The new `auto_materialise_meta.json` content is identical to the previous one (same cache key inputs); existing `pareto/k_<K>.safetensors` files are overwritten in place.
+- [ ] 6.4a.2 `--force-rematerialise` on a cold cache behaves identically to no flag (first run still materialises).
+
+### 6.4b `--plan-only` behaviour
+
+- [ ] 6.4b.1 With cold cache: stderr contains `MISS` for every encoding, the target K list, and SHA-256 fingerprints; stdout is empty; exit 0. Validator + Compressor + forge are NOT invoked.
+- [ ] 6.4b.2 With warm cache: stderr contains `HIT` for matching encodings.
+- [ ] 6.4b.3 With cache-key mismatch (e.g. threshold differs): stderr contains `MISS: validation_threshold` (the diffing fields).
+- [ ] 6.4b.4 No `frontier.jsonl` is written under `--plan-only`.
 
 ### 6.5 Row provenance population
 
@@ -93,7 +110,7 @@
 
 ## 8. Docs
 
-- [ ] 8.1 Extend the `#### Pareto sweep (Axis 4)` section in README to describe the `--auto-materialise` one-tool workflow alongside the existing two-tool workflow. Lead with the validation-vs-eval-prompts distinction.
+- [ ] 8.1 Extend the `#### Pareto sweep (Axis 4)` section in README to describe the `--auto-materialise` one-tool workflow alongside the existing two-tool workflow. Lead with the validation-vs-eval-prompts distinction. **Prominently include the `HEA_Rung2(n_qubits=N)` example** for SAEs with >8 features (live finding from PR #33's N=32 smoke: MPSRung1's 8-feature cap is the dominant friction beyond the validation threshold one). Document `--plan-only` as the recommended pre-flight check before a long sweep, and `--force-rematerialise` as the escape hatch when the user knows the cache is stale.
 - [ ] 8.2 CHANGELOG entry under `[Unreleased]` → `### Added (add-auto-materialise-sweep)`.
 
 ## 9. Validation
@@ -114,3 +131,4 @@
 - [ ] 10.6 The full polygram tuning surface (`min_firing_rate`, `min_both_fire`, `allow_layer_zero`, custom `confirmer`). Power users keep the two-tool flow.
 - [ ] 10.7 In-process consumption of `Compressor.plan_pareto` results (still disk-roundtrip via `_materialised/`).
 - [ ] 10.8 A `--validation-config FILE` YAML/JSON loader for the long-tail validator knobs. Deferred until the CLI flag set is felt to be insufficient by real users.
+- [ ] 10.9 Surfacing `scale_compression_ratio` and average merged-norm in frontier rows when `--rep-selection scale_aware` (or any merge-strategy run) emits them. Suggested in PR #34 review as ties-into-scale-preservation-work. Deferred because (a) the values originate in polygram's `CompressionReport`, not the per-K plan, and (b) it's a schema decision that affects all sweeps, not just auto-materialise — best handled as its own openspec change with explicit scope over the existing `pareto-sweep` capability.

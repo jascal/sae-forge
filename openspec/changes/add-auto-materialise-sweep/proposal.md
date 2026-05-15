@@ -8,6 +8,21 @@ There's a real risk in fixing this naïvely: if sae-forge collapses the two tool
 
 `--auto-materialise` is the version that owns the workflow at the sae-forge layer while preserving the leakage firewall as a first-class API constraint. Validation prompts and eval prompts are **two separate, required flags**; sharing them is mechanically possible but explicit, surfaced in the row metadata, and not the default.
 
+### Worked example
+
+```bash
+sae-forge sweep-pareto --auto-materialise \
+    --encoding mps:sae_layer8.safetensors \
+    --encoding-class mps:HEA_Rung2 --encoding-qubits mps:5 \
+    --validation-prompts validation.jsonl \
+    --eval-prompts eval.jsonl \
+    --validation-threshold 0.95 \
+    --pareto 8,16,24,32 --layer 8 \
+    --host-model gpt2 --output-dir runs/axis4/
+```
+
+One invocation drives: validator (against `validation.jsonl`) → `Compressor.plan_pareto([8,16,24,32])` → 4 materialised SAEs under `runs/axis4/_materialised/mps/pareto/` → 4 forge runs → `runs/axis4/frontier.jsonl` with provenance fields populated. Reruns with unchanged inputs hit the cache and skip the validator+Compressor entirely. `HEA_Rung2(n_qubits=5)` is the standard escape hatch for SAEs with >8 features.
+
 ## What Changes
 
 ### `sweep-pareto --auto-materialise` mode
@@ -28,6 +43,8 @@ New optional arguments:
 - `--score-field {polygram_overlap,jaccard,decoder_overlap}` — passes through to `CompressionConfig.score_field` for the Pareto sort axis.
 - `--rep-selection {n_fires,scale_aware}` — passes through to `CompressionConfig.rep_selection`.
 - `--allow-validation-eval-overlap` — disable the same-file-path refusal between `--validation-prompts` and `--eval-prompts`. Off by default; emits a `validation_eval_overlap: true` field in every row of `frontier.jsonl` when set, so downstream analysis can flag the methodological compromise.
+- `--force-rematerialise` — bypass the materialisation cache for this run. The driver acts as if `auto_materialise_meta.json` doesn't match and re-runs the validator + planner + apply chain regardless. Cheap insurance against cache-staleness confusion when a user has manually edited polygram-side inputs the cache doesn't fingerprint.
+- `--plan-only` — print what the auto-materialise step would do (per-encoding cache hit/miss, prompt SHA fingerprints, target K list, estimated validator-forward count) to stderr and exit 0 *without* invoking the validator, Compressor, or forge. Mutually exclusive with `--frontier-only`. Use before paying for a long sweep to sanity-check inputs.
 
 ### Frontier row schema gains methodological-provenance fields
 

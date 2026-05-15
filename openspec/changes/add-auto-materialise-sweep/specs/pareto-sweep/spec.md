@@ -52,6 +52,8 @@ The existing `sweep-pareto` subcommand SHALL retain all its current flags. A new
 - `--encoding-class LABEL:CLASS` (repeatable, default per encoding `MPSRung1`) — selects polygram encoding class.
 - `--encoding-qubits LABEL:N` (repeatable, for `HEA_Rung2` only) — selects `n_qubits`.
 - `--allow-validation-eval-overlap` (`store_true`) — opt-in to passing identical paths for `--validation-prompts` and `--eval-prompts`. Without this flag, the CLI refuses identical paths at parse time.
+- `--force-rematerialise` (`store_true`) — bypass the materialisation cache. Skips the cache-hit check; re-runs validator + `plan_pareto` + `apply` for every encoding; overwrites existing files in place (no pre-clean).
+- `--plan-only` (`store_true`) — print per-encoding cache decisions (`HIT` / `MISS` plus the diffing field list when MISS), target K list, and SHA-256 fingerprints of the SAE checkpoint and validation prompts to stderr; exit 0 without invoking validator, Compressor, or forge. Mutually exclusive with `--frontier-only`.
 
 The CLI SHALL refuse the following invocations with non-zero exit and a clear error message:
 
@@ -60,6 +62,8 @@ The CLI SHALL refuse the following invocations with non-zero exit and a clear er
 3. `--auto-materialise` set without one of the required flags (`--validation-prompts`, `--pareto`, `--layer`).
 4. `--validation-prompts` and `--eval-prompts` resolving to identical paths without `--allow-validation-eval-overlap`. Error message SHALL name the methodological leakage risk.
 5. `--encoding-class LABEL:UNKNOWN` for any class name outside the supported set (`MPSRung1`, `Rung3`, `Rung4`, `HEA_Rung2`).
+6. `--force-rematerialise` or `--plan-only` without `--auto-materialise`. Both flags are auto-materialise-only.
+7. `--frontier-only` AND `--plan-only` set together (mutually exclusive — different lifecycle stages).
 
 #### Scenario: --auto-materialise drives the full pipeline end-to-end
 
@@ -162,3 +166,59 @@ For feature counts exceeding `MPSRung1`'s cap of 8, the user SHALL pass `--encod
 
 - **WHEN** `--encoding-class mps:HEA_Rung2 --encoding-qubits mps:5` is passed against a 32-feature sliced SAE
 - **THEN** the auto-materialise step builds `HEA_Rung2(n_qubits=5)` and `from_sae_lens` returns a `Dictionary` (not `ClusteredDictionary`) that `BehaviouralValidator` accepts
+
+### Requirement: `--force-rematerialise` bypasses the cache
+
+When `--force-rematerialise` is set under `--auto-materialise`, the driver SHALL bypass the cache-hit check entirely and invoke the validator + `Compressor.plan_pareto` + `Compressor.apply` chain for every encoding regardless of `auto_materialise_meta.json` content. Existing files in the materialised directory SHALL be overwritten in place; the driver SHALL NOT pre-clean the directory.
+
+The cache key recorded in `auto_materialise_meta.json` after a `--force-rematerialise` run is identical to what a cache-miss run with the same inputs would produce.
+
+#### Scenario: --force-rematerialise re-runs validator on a populated cache
+
+- **GIVEN** a cached materialised directory whose `auto_materialise_meta.json` matches the current invocation's cache key
+- **WHEN** the sweep is rerun with `--force-rematerialise`
+- **THEN** polygram's `BehaviouralValidator.run()` is invoked (instrumented call count > 0); the resulting `pareto/k_<K>.safetensors` files overwrite the previous ones; `auto_materialise_meta.json` content is identical to the pre-rerun version
+
+#### Scenario: --force-rematerialise without --auto-materialise is refused
+
+- **WHEN** `--force-rematerialise` is passed without `--auto-materialise`
+- **THEN** the CLI exits non-zero with an error message naming the conflict
+
+### Requirement: `--plan-only` prints the plan and exits
+
+When `--plan-only` is set under `--auto-materialise`, the driver SHALL print to stderr (one block per encoding):
+
+- `label`: the encoding label
+- `cache_status`: `HIT` or `MISS`. On `MISS`, the list of cache-key fields that differ from the cached `auto_materialise_meta.json` (or `cold` if no cache exists)
+- `sae_sha256`: hex-encoded SHA-256 of the SAE checkpoint file content
+- `validation_prompts_sha256`: hex-encoded SHA-256 of the validation prompts file content
+- `targets`: the requested K list
+- `encoding_class` + `encoding_kwargs`
+- `validator_forward_count_estimate`: an integer estimate of the number of host-model forward passes the validator will run (`len(prompts) * average_token_count`)
+
+The driver SHALL exit 0 after printing all blocks. NO validator, Compressor, or forge calls are made. NO files are written under the output directory (including `frontier.jsonl`).
+
+`--plan-only` is mutually exclusive with `--frontier-only`.
+
+#### Scenario: --plan-only on cold cache prints MISS for every encoding
+
+- **GIVEN** a sweep against two encodings with no `_materialised/` directories present
+- **WHEN** the invocation is run with `--plan-only --auto-materialise`
+- **THEN** stderr contains two blocks, each with `cache_status: MISS (cold)`; stdout is empty; exit code 0; `_materialised/` is NOT created; `frontier.jsonl` is NOT written
+
+#### Scenario: --plan-only on warm cache prints HIT
+
+- **GIVEN** a previous successful `--auto-materialise` run wrote `_materialised/mps/`
+- **WHEN** the same invocation is rerun with `--plan-only`
+- **THEN** the `mps` block reports `cache_status: HIT`; no Compressor / validator / forge calls happen; exit 0
+
+#### Scenario: --plan-only with cache-key mismatch lists diffing fields
+
+- **GIVEN** a previous run cached at `--validation-threshold 0.7`
+- **WHEN** rerun with `--plan-only --validation-threshold 0.95` (otherwise identical)
+- **THEN** the encoding's block reports `cache_status: MISS (validation_threshold)`; exit 0
+
+#### Scenario: --plan-only and --frontier-only are mutually exclusive
+
+- **WHEN** both `--plan-only` and `--frontier-only` are passed
+- **THEN** the CLI exits non-zero naming the conflict; neither mode's effects occur
