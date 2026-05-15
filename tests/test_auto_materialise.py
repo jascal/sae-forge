@@ -23,6 +23,11 @@ import numpy as np
 import pytest
 from safetensors.numpy import save_file
 
+# polygram is an optional extra. The cache-key / spec-validation paths
+# are pure-Python and don't need it, but the encoding-class registry
+# resolution + the `HEA_Rung2` default tests do. Per-test
+# `pytest.importorskip("polygram")` lives on the affected classes.
+
 from saeforge.auto_materialise import (
     AutoMaterialiseSpec,
     _ENCODING_CLASS_REGISTRY,
@@ -94,6 +99,7 @@ class TestAutoMaterialiseSpec:
         callers only need to pass --encoding-qubits to fully configure
         the encoding.
         """
+        pytest.importorskip("polygram")
         from polygram import HEA_Rung2
 
         # depth=2 is the CLI's internal default; n_qubits=3 is polygram's.
@@ -109,10 +115,12 @@ class TestAutoMaterialiseSpec:
 class TestEncodingClassRegistry:
     @pytest.mark.parametrize("name", list(_ENCODING_CLASS_REGISTRY))
     def test_resolves_supported_classes(self, name):
+        pytest.importorskip("polygram")
         cls = _resolve_encoding_class(name)
         assert cls.__name__ == name
 
     def test_rejects_unknown_class_name(self):
+        pytest.importorskip("polygram")
         with pytest.raises(ValueError, match="unknown"):
             _resolve_encoding_class("Bogus")
 
