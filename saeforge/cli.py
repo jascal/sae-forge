@@ -314,6 +314,19 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     sweep.add_argument(
+        "--assign-phase-knobs",
+        action="store_true",
+        help=(
+            "[--auto-materialise only] Pass assign_phase_knobs=True to "
+            "polygram's from_sae_lens (polygram >=0.6.0). Un-dormants "
+            "MPS-substrate α (PC2) and φ (PC3) per-feature from decoder "
+            "PCA for MPSRung1 / Rung3 / Rung4. Structural no-op for "
+            "HEA_Rung2. Default off (byte-identical to polygram 0.5.0 "
+            "behaviour). Flips the cache key — expect one MISS the "
+            "first time you set or clear this flag."
+        ),
+    )
+    sweep.add_argument(
         "--encoding-class",
         action="append",
         default=None,
@@ -763,6 +776,8 @@ def _cmd_sweep_pareto(args: argparse.Namespace) -> int:
             auto_only_flags_set.append("--score-field")
         if args.rep_selection is not None:
             auto_only_flags_set.append("--rep-selection")
+        if args.assign_phase_knobs:
+            auto_only_flags_set.append("--assign-phase-knobs")
         if args.encoding_class:
             auto_only_flags_set.append("--encoding-class")
         if args.encoding_qubits:
@@ -1009,6 +1024,7 @@ def _cmd_sweep_pareto(args: argparse.Namespace) -> int:
             targets=targets,
             score_field=args.score_field or "polygram_overlap",
             rep_selection=args.rep_selection or "scale_aware",
+            assign_phase_knobs=bool(args.assign_phase_knobs),
             validation_eval_overlap=validation_eval_overlap,
             force_rematerialise=args.force_rematerialise,
             plan_only=args.plan_only,

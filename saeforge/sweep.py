@@ -506,6 +506,7 @@ def sweep_pareto(
     targets: list[int] | None = None,
     score_field: str = "polygram_overlap",
     rep_selection: str = "scale_aware",
+    assign_phase_knobs: bool = False,
     validation_eval_overlap: bool = False,
     force_rematerialise: bool = False,
     plan_only: bool = False,
@@ -600,6 +601,7 @@ def sweep_pareto(
                     targets=targets,
                     score_field=score_field,
                     rep_selection=rep_selection,
+                    assign_phase_knobs=assign_phase_knobs,
                 )
                 materialised_dir = output_dir / "_materialised" / spec.label
                 if force_rematerialise:
@@ -638,6 +640,7 @@ def sweep_pareto(
                 rep_selection=rep_selection,
                 output_root=output_dir,
                 force_rematerialise=force_rematerialise,
+                assign_phase_knobs=assign_phase_knobs,
             )
             remapped_encodings.append((spec.label, materialised_dir))
             per_label_provenance[spec.label] = {

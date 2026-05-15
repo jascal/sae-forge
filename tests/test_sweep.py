@@ -1106,6 +1106,56 @@ class TestAutoMaterialiseCLIValidation:
         ])
         assert rc == 2
 
+    def test_assign_phase_knobs_without_auto_materialise_refused(
+        self, tmp_path, synthetic_compressed_sae, capsys
+    ):
+        """--assign-phase-knobs is auto-materialise-only (polygram 0.6.0
+        flag is only meaningful at materialisation time)."""
+        sae_file = self._make_sae_file(tmp_path, synthetic_compressed_sae)
+        encoding_dir = _make_pareto_dir(tmp_path / "mps", sae_file, targets=[2])
+        from saeforge.cli import main
+
+        rc = main([
+            "sweep-pareto",
+            "--encoding", f"mps:{encoding_dir}",
+            "--host-model", "gpt2",
+            "--output-dir", str(tmp_path / "out"),
+            "--assign-phase-knobs",
+        ])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "--assign-phase-knobs" in err
+        assert "--auto-materialise" in err
+
+    def test_assign_phase_knobs_surfaces_in_plan_only(
+        self, tmp_path, synthetic_compressed_sae, capsys
+    ):
+        """--plan-only stderr block should expose the flag so users can see
+        why the cache will MISS."""
+        sae_file = self._make_sae_file(tmp_path, synthetic_compressed_sae)
+        validation = tmp_path / "v.txt"
+        validation.write_text("hello\n")
+        eval_p = tmp_path / "e.txt"
+        eval_p.write_text("world\n")
+        from saeforge.cli import main
+
+        rc = main([
+            "sweep-pareto",
+            "--auto-materialise",
+            "--encoding", f"mps:{sae_file}",
+            "--host-model", "gpt2",
+            "--output-dir", str(tmp_path / "out"),
+            "--validation-prompts", str(validation),
+            "--eval-prompts", str(eval_p),
+            "--pareto", "2",
+            "--layer", "8",
+            "--plan-only",
+            "--assign-phase-knobs",
+        ])
+        assert rc == 0
+        err = capsys.readouterr().err
+        assert "assign_phase_knobs=True" in err
+
 
 # ---------------------------------------------------------------------------
 # Provenance row population (live regression for the indent-mismatch bug

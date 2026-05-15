@@ -339,3 +339,134 @@ class TestFormatPlanOnlyBlock:
             n_prompts=1, avg_prompt_tokens=1.0,
         )
         assert "MISS (validation_threshold)" in block
+
+
+# ---------------------------------------------------------------------------
+# assign_phase_knobs plumbing (polygram >=0.6.0)
+# ---------------------------------------------------------------------------
+
+
+class TestAssignPhaseKnobs:
+    """Cover the polygram 0.6.0 `assign_phase_knobs` kwarg plumbing.
+
+    Three load-bearing properties:
+    - cache_key always includes the flag (default False), so toggling busts
+      the cache deterministically;
+    - format_plan_only_block surfaces it for human-readable plan dumps;
+    - _run_materialisation_chain forwards it to polygram.from_sae_lens
+      only when True (omitted when False for forward-compat with older
+      polygrams that don't accept the kwarg).
+    """
+
+    def _inputs(self, tmp_path):
+        sae = tmp_path / "sae.safetensors"
+        _write_dummy_sae(sae)
+        prompts = tmp_path / "p.txt"
+        prompts.write_text("hello\n")
+        spec = AutoMaterialiseSpec(label="mps", sae_checkpoint=sae)
+        return spec, prompts
+
+    def _common(self):
+        return dict(
+            validation_threshold=0.7,
+            jaccard_threshold=0.3,
+            layer=8,
+            model_name="gpt2",
+            targets=[2],
+            score_field="polygram_overlap",
+            rep_selection="scale_aware",
+        )
+
+    def test_cache_key_default_false(self, tmp_path):
+        spec, prompts = self._inputs(tmp_path)
+        key = compute_cache_key(
+            spec=spec, validation_prompts_path=prompts, **self._common()
+        )
+        assert key["assign_phase_knobs"] is False
+
+    def test_cache_key_flip_invalidates(self, tmp_path):
+        spec, prompts = self._inputs(tmp_path)
+        k_off = compute_cache_key(
+            spec=spec, validation_prompts_path=prompts, **self._common()
+        )
+        k_on = compute_cache_key(
+            spec=spec, validation_prompts_path=prompts,
+            assign_phase_knobs=True, **self._common()
+        )
+        assert k_off != k_on
+        assert k_off["assign_phase_knobs"] is False
+        assert k_on["assign_phase_knobs"] is True
+
+    def test_plan_only_block_surfaces_flag(self, tmp_path):
+        spec, prompts = self._inputs(tmp_path)
+        key = compute_cache_key(
+            spec=spec, validation_prompts_path=prompts,
+            assign_phase_knobs=True, **self._common()
+        )
+        block = format_plan_only_block(
+            spec=spec, cache_key=key, diff_fields=[], cache_hit=True,
+            n_prompts=1, avg_prompt_tokens=1.0,
+        )
+        assert "assign_phase_knobs=True" in block
+
+    def test_run_chain_forwards_true_to_from_sae_lens(self, tmp_path, monkeypatch):
+        """assign_phase_knobs=True reaches polygram.from_sae_lens."""
+        pytest.importorskip("polygram")
+        import polygram
+
+        from saeforge.auto_materialise import _run_materialisation_chain
+
+        captured: dict[str, object] = {}
+
+        def fake_from_sae_lens(records, slot_ids, **kw):
+            captured.update(kw)
+            # Short-circuit before BehaviouralValidator (needs torch + a real host).
+            raise RuntimeError("captured-and-stop")
+
+        monkeypatch.setattr(polygram, "from_sae_lens", fake_from_sae_lens)
+
+        spec, prompts = self._inputs(tmp_path)
+        materialised_dir = tmp_path / "out"
+        materialised_dir.mkdir()
+
+        with pytest.raises(RuntimeError, match="captured-and-stop"):
+            _run_materialisation_chain(
+                spec=spec,
+                validation_prompts_path=prompts,
+                materialised_dir=materialised_dir,
+                assign_phase_knobs=True,
+                **self._common(),
+            )
+        assert captured.get("assign_phase_knobs") is True
+        assert "encoding" in captured
+
+    def test_run_chain_omits_kwarg_when_false(self, tmp_path, monkeypatch):
+        """Default (False) omits the kwarg entirely so older polygrams
+        without ``assign_phase_knobs`` parameter still work."""
+        pytest.importorskip("polygram")
+        import polygram
+
+        from saeforge.auto_materialise import _run_materialisation_chain
+
+        captured: dict[str, object] = {}
+
+        def fake_from_sae_lens(records, slot_ids, **kw):
+            captured.update(kw)
+            raise RuntimeError("captured-and-stop")
+
+        monkeypatch.setattr(polygram, "from_sae_lens", fake_from_sae_lens)
+
+        spec, prompts = self._inputs(tmp_path)
+        materialised_dir = tmp_path / "out2"
+        materialised_dir.mkdir()
+
+        with pytest.raises(RuntimeError, match="captured-and-stop"):
+            _run_materialisation_chain(
+                spec=spec,
+                validation_prompts_path=prompts,
+                materialised_dir=materialised_dir,
+                # assign_phase_knobs left at default False
+                **self._common(),
+            )
+        assert "assign_phase_knobs" not in captured
+        assert "encoding" in captured

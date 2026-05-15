@@ -68,8 +68,22 @@ intel = ["torch==2.2.2", "transformers>=4.46,<4.50", "numpy<2"]
 # `plan_with_target` / `plan_pareto`, ParetoReport is exported);
 # required for the `pareto-sweep` capability that consumes the
 # `k_{K}.safetensors` artifacts emitted by
-# `polygram compress --pareto --pareto-materialize`.
-polygram = ["polygram>=0.4.0"]
+# `polygram compress --pareto --pareto-materialize`. Polygram 0.5.0
+# adds `CompressionConfig.rep_selection="kl_attribution"`, a
+# behavioural-ablation rep picker that flows through plan() /
+# plan_with_target() / plan_pareto(); already exposed via
+# sae-forge's `--rep-selection kl_attribution` CLI choice. Polygram
+# 0.6.0 adds `from_sae_lens(..., assign_phase_knobs=True)` which
+# un-dormants MPS-substrate α (PC2) and φ (PC3) on MPSRung1 / Rung3
+# / Rung4 (HEA_Rung2 is a structural no-op). Default unchanged
+# (False); sae-forge does not plumb the assign_* flags yet, so the
+# bump is byte-identical for existing flows. Behavioural-incompat
+# note for callers depending on PR-#63-era amp-on gram numbers:
+# `assign_amp_knobs` PCA allocation shifted PC2-5 → PC4-7 to make
+# room for the phase channels; qualitative invariants hold but
+# exact values change (polygram v2.2 Axis-1 numbers need
+# regeneration on a torch host).
+polygram = ["polygram>=0.6.0"]
 # orca-runtime-python — the classical orca-lang FSM runtime that drives
 # the v0.1 forge-outer-loop-fsm orchestrator. Required only for the
 # `--fsm` opt-in path; the default imperative ForgePipeline does not
@@ -92,7 +106,7 @@ all = [
     "jupyter",
     "torch>=2.2",
     "transformers>=4.46",
-    "polygram>=0.4.0",
+    "polygram>=0.6.0",
     "orca-runtime-python>=0.1.27",
     "datasets>=2.16",
     "librosa>=0.10",
