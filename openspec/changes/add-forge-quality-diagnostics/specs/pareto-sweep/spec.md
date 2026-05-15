@@ -91,7 +91,7 @@ The existing `sweep-pareto` subcommand SHALL retain all its current flags and ga
 #### Scenario: --quality-tier-thresholds rejects malformed input
 
 - **WHEN** invoked with `--quality-tier-thresholds bogus` or `--quality-tier-thresholds saturated:0.5,good:1.0` (ordering violation)
-- **THEN** the CLI exits non-zero at parse time with a clear error message naming the malformation
+- **THEN** the CLI exits non-zero at parse time with a clear error message that names (a) the expected format `name:value,name:value,name:value` with all three names (`saturated`, `good`, `undersized`) required, AND (b) the ordering constraint `saturated > good > undersized >= 0`. The error message SHALL show a correct example invocation in its body.
 
 ## ADDED Requirements
 
@@ -104,8 +104,8 @@ The advisory message SHALL include:
 - The smallest K and its computed `basis_rank`
 - The computed `quality_ratio` (`basis_rank / host_d_model`)
 - The resolved `host_d_model`
-- A suggested K floor — the smallest K from the encoding's manifest whose `basis_rank` meets the `good` threshold (defaults to `host_d_model / 2`)
-- A one-line note that `degenerate`/`undersized` describes the rank ratio, not the validity of the run (exploratory smokes legitimately operate in low-rank regimes)
+- A suggested K floor — the smallest K from the encoding's manifest whose `basis_rank` meets the `good` threshold (defaults to `host_d_model / 2`). When NO K in the manifest meets the threshold (every target is degenerate), the advisory SHALL instead recommend re-running `polygram compress --pareto` with larger K targets, naming the smallest K that would clear the threshold based on the polygram plan's per-K representative counts.
+- A literal sentence: `"'degenerate' describes the rank ratio, not the validity of the run; exploratory low-rank smokes remain valid for impl validation."` This wording is fixed in the spec so users running intentional low-rank experiments don't read the advisory as chastisement.
 
 The advisory is informational by default. Refusal requires the explicit `--quality-floor` flag.
 
@@ -125,12 +125,18 @@ When `host_d_model` cannot be resolved, the advisory SHALL NOT be printed (the d
 
 #### Scenario: advisory absent when d_model is unresolvable
 
-- **GIVEN** `resolve_host_d_model` returns `None` (network failure, unsupported host)
+- **GIVEN** `resolve_host_d_model` returns `None` (network failure, unsupported host, missing `hidden_size` attribute on the resolved config — e.g. non-transformer hosts or encoder-decoder architectures whose residual width is not captured by a single `hidden_size` field)
 - **WHEN** the sweep is invoked
 - **THEN** no advisory is printed; the sweep proceeds; rows have `host_d_model is None` and the other three diagnostic fields are also `None`
+
+#### Scenario: advisory adds caveat for non-standard architectures
+
+- **GIVEN** the resolved `host_d_model` came from a config whose `hidden_size` attribute exists but whose architecture is non-standard for residual-stream interpretation (e.g. Whisper encoder, CV transformer)
+- **WHEN** the advisory fires under such a host
+- **THEN** the advisory body SHALL include the literal caveat: `"Note: host_d_model resolved as N via AutoConfig.hidden_size; interpretation as residual-stream width assumes a standard transformer architecture and may be misleading for encoder-decoder, encoder-only, or non-LM hosts."` Detection of "non-standard" is heuristic — the driver checks the resolved config's `model_type` against a small allowlist of residual-stream-LM families (`gpt2`, `llama`, `gemma`, `pythia`, `mistral`, `qwen`); anything else gets the caveat
 
 #### Scenario: advisory suggests a sensible K floor from the manifest
 
 - **GIVEN** a 4-K manifest where the per-K kept-feature counts are `[1, 1, 1, 4]` for K=`[4, 8, 16, 32]` (matching the live N=32 Rung4 smoke pattern) on a host_d_model=768
 - **WHEN** the advisory fires
-- **THEN** the suggested K floor names the smallest K whose kept-feature count would meet the `good` threshold — typically a value larger than the largest K present in the manifest, with the advisory noting that the user's `--pareto` list is entirely in the `degenerate` regime and that they should re-run polygram's compression with larger K targets
+- **THEN** the suggested K floor names the smallest K whose kept-feature count would meet the `good` threshold (384 at default thresholds). Since no K in the manifest clears that bar, the advisory body SHALL include the literal sentence: `"No K target in the supplied manifest meets the 'good' threshold (basis_rank >= host_d_model/2 = 384). Consider re-running 'polygram compress --pareto' with larger K targets — e.g. include values closer to your SAE's full feature count."` This phrasing routes the user back to the right tool (polygram, not sae-forge) for the upstream fix.
