@@ -225,6 +225,149 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    # ---------------------------------------------------------------
+    # Auto-materialise mode (`add-auto-materialise-sweep` capability).
+    # ---------------------------------------------------------------
+    sweep.add_argument(
+        "--auto-materialise",
+        action="store_true",
+        help=(
+            "Opt-in: bundle polygram's BehaviouralValidator + "
+            "Compressor.plan_pareto + apply into the same invocation. "
+            "Flips --encoding LABEL:PATH semantic so PATH is a single "
+            "uncompressed SAE checkpoint (not a directory of "
+            "k_<K>.safetensors). Required flags under this mode: "
+            "--validation-prompts, --pareto, --layer."
+        ),
+    )
+    sweep.add_argument(
+        "--validation-prompts",
+        type=str,
+        default=None,
+        help=(
+            "[--auto-materialise only] JSONL/text file of prompts fed to "
+            "polygram's BehaviouralValidator. Distinct from --eval-prompts "
+            "by default (refused if paths resolve identically — see "
+            "--allow-validation-eval-overlap)."
+        ),
+    )
+    sweep.add_argument(
+        "--pareto",
+        type=str,
+        default=None,
+        metavar="K1,K2,...",
+        help=(
+            "[--auto-materialise only] Comma-separated target K list for "
+            "Compressor.plan_pareto (e.g. '8,16,24,32')."
+        ),
+    )
+    sweep.add_argument(
+        "--layer",
+        type=int,
+        default=None,
+        help=(
+            "[--auto-materialise only] Transformer layer whose residual "
+            "stream the validator hooks (e.g. 8 for GPT-2 layer-8 SAEs)."
+        ),
+    )
+    sweep.add_argument(
+        "--validation-threshold",
+        type=float,
+        default=None,
+        help=(
+            "[--auto-materialise only] polygram_overlap_threshold for the "
+            "BehaviouralValidator gate. Default: 0.7 (polygram's "
+            "calibration). Try 0.95 for a tighter gate on small-prompt "
+            "sweeps where 0.7 over-confirms."
+        ),
+    )
+    sweep.add_argument(
+        "--validation-jaccard-threshold",
+        type=float,
+        default=None,
+        help=(
+            "[--auto-materialise only] jaccard_threshold for the validator "
+            "gate. Default: 0.3."
+        ),
+    )
+    sweep.add_argument(
+        "--score-field",
+        type=str,
+        default=None,
+        choices=("polygram_overlap", "jaccard", "decoder_overlap"),
+        help=(
+            "[--auto-materialise only] CompressionConfig.score_field — "
+            "Pareto sort axis. Default: polygram_overlap."
+        ),
+    )
+    sweep.add_argument(
+        "--rep-selection",
+        type=str,
+        default=None,
+        choices=("n_fires", "scale_aware", "kl_attribution"),
+        help=(
+            "[--auto-materialise only] CompressionConfig.rep_selection. "
+            "Default: scale_aware. Use kl_attribution for "
+            "behavioural-ablation-based rep selection (polygram >=0.5.0); "
+            "see polygram's recon-aware-rep-selection capability for "
+            "when to prefer it."
+        ),
+    )
+    sweep.add_argument(
+        "--encoding-class",
+        action="append",
+        default=None,
+        metavar="LABEL:CLASS",
+        help=(
+            "[--auto-materialise only, repeatable] Map an encoding label "
+            "to a polygram encoding class. Supported: MPSRung1 (default; "
+            "cap=8), Rung3 (cap=16), Rung4 (cap=32), HEA_Rung2 (cap=2^N "
+            "via --encoding-qubits). For N>8 sliced SAEs, use "
+            "'--encoding-class LABEL:HEA_Rung2 --encoding-qubits LABEL:N'."
+        ),
+    )
+    sweep.add_argument(
+        "--encoding-qubits",
+        action="append",
+        default=None,
+        metavar="LABEL:N",
+        help=(
+            "[--auto-materialise only, repeatable, HEA_Rung2 only] "
+            "n_qubits for the named encoding. cap=2^N."
+        ),
+    )
+    sweep.add_argument(
+        "--allow-validation-eval-overlap",
+        action="store_true",
+        help=(
+            "[--auto-materialise only] Override the same-path refusal "
+            "between --validation-prompts and --eval-prompts. Surfaces "
+            "as validation_eval_overlap=True in every frontier row so "
+            "downstream analysis flags the methodological compromise."
+        ),
+    )
+    sweep.add_argument(
+        "--force-rematerialise",
+        action="store_true",
+        help=(
+            "[--auto-materialise only] Bypass the materialisation cache; "
+            "re-run validator + plan_pareto + apply for every encoding "
+            "regardless of cached state. Existing files overwritten in "
+            "place."
+        ),
+    )
+    sweep.add_argument(
+        "--plan-only",
+        action="store_true",
+        help=(
+            "[--auto-materialise only] Print per-encoding cache status "
+            "(HIT / MISS-with-diff-fields), target K list, SHA-256 "
+            "fingerprints, and validator-forward-count estimate to "
+            "stderr; exit 0 without invoking validator, Compressor, or "
+            "forge. Mutually exclusive with --frontier-only."
+        ),
+    )
+
     inspect = sub.add_parser(
         "inspect",
         help="Triage a compressed checkpoint without torch — basis stats only.",
@@ -477,6 +620,33 @@ def _parse_quality_tier_thresholds(raw: str) -> "QualityThresholds":
     )
 
 
+def _parse_label_value_specs(
+    raw: list[str], *, flag_name: str
+) -> dict[str, str]:
+    """Parse repeated ``LABEL:VALUE`` flag strings into a dict.
+
+    Used by ``--encoding-class`` (LABEL:CLASS) and ``--encoding-qubits``
+    (LABEL:N). Splits on the first colon; rejects empty labels/values
+    with an actionable error message naming the flag.
+    """
+    result: dict[str, str] = {}
+    for entry in raw:
+        if ":" not in entry:
+            raise ValueError(
+                f"{flag_name}: malformed entry {entry!r} (expected "
+                f"'LABEL:VALUE')"
+            )
+        label, _, value = entry.partition(":")
+        label = label.strip()
+        value = value.strip()
+        if not label:
+            raise ValueError(f"{flag_name}: empty label in {entry!r}")
+        if not value:
+            raise ValueError(f"{flag_name}: empty value in {entry!r}")
+        result[label] = value
+    return result
+
+
 def _parse_encoding_specs(raw: list[str]) -> list[tuple[str, Path]]:
     """Parse repeated ``--encoding LABEL:PATH`` into normalized tuples.
 
@@ -509,6 +679,185 @@ def _cmd_sweep_pareto(args: argparse.Namespace) -> int:
         print(f"sae-forge sweep-pareto: {exc}", file=sys.stderr)
         return 2
 
+    # --------- Auto-materialise argument validation + parsing ---------
+    auto_materialise = bool(args.auto_materialise)
+
+    # Refuse auto-materialise-only flags when --auto-materialise is absent.
+    auto_only_flags_set: list[str] = []
+    if not auto_materialise:
+        if args.validation_prompts is not None:
+            auto_only_flags_set.append("--validation-prompts")
+        if args.pareto is not None:
+            auto_only_flags_set.append("--pareto")
+        if args.layer is not None:
+            auto_only_flags_set.append("--layer")
+        if args.validation_threshold is not None:
+            auto_only_flags_set.append("--validation-threshold")
+        if args.validation_jaccard_threshold is not None:
+            auto_only_flags_set.append("--validation-jaccard-threshold")
+        if args.score_field is not None:
+            auto_only_flags_set.append("--score-field")
+        if args.rep_selection is not None:
+            auto_only_flags_set.append("--rep-selection")
+        if args.encoding_class:
+            auto_only_flags_set.append("--encoding-class")
+        if args.encoding_qubits:
+            auto_only_flags_set.append("--encoding-qubits")
+        if args.allow_validation_eval_overlap:
+            auto_only_flags_set.append("--allow-validation-eval-overlap")
+        if args.force_rematerialise:
+            auto_only_flags_set.append("--force-rematerialise")
+        if args.plan_only:
+            auto_only_flags_set.append("--plan-only")
+        if auto_only_flags_set:
+            print(
+                f"sae-forge sweep-pareto: {', '.join(auto_only_flags_set)} "
+                f"require --auto-materialise. Validator-tuning flags are "
+                f"only valid in auto-materialise mode; for pre-materialised "
+                f"sweeps, tune thresholds via 'polygram compress --pareto'.",
+                file=sys.stderr,
+            )
+            return 2
+
+    # Mutually exclusive: --plan-only and --frontier-only.
+    if args.plan_only and args.frontier_only:
+        print(
+            "sae-forge sweep-pareto: --plan-only and --frontier-only are "
+            "mutually exclusive (different lifecycle stages).",
+            file=sys.stderr,
+        )
+        return 2
+
+    # Required flags under --auto-materialise.
+    auto_materialise_specs = None
+    targets: list[int] | None = None
+    validation_prompts_path: Path | None = None
+    validation_eval_overlap = False
+
+    if auto_materialise:
+        missing: list[str] = []
+        if args.validation_prompts is None:
+            missing.append("--validation-prompts")
+        if args.pareto is None:
+            missing.append("--pareto")
+        if args.layer is None:
+            missing.append("--layer")
+        if missing:
+            print(
+                f"sae-forge sweep-pareto: --auto-materialise requires "
+                f"{', '.join(missing)}",
+                file=sys.stderr,
+            )
+            return 2
+
+        validation_prompts_path = Path(args.validation_prompts).resolve()
+        if not validation_prompts_path.is_file():
+            print(
+                f"sae-forge sweep-pareto: --validation-prompts file not found: "
+                f"{validation_prompts_path}",
+                file=sys.stderr,
+            )
+            return 2
+
+        # Refuse same-path resolution between validation and eval prompts
+        # unless --allow-validation-eval-overlap is set.
+        if args.eval_prompts is not None:
+            eval_resolved = Path(args.eval_prompts).resolve()
+            if eval_resolved == validation_prompts_path:
+                if not args.allow_validation_eval_overlap:
+                    print(
+                        "sae-forge sweep-pareto: --validation-prompts and "
+                        "--eval-prompts resolve to the same path. This is a "
+                        "methodological leakage risk: the validator's gate "
+                        "decisions would be tuned against the same prompts "
+                        "that score post-forge KL. Use distinct files, or "
+                        "pass --allow-validation-eval-overlap to confirm "
+                        "you understand the risk (surfaces as "
+                        "validation_eval_overlap=true in every row).",
+                        file=sys.stderr,
+                    )
+                    return 2
+                validation_eval_overlap = True
+
+        # Parse --pareto K1,K2,...
+        try:
+            targets = [int(k.strip()) for k in args.pareto.split(",") if k.strip()]
+        except ValueError:
+            print(
+                f"sae-forge sweep-pareto: --pareto expected comma-separated "
+                f"integers, got {args.pareto!r}",
+                file=sys.stderr,
+            )
+            return 2
+        if not targets:
+            print(
+                "sae-forge sweep-pareto: --pareto must contain at least one K",
+                file=sys.stderr,
+            )
+            return 2
+
+        # Each --encoding LABEL:PATH must be a single .safetensors file
+        # (not a directory — mixed mode is disallowed).
+        for label, enc_path in encodings:
+            if enc_path.is_dir():
+                print(
+                    f"sae-forge sweep-pareto: --auto-materialise expects "
+                    f"--encoding LABEL:PATH where PATH is a single "
+                    f".safetensors file; got directory {enc_path} for "
+                    f"label={label!r}. Mixed mode (auto + pre-materialised) "
+                    f"is disallowed; pick one mode per invocation.",
+                    file=sys.stderr,
+                )
+                return 2
+
+        # Build per-label encoding-class + encoding-kwargs maps.
+        try:
+            class_map = _parse_label_value_specs(
+                args.encoding_class or [], flag_name="--encoding-class"
+            )
+            qubits_map = _parse_label_value_specs(
+                args.encoding_qubits or [], flag_name="--encoding-qubits"
+            )
+        except ValueError as exc:
+            print(f"sae-forge sweep-pareto: {exc}", file=sys.stderr)
+            return 2
+
+        from saeforge.auto_materialise import (
+            AutoMaterialiseSpec,
+            _ENCODING_CLASS_REGISTRY,
+        )
+
+        auto_materialise_specs = []
+        for label, enc_path in encodings:
+            enc_class = class_map.get(label, "MPSRung1")
+            if enc_class not in _ENCODING_CLASS_REGISTRY:
+                print(
+                    f"sae-forge sweep-pareto: --encoding-class "
+                    f"{label}:{enc_class} is not a supported class; "
+                    f"supported: {sorted(_ENCODING_CLASS_REGISTRY)}",
+                    file=sys.stderr,
+                )
+                return 2
+            enc_kwargs: dict[str, object] = {}
+            if label in qubits_map:
+                try:
+                    enc_kwargs["n_qubits"] = int(qubits_map[label])
+                except ValueError:
+                    print(
+                        f"sae-forge sweep-pareto: --encoding-qubits "
+                        f"{label}:{qubits_map[label]} must be an integer",
+                        file=sys.stderr,
+                    )
+                    return 2
+            auto_materialise_specs.append(
+                AutoMaterialiseSpec(
+                    label=label,
+                    sae_checkpoint=enc_path.resolve(),
+                    encoding_class=enc_class,
+                    encoding_kwargs=enc_kwargs,
+                )
+            )
+
     # Forge-quality argument parsing.
     if args.quality_floor is not None:
         if not (0.0 <= args.quality_floor <= 1.0):
@@ -538,13 +887,18 @@ def _cmd_sweep_pareto(args: argparse.Namespace) -> int:
     # Bootstrap: use the first encoding's first checkpoint as the basis the
     # ForgePipeline is constructed with. The sweep driver hot-swaps basis +
     # projector per row, so this is purely a construction-time placeholder.
-    try:
-        first_checkpoints = _enumerate_checkpoints(encodings[0][1])
-    except (FileNotFoundError, ValueError) as exc:
-        print(f"sae-forge sweep-pareto: {exc}", file=sys.stderr)
-        return 2
+    # Under --auto-materialise, the encoding paths are uncompressed SAEs;
+    # FeatureBasis.from_polygram_checkpoint still works on them.
+    if auto_materialise:
+        bootstrap_ckpt = encodings[0][1].resolve()
+    else:
+        try:
+            first_checkpoints = _enumerate_checkpoints(encodings[0][1])
+        except (FileNotFoundError, ValueError) as exc:
+            print(f"sae-forge sweep-pareto: {exc}", file=sys.stderr)
+            return 2
+        bootstrap_ckpt = first_checkpoints[0][1]
 
-    bootstrap_ckpt = first_checkpoints[0][1]
     basis = FeatureBasis.from_polygram_checkpoint(bootstrap_ckpt)
     projector = SubspaceProjector(basis)
 
@@ -564,20 +918,46 @@ def _cmd_sweep_pareto(args: argparse.Namespace) -> int:
         eval_prompts=eval_prompts,
     )
 
-    try:
-        frontier_path = pipeline.sweep_pareto(
-            encodings=encodings,
-            output_dir=Path(args.output_dir),
-            frontier_only=args.frontier_only,
-            quality_floor=args.quality_floor,
-            quality_thresholds=quality_thresholds,
+    sweep_kwargs: dict[str, object] = dict(
+        encodings=encodings,
+        output_dir=Path(args.output_dir),
+        frontier_only=args.frontier_only,
+        quality_floor=args.quality_floor,
+        quality_thresholds=quality_thresholds,
+    )
+    if auto_materialise:
+        sweep_kwargs.update(
+            auto_materialise_specs=auto_materialise_specs,
+            validation_prompts=validation_prompts_path,
+            validation_threshold=(
+                args.validation_threshold if args.validation_threshold is not None else 0.7
+            ),
+            validation_jaccard_threshold=(
+                args.validation_jaccard_threshold
+                if args.validation_jaccard_threshold is not None else 0.3
+            ),
+            layer=args.layer,
+            targets=targets,
+            score_field=args.score_field or "polygram_overlap",
+            rep_selection=args.rep_selection or "scale_aware",
+            validation_eval_overlap=validation_eval_overlap,
+            force_rematerialise=args.force_rematerialise,
+            plan_only=args.plan_only,
         )
+
+    try:
+        frontier_path = pipeline.sweep_pareto(**sweep_kwargs)
     except RuntimeError as exc:
         # At-end failure: rows are still written to frontier.jsonl.
         print(f"sae-forge sweep-pareto: {exc}", file=sys.stderr)
         # Find the frontier.jsonl path the driver wrote even when raising.
         print(str(Path(args.output_dir) / "frontier.jsonl"))
         return 1
+
+    if args.plan_only:
+        # No frontier path printed under --plan-only; stderr already
+        # contains the per-encoding blocks.
+        return 0
 
     print(str(frontier_path))
     return 0

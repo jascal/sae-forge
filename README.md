@@ -356,7 +356,76 @@ methodology — end-to-end downstream confirmation that the
 compression-coverage lift visible in EpochCompressor cashes out in
 forged-model KL space.
 
-The workflow is two-step. **Step 1 (polygram, cheap-then-expensive):**
+There are two ways to run an Axis-4 sweep:
+
+##### One-tool workflow (recommended): `--auto-materialise`
+
+`sae-forge sweep-pareto --auto-materialise` collapses polygram-side
+compression and the per-K forge sweep into a single invocation, with
+the validation-vs-eval-prompts leakage firewall as a first-class API
+constraint:
+
+```bash
+sae-forge sweep-pareto \
+    --auto-materialise \
+    --encoding mps:mps_sae.safetensors \
+    --encoding rung4:rung4_sae.safetensors \
+    --encoding-class mps:MPSRung1 \
+    --encoding-class rung4:Rung4 \
+    --host-model gpt2 --layer 8 \
+    --pareto 8,16,24,32 \
+    --validation-prompts data/validation.jsonl \
+    --eval-prompts data/eval.jsonl \
+    --validation-threshold 0.95 \
+    --rep-selection kl_attribution \
+    --output-dir runs/axis4/
+```
+
+This runs polygram's `BehaviouralValidator → Compressor.plan_pareto →
+apply` per encoding (artifacts cached under
+`runs/axis4/_materialised/<label>/`), then forges each materialised
+K and emits `frontier.jsonl` with the four diagnostics fields PLUS
+three provenance fields (`validation_threshold`, `encoding_class`,
+`validation_eval_overlap`).
+
+**Leakage firewall**: `--validation-prompts` and `--eval-prompts`
+MUST resolve to distinct file paths by default. The CLI refuses
+same-path resolution at parse time; override via
+`--allow-validation-eval-overlap` if you accept the methodological
+compromise (surfaces as `validation_eval_overlap=true` in every
+frontier row so analysis can flag it). This separation is the
+*reason* the auto-materialise flow exists — collapsing prompt sets
+would invite the validator to gate features against the same
+corpus that later scores faithfulness.
+
+**For SAEs with >8 features**: MPSRung1's default cap is 8. Use
+`--encoding-class LABEL:HEA_Rung2 --encoding-qubits LABEL:N` (cap
+= 2^N) for larger feature counts:
+
+```bash
+sae-forge sweep-pareto --auto-materialise \
+    --encoding rung4:rung4_sae.safetensors \
+    --encoding-class rung4:HEA_Rung2 \
+    --encoding-qubits rung4:5 \
+    ...
+```
+
+**Pre-flight check before paying validator cost**: `--plan-only`
+prints per-encoding cache status (`HIT` / `MISS` with diffing
+fields), SHA-256 fingerprints, target K list, and a
+validator-forward-count estimate, then exits 0 without running
+anything. Mutually exclusive with `--frontier-only`.
+
+**Escape hatch**: `--force-rematerialise` bypasses the cache when
+you've manually edited polygram-side state the cache doesn't
+fingerprint (rare).
+
+##### Two-tool workflow (manual control)
+
+When you need polygram-side knobs the auto-materialise CLI doesn't
+expose (`min_firing_rate`, `min_both_fire`, custom `confirmer`,
+exotic encoding kwargs), drop down to the two-tool flow. **Step 1
+(polygram, cheap-then-expensive):**
 
 ```bash
 # Plan + materialise N SAEs per encoding. Pareto planning is
