@@ -20,7 +20,15 @@ from saeforge.projector import SubspaceProjector
 from saeforge.utils.lazy import require_extra
 
 
-_SUPPORTED_FAMILIES = ("gpt2", "llama", "gemma2", "qwen2", "qwen3", "whisper_encoder")
+_SUPPORTED_FAMILIES = (
+    "gpt2",
+    "llama",
+    "gemma2",
+    "qwen2",
+    "qwen3",
+    "qwen3_moe",
+    "whisper_encoder",
+)
 _SUPPORTED_OUTPUT_KINDS = ("logits", "encoder_states")
 
 
@@ -86,6 +94,14 @@ class NativeModelConfig:
     # on Q and K per head between projection-and-reshape and the scaled dot-
     # product. Llama / Gemma-2 / Qwen2 default to False (no q_norm/k_norm).
     qk_norm: bool = False
+    # Qwen3-MoE configuration. num_experts == 0 -> dense MLP path (existing
+    # behavior for every other family). num_experts > 0 -> Mixtral-style
+    # sparse routing: gate + N experts × SwiGLU, with top-K dispatch.
+    # See ``saeforge.adapters.qwen3_moe`` and the qwen3-moe-support spec.
+    num_experts: int = 0
+    num_experts_per_tok: int = 0
+    moe_intermediate_size: int = 0
+    norm_topk_prob: bool = True
     # Hybrid-bridge knobs. When ``bridges=True``, the native module
     # constructs and registers two ``BridgeModule`` instances on the
     # forward path between the embed/mid and mid/lm-head regions.
@@ -142,6 +158,27 @@ class NativeModelConfig:
                 f"qkv_inner_size {self.qkv_inner_size} must equal "
                 f"num_heads ({self.num_heads}) * head_dim ({self.head_dim})"
             )
+        # MoE validation. num_experts > 0 requires the top-K and per-expert
+        # FF width fields to be coherent. num_experts == 0 is the dense
+        # default and ignores the other MoE fields.
+        if self.num_experts > 0:
+            if self.num_experts_per_tok <= 0:
+                raise ValueError(
+                    f"num_experts={self.num_experts} > 0 requires "
+                    f"num_experts_per_tok > 0; got "
+                    f"num_experts_per_tok={self.num_experts_per_tok}"
+                )
+            if self.num_experts_per_tok > self.num_experts:
+                raise ValueError(
+                    f"num_experts_per_tok ({self.num_experts_per_tok}) "
+                    f"must be <= num_experts ({self.num_experts})"
+                )
+            if self.moe_intermediate_size <= 0:
+                raise ValueError(
+                    f"num_experts={self.num_experts} > 0 requires "
+                    f"moe_intermediate_size > 0; got "
+                    f"moe_intermediate_size={self.moe_intermediate_size}"
+                )
         # GQA: default n_kv_heads = num_heads (collapses to MHA).
         if self.n_kv_heads is None:
             self.n_kv_heads = self.num_heads
@@ -188,7 +225,7 @@ def _build_torch_module(config: NativeModelConfig):
         from saeforge.adapters.gpt2 import build_gpt2_module
 
         return build_gpt2_module(config)
-    if config.family in ("llama", "gemma2", "qwen2", "qwen3"):
+    if config.family in ("llama", "gemma2", "qwen2", "qwen3", "qwen3_moe"):
         from saeforge.adapters.llama import build_llama_family_module
 
         return build_llama_family_module(config)

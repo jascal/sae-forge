@@ -293,6 +293,38 @@ def tiny_qwen2_untied_4layer():
 
 
 @pytest.fixture
+def tiny_qwen3_moe_untied():
+    """A tiny untied Qwen3-MoE — 3 layers, 4 experts, top-2 routing.
+
+    Smallest synthetic Qwen3-MoE config exercising the routing path.
+    Used for adapter unit tests on M4; the real Qwen3-30B-A3B host is
+    NVIDIA-only (see ``scripts/smoke_qwen3_moe.py``).
+
+    Requires ``transformers >= 4.51`` (Qwen3-MoE landed in 4.51).
+    """
+    pytest.importorskip("torch")
+    pytest.importorskip("transformers", minversion="4.51")
+    from transformers import Qwen3MoeConfig, Qwen3MoeForCausalLM
+
+    config = Qwen3MoeConfig(
+        hidden_size=128,
+        num_hidden_layers=3,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        intermediate_size=256,           # ignored by MoE blocks
+        moe_intermediate_size=128,       # per-expert FF inner dim
+        num_experts=4,
+        num_experts_per_tok=2,
+        norm_topk_prob=True,
+        vocab_size=1024,
+        head_dim=32,
+        max_position_embeddings=64,
+        tie_word_embeddings=False,
+    )
+    return Qwen3MoeForCausalLM(config).eval()
+
+
+@pytest.fixture
 def tiny_qwen3_untied_4layer():
     """A 4-layer untied Qwen3 — minimum for hybrid (n_layer >= 3).
 

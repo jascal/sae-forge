@@ -5,6 +5,34 @@ their corresponding OpenSpec change is archived.
 
 ## [Unreleased]
 
+### Added (qwen3-moe-support)
+
+- **Qwen3-MoE architecture adapter** — `Qwen3MoEAdapter` inherits from
+  `Qwen3Adapter`, stamping `family="qwen3_moe"` and populating four new
+  `NativeModelConfig` MoE fields (`num_experts`, `num_experts_per_tok`,
+  `moe_intermediate_size`, `norm_topk_prob`). The shared
+  `LlamaAdapter.walk` gains a host-attribute-gated MoE branch
+  (`hasattr(block.mlp, "experts")`) that emits the router + per-expert
+  SwiGLU keys. The Llama-family factory's `LlamaBlock` constructs
+  `Qwen3MoEMLP` (router + expert ModuleList + softmax-then-topk dispatch
+  with `index_add_`) when `cfg.num_experts > 0`, else the dense
+  `SwiGLU_MLP` (existing behavior). All other families default to
+  `num_experts=0`; byte-identical behavior preserved.
+
+- **Two compression strategies via `ForgePipeline.moe_strategy`:**
+  - `preserve` (default) — per-expert projection, full fidelity
+  - `collapse` — average all experts into a single dense MLP per layer;
+    downgrade family to `qwen3`; storage-aggressive, behavior-degraded
+  - `top_n` — v1 placeholder; raises `NotImplementedError` pointing at
+    the `moe-expert-calibration` follow-up
+
+- **NVIDIA smoke** — `scripts/smoke_qwen3_moe.py` targets a real
+  `Qwen/Qwen3-30B-A3B-Base` host on an NVIDIA ≥80GB GPU.
+
+- Requires `transformers >= 4.51`. The `[intel]` extras silently skip
+  registration. Synthetic small-MoE adapter tests
+  (3 layers × 4 experts × top-2) cover the M4 surface.
+
 ### Added (add-auto-materialise-sweep)
 
 - **One-tool Axis-4 workflow.** `sae-forge sweep-pareto --auto-materialise`

@@ -133,6 +133,27 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Disable the pre-LayerNorm in BridgeModule (default: enabled).",
     )
+    # Qwen3-MoE compression strategy. See openspec/specs/qwen3-moe-support.
+    forge.add_argument(
+        "--moe-strategy",
+        type=str,
+        default="preserve",
+        choices=("preserve", "collapse", "top_n"),
+        help=(
+            "Compression strategy when forging a Qwen3-MoE host. "
+            "'preserve' (default) keeps per-expert structure with full "
+            "fidelity. 'collapse' averages experts into a single dense MLP "
+            "per layer (storage-aggressive, experimental). 'top_n' is a v1 "
+            "placeholder that raises NotImplementedError; needs the "
+            "moe-expert-calibration follow-up."
+        ),
+    )
+    forge.add_argument(
+        "--moe-keep-n",
+        type=int,
+        default=0,
+        help="Required with --moe-strategy=top_n. Number of most-used experts to keep per layer.",
+    )
 
     sweep = sub.add_parser(
         "sweep-pareto",
@@ -621,6 +642,8 @@ def _cmd_forge(args: argparse.Namespace) -> int:
         epoch_compression=epoch_compression,
         regrow=regrow,
         regrow_count=args.regrow_count,
+        moe_strategy=args.moe_strategy,
+        moe_keep_n=args.moe_keep_n,
         adaptive_regrow=args.adaptive_regrow,
         regrow_max=args.regrow_max,
         n_features_target=args.n_features_target,
