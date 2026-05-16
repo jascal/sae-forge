@@ -1025,6 +1025,36 @@ def _cmd_sweep_pareto(args: argparse.Namespace) -> int:
                 )
             )
 
+        # --learn-axis-assignment is a silent no-op on HEA_Rung2:
+        # polygram's LearnedKnobAssignment.assign falls back to
+        # ClusteredKnobAssignment when isinstance(encoding, HEA_Rung2)
+        # (polygram/geometry/learned_axis_assignment.py — "known v1
+        # limitation"). The fallback is logged at info level only, so a
+        # sweep with --learn-axis-assignment + HEA_Rung2 produces a
+        # cache-key MISS and re-materialises but yields a Dictionary
+        # bit-identical to the OFF arm. Refuse rather than let a user
+        # burn the compute and infer a null effect.
+        if args.learn_axis_assignment:
+            hea_labels = [
+                spec.label
+                for spec in auto_materialise_specs
+                if spec.encoding_class == "HEA_Rung2"
+            ]
+            if hea_labels:
+                print(
+                    f"sae-forge sweep-pareto: --learn-axis-assignment is a "
+                    f"no-op with HEA_Rung2 encodings (polygram's "
+                    f"LearnedKnobAssignment falls back to "
+                    f"ClusteredKnobAssignment for HEA — known v1 "
+                    f"limitation). Offending labels: "
+                    f"{', '.join(hea_labels)}. Use an MPS-substrate "
+                    f"encoding (MPSRung1 cap=8, Rung3 cap=16, Rung4 "
+                    f"cap=32, Rung5 cap=8*2^k) for these labels, or "
+                    f"drop --learn-axis-assignment.",
+                    file=sys.stderr,
+                )
+                return 2
+
     # Forge-quality argument parsing.
     if args.quality_floor is not None:
         if not (0.0 <= args.quality_floor <= 1.0):

@@ -1089,6 +1089,41 @@ class TestAutoMaterialiseCLIValidation:
         assert "--encoding-amp-qubits" in err
         assert "Rung5" in err
 
+    def test_learn_axis_assignment_with_hea_refused(
+        self, tmp_path, synthetic_compressed_sae, capsys
+    ):
+        """--learn-axis-assignment + HEA_Rung2 is refused — polygram's
+        LearnedKnobAssignment silently falls back to
+        ClusteredKnobAssignment on HEA encodings (known v1 limitation),
+        making the flag a no-op. Refuse rather than let the user burn
+        compute on a guaranteed-null comparison."""
+        sae_file = self._make_sae_file(tmp_path, synthetic_compressed_sae)
+        validation = tmp_path / "v.txt"
+        validation.write_text("hello\n")
+        eval_p = tmp_path / "e.txt"
+        eval_p.write_text("world\n")
+        from saeforge.cli import main
+
+        rc = main([
+            "sweep-pareto",
+            "--auto-materialise",
+            "--encoding", f"hea:{sae_file}",
+            "--encoding-class", "hea:HEA_Rung2",
+            "--encoding-qubits", "hea:3",
+            "--learn-axis-assignment",
+            "--host-model", "gpt2",
+            "--output-dir", str(tmp_path / "out"),
+            "--validation-prompts", str(validation),
+            "--eval-prompts", str(eval_p),
+            "--pareto", "2",
+            "--layer", "8",
+        ])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "--learn-axis-assignment" in err
+        assert "HEA_Rung2" in err
+        assert "hea" in err  # offending label surfaced
+
     def test_plan_only_on_cold_cache_prints_miss(
         self, tmp_path, synthetic_compressed_sae, capsys
     ):
