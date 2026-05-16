@@ -59,6 +59,56 @@ def test_forge_synthetic_llama_main_runs_end_to_end(
     assert (forged_dir / "config.json").is_file()
 
 
+def test_forge_whisper_synthetic_main_runs_end_to_end(
+    tmp_path: Path, add_project_root_to_path
+):
+    """examples/forge_whisper_synthetic.py runs without HF download.
+
+    Builds a tiny synthetic WhisperModel, projects encoder weights
+    through a 32-feature basis, runs the forged encoder against the
+    host on a synthetic sine-sweep mel spectrogram, computes cosine
+    faithfulness, and saves the forged model + ``forge_summary.json``.
+
+    Wall-clock budget: ~5s on CPU (tiny model, single 3000-frame
+    input). The §9.2 spec calls out a 30s budget; this runs well
+    inside it.
+    """
+    pytest.importorskip("torch")
+    pytest.importorskip("transformers")
+
+    from examples.forge_whisper_synthetic import main
+
+    out = tmp_path / "forged"
+    # Shrink max_source_positions for a faster smoke run; 200 frames
+    # of input is enough to exercise every code path.
+    rc = main(
+        [
+            str(out),
+            "--n-features",
+            "16",
+            "--encoder-layers",
+            "1",
+            "--max-source-positions",
+            "100",
+        ]
+    )
+    assert rc == 0
+
+    summary_path = out / "forge_summary.json"
+    assert summary_path.is_file()
+    summary = json.loads(summary_path.read_text())
+    assert summary["adapter_family"] == "whisper_encoder"
+    assert summary["host_class"] == "WhisperModel"
+    assert summary["n_features"] == 16
+    assert summary["encoder_layers"] == 1
+    # Cosine is bounded in [0, 1] (clamp-negative-to-0 + clip-upper-1).
+    assert 0.0 <= summary["cosine_faithfulness"] <= 1.0
+
+    forged_dir = out / "forged"
+    assert (forged_dir / "model.safetensors").is_file()
+    assert (forged_dir / "config.json").is_file()
+
+
 def test_forge_gemma2_2b_skips_when_weights_unavailable(
     tmp_path: Path, add_project_root_to_path
 ):

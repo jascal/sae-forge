@@ -118,6 +118,22 @@ class ForgePipeline:
     projector: SubspaceProjector
     host_model_id: str | None = None
     eval_prompts: list[str] = field(default_factory=list)
+    # v0.4 forge-whisper-encoder: audio-side eval input for the
+    # whisper_encoder family. When set, evaluate_faithfulness dispatches
+    # to cosine_faithfulness using these mel features and the forged
+    # encoder. Mutually exclusive with eval_prompts (validation in
+    # __post_init__) — a pipeline targets either text-LM or audio
+    # faithfulness, not both. The torch.Tensor type is left as Any in
+    # the annotation so the dataclass keeps working without torch
+    # installed; the runtime contract is (batch, n_mels, n_frames).
+    eval_audio_features: Any | None = None
+    # Optional pre-captured host encoder states for the
+    # whisper_encoder family. When set, evaluate_faithfulness skips
+    # the host forward inside the FSM and uses these states directly
+    # — the audio-side analog of pre-tokenised ``_eval_input_ids``.
+    # Shape contract: (batch, n_frames, d_model). Caller is responsible
+    # for ensuring this is the output of host.encoder(eval_audio_features).
+    eval_encoder_states: Any | None = None
     dtype: str = "float32"
     device: str = "cpu"
     orchestrator: str = "imperative"
@@ -160,6 +176,11 @@ class ForgePipeline:
     finetune_save_every: int = 250
     finetune_save_dir: Path | None = None
     finetune_log_every: int = 10
+    # add-host-distillation-finetune-loss. Defaults (alpha=1.0,
+    # tau=2.0) are byte-identical to the pre-change loss; opt into
+    # KD by setting alpha < 1.0.
+    finetune_distill_alpha: float = 1.0
+    finetune_distill_temperature: float = 2.0
 
     # v0.4 forge-continual-learning-loop knobs. All default to values that
     # recover v0.1 single-shard byte-identical behavior.
@@ -192,6 +213,16 @@ class ForgePipeline:
     moe_strategy: str = "preserve"
     moe_keep_n: int = 0
 
+    # v0.5 adaptive-regrow knobs. All default to values that recover the
+    # v0.2 fixed-regrow behavior. The master toggle is ``adaptive_regrow``;
+    # when False, the other three are inert (silently ignored). When True,
+    # ``regrow_max > regrow_count`` and ``n_features_target > 0`` are
+    # required (validated in ``__post_init__``).
+    adaptive_regrow: bool = False
+    regrow_max: int = 0
+    n_features_target: int = 0
+    regrow_damping: float = 0.5
+
     # ----------------------------------------------------------------
     # Construction-time validation + dict round-trip
     # ----------------------------------------------------------------
@@ -213,6 +244,55 @@ class ForgePipeline:
                 f"The pre-change layer=10 / model_name=\"gpt2\" fallbacks "
                 f"were removed in polygram 0.1.0 because they silently "
                 f"bound regrowth to GPT-2."
+            )
+        # v0.4 forge-whisper-encoder: text and audio eval inputs are mutually
+        # exclusive. The downstream evaluate_faithfulness action dispatches
+        # on forged.config.family, so a pipeline carrying both would be
+        # ambiguous about which signal drove the FSM's faithfulness gate.
+        if self.eval_audio_features is not None and len(self.eval_prompts) > 0:
+            raise ValueError(
+                "ForgePipeline: eval_audio_features and eval_prompts are "
+                "mutually exclusive — a pipeline targets either text-LM "
+                "faithfulness (KL via eval_prompts) or audio faithfulness "
+                "(cosine via eval_audio_features), not both. Set exactly "
+                "one."
+            )
+        # Issue #27 / Bug 1: forge-whisper-encoder finetune incompatibility.
+        # The fine_tune_model action passes module.parameters() to the
+        # optimizer; on whisper_encoder the parameter set includes the
+        # frozen-copied conv stem (conv1, conv2) and embed_positions — the
+        # adapter walk copies them bit-for-bit from the host and they MUST
+        # stay frozen to keep the ε_conv accounting honest. There's no
+        # per-frame loss signal defined for an encoder forge either; the
+        # fine-tune path is LM-only by construction.
+        if self.eval_audio_features is not None and self.finetune_steps > 0:
+            raise ValueError(
+                "ForgePipeline: finetune_steps > 0 is not supported on "
+                "whisper_encoder forges. The conv stem (conv1, conv2, "
+                "embed_positions) is frozen-copied from the host and must "
+                "stay frozen — fine-tuning would corrupt those weights and "
+                "break the ε_conv accounting. Additionally, no per-frame "
+                "loss signal is defined for the encoder forge yet. Set "
+                "finetune_steps=0 or pair the pipeline with an LM host."
+            )
+        # Issue #27 / Bug 2: hybrid_bridge has no Whisper-encoder semantics.
+        # The flag wires three bases (basis_embed, basis, basis_lm_head)
+        # whose insertion points are the embed / mid / lm-head regions of
+        # an LM residual stream. Whisper encoder has no lm_head, and
+        # ForgedWhisperEncoder already carries its own d → f bridge in the
+        # basis_encode buffer at the conv-stem → first-block boundary. A
+        # hybrid_bridge=True whisper forge would either double-project
+        # the residual or crash deep in the projection step.
+        if self.eval_audio_features is not None and self.hybrid_bridge:
+            raise ValueError(
+                "ForgePipeline: hybrid_bridge=True is not supported on "
+                "whisper_encoder forges. The forged encoder already carries "
+                "a d → f projection in the basis_encode buffer at the "
+                "conv-stem → first-block boundary; layering a second bridge "
+                "on top would double-project the residual. There is also "
+                "no lm_head on a Whisper encoder for basis_lm_head to "
+                "attach to. Disable hybrid_bridge for whisper_encoder "
+                "forges."
             )
         if self.task_trigger not in ("labeled", "token_budget", "loss_delta"):
             raise ValueError(
@@ -277,6 +357,24 @@ class ForgePipeline:
                     f"d_model; got basis_embed.d_model={self.basis_embed.d_model}, "
                     f"basis.d_model={d_model}, "
                     f"basis_lm_head.d_model={self.basis_lm_head.d_model}"
+                )
+        if self.adaptive_regrow:
+            if self.regrow_max <= self.regrow_count:
+                raise ValueError(
+                    "ForgePipeline: adaptive_regrow=True requires "
+                    f"regrow_max > regrow_count (got regrow_max="
+                    f"{self.regrow_max}, regrow_count={self.regrow_count}). "
+                    "Pick a regrow_max that caps the largest per-cycle "
+                    "growth you'll tolerate; regrow_count is the base "
+                    "floor / fallback the controller honors when the "
+                    "target is reached."
+                )
+            if self.n_features_target <= 0:
+                raise ValueError(
+                    "ForgePipeline: adaptive_regrow=True requires "
+                    f"n_features_target > 0 (got {self.n_features_target}). "
+                    "Pick the target basis size the controller should "
+                    "grow toward."
                 )
 
     @classmethod
@@ -441,6 +539,77 @@ class ForgePipeline:
         )
         return new_weights, new_cfg
 
+    def sweep_pareto(
+        self,
+        encodings: list[tuple[str, "str | Path"]],
+        output_dir: "str | Path",
+        *,
+        frontier_only: bool = False,
+        quality_floor: float | None = None,
+        quality_thresholds: Any = None,
+        host_d_model_override: int | None = None,
+        auto_materialise_specs: Any = None,
+        validation_prompts: "str | Path | None" = None,
+        validation_threshold: float = 0.7,
+        validation_jaccard_threshold: float = 0.3,
+        layer: int | None = None,
+        targets: list[int] | None = None,
+        score_field: str = "polygram_overlap",
+        rep_selection: str = "scale_aware",
+        assign_phase_knobs: bool = False,
+        validation_eval_overlap: bool = False,
+        force_rematerialise: bool = False,
+        plan_only: bool = False,
+        **forge_kwargs: Any,
+    ) -> Path:
+        """Forge across per-K materialised SAE checkpoints; emit a JSONL frontier.
+
+        Delegates to :func:`saeforge.sweep.sweep_pareto`. See the
+        ``pareto-sweep`` capability spec for the row contract, lifecycle
+        states (success / frontier-only / row failure), and resumability
+        semantics.
+
+        Each row hot-swaps ``self.basis`` and ``self.projector`` for the
+        duration of one ``self.run`` call, then restores them — so the host
+        model, eval config, and fine-tune knobs persist across rows while
+        the SAE varies per K.
+
+        Forge-quality diagnostics: ``quality_floor`` and
+        ``quality_thresholds`` are forwarded to the sweep driver.
+        ``host_d_model_override`` short-circuits the
+        ``transformers.AutoConfig`` lookup for hosts whose config doesn't
+        expose ``hidden_size`` canonically. See
+        :mod:`saeforge.forge_quality`.
+        """
+        from saeforge.sweep import sweep_pareto as _sweep_pareto
+
+        normalized = [(label, Path(path)) for label, path in encodings]
+        validation_prompts_path = (
+            Path(validation_prompts) if validation_prompts is not None else None
+        )
+        return _sweep_pareto(
+            self,
+            encodings=normalized,
+            output_dir=Path(output_dir),
+            frontier_only=frontier_only,
+            quality_floor=quality_floor,
+            quality_thresholds=quality_thresholds,
+            host_d_model_override=host_d_model_override,
+            auto_materialise_specs=auto_materialise_specs,
+            validation_prompts=validation_prompts_path,
+            validation_threshold=validation_threshold,
+            validation_jaccard_threshold=validation_jaccard_threshold,
+            layer=layer,
+            targets=targets,
+            score_field=score_field,
+            rep_selection=rep_selection,
+            assign_phase_knobs=assign_phase_knobs,
+            validation_eval_overlap=validation_eval_overlap,
+            force_rematerialise=force_rematerialise,
+            plan_only=plan_only,
+            **forge_kwargs,
+        )
+
     def _build_hybrid_bundle(self, host) -> "HybridBasisBundle | None":
         """Return a hybrid bundle when enabled, else None. Enforces tied-embedding refusal.
 
@@ -507,7 +676,7 @@ class ForgePipeline:
         # any host_model_id, which silently produced a randomly-initialised
         # GPT-2 for non-GPT-2 inputs (e.g. ``google/gemma-2-2b``).
         host = transformers.AutoModelForCausalLM.from_pretrained(
-            self.host_model_id, dtype=_torch_dtype(self.dtype)
+            self.host_model_id, torch_dtype=_torch_dtype(self.dtype)
         ).eval()
         bundle = self._build_hybrid_bundle(host)
         weights = self.projector.project_module(
@@ -589,7 +758,7 @@ class ForgePipeline:
         _write_basis_as_checkpoint(self.basis, sae_checkpoint)
 
         host = transformers.AutoModelForCausalLM.from_pretrained(
-            self.host_model_id, dtype=_torch_dtype(self.dtype)
+            self.host_model_id, torch_dtype=_torch_dtype(self.dtype)
         ).eval()
 
         # Pre-tokenise eval_prompts with the host's tokenizer so the FSM
@@ -613,6 +782,8 @@ class ForgePipeline:
             output_dir=output_dir,
             host_model=host,
             eval_input_ids=eval_input_ids,
+            eval_audio_features=self.eval_audio_features,
+            eval_encoder_states=self.eval_encoder_states,
             finetune_input_ids=None,
             finetune_iterator=finetune_iterator,
             host_model_id=self.host_model_id,
@@ -739,6 +910,8 @@ class ForgePipeline:
             output_dir=output_dir,
             host_model=host_model,
             eval_input_ids=eval_input_ids,
+            eval_audio_features=self.eval_audio_features,
+            eval_encoder_states=self.eval_encoder_states,
             finetune_input_ids=finetune_input_ids,
             finetune_iterator=finetune_iterator,
             host_model_id="<in-memory>",
@@ -773,6 +946,8 @@ class ForgePipeline:
         finetune_input_ids,
         finetune_iterator,
         host_model_id: str,
+        eval_audio_features=None,
+        eval_encoder_states=None,
     ) -> dict:
         """Shared FSM-context builder for both ``_run_real_fsm`` and
         ``_run_synthetic_fsm`` — keeps the polygram-tuning + finetune-recipe
@@ -803,6 +978,13 @@ class ForgePipeline:
             "device": self.device,
             "_host_model": host_model,
             "_eval_input_ids": eval_input_ids,
+            # v0.4 forge-whisper-encoder: audio-side eval input. None when
+            # the host is an LM family; populated when a Whisper host is
+            # being forged. ``_eval_encoder_states`` is an optional pre-
+            # capture fast path — when present, the action uses these
+            # states directly and skips the host forward.
+            "_eval_audio_features": eval_audio_features,
+            "_eval_encoder_states": eval_encoder_states,
             "_finetune_input_ids": finetune_input_ids,
             "_finetune_iterator": finetune_iterator,
             "validation_report_path": self.validation_report_path,
@@ -840,6 +1022,15 @@ class ForgePipeline:
             "finetune_save_every": self.finetune_save_every,
             "finetune_save_dir": str(self.finetune_save_dir) if self.finetune_save_dir else None,
             "finetune_log_every": self.finetune_log_every,
+            "finetune_distill_alpha": self.finetune_distill_alpha,
+            "finetune_distill_temperature": self.finetune_distill_temperature,
+            # Adaptive-regrow knobs. Always written so the action layer
+            # can read them with ``ctx.get(...)``; ``adaptive_regrow=False``
+            # makes the other three inert.
+            "adaptive_regrow": self.adaptive_regrow,
+            "regrow_max": self.regrow_max,
+            "n_features_target": self.n_features_target,
+            "regrow_damping": self.regrow_damping,
             **self._build_continual_ctx(),
         }
 

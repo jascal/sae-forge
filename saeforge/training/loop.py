@@ -19,11 +19,21 @@ def run_finetune(model, host, iterator, config: TrainingConfig) -> TrainingResul
     """Run ``config.total_steps`` of LM cross-entropy training on ``model``.
 
     ``model`` is a `saeforge.NativeModel`. ``host`` is the source HF model
-    (used only for periodic faithfulness eval; pass `None` to skip eval
-    even if `config.eval_input_ids` is set). ``iterator`` is any iterable
-    yielding ``(batch_size, sequence_length)`` int64 token tensors —
-    typically built via `saeforge.training.build_iterator`.
+    (used for periodic faithfulness eval, and — when
+    `config.distill_alpha < 1.0` — for every-step host-distillation
+    KL). Pass `None` to skip eval; passing `None` with
+    `distill_alpha < 1.0` raises before any batches are consumed.
+    ``iterator`` is any iterable yielding ``(batch_size,
+    sequence_length)`` int64 token tensors — typically built via
+    `saeforge.training.build_iterator`.
     """
+    if config.distill_alpha < 1.0 and host is None:
+        raise ValueError(
+            "run_finetune: distill_alpha < 1.0 requires a non-None "
+            "`host` model (the distillation teacher); got "
+            f"distill_alpha={config.distill_alpha} and host=None"
+        )
+
     torch = require_extra("torch", "torch")
     F = torch.nn.functional
 
@@ -71,7 +81,40 @@ def run_finetune(model, host, iterator, config: TrainingConfig) -> TrainingResul
         try:
             with _autocast(device.type, autocast_dtype):
                 logits = module(batch)
-                loss = _shift_lm_loss(logits, batch, F)
+                ce_loss = _shift_lm_loss(logits, batch, F)
+
+                if config.distill_alpha < 1.0:
+                    # Host-distillation: teacher forward under no_grad
+                    # on the same batch + autocast context. Gradients
+                    # flow only through the student.
+                    #
+                    # Future optimization: when the corpus iterator is
+                    # deterministic (static corpus, fixed shuffle seed),
+                    # host_logits could be precomputed once per epoch
+                    # and cached. The deferred caching path documented
+                    # in add-host-distillation-finetune-loss design.md
+                    # Decision 5 would plug in here, keyed on
+                    # `(batch_hash, step)`. Out of scope for v1.
+                    with torch.no_grad():
+                        host_out = host(input_ids=batch)
+                        host_logits = (
+                            host_out.logits
+                            if hasattr(host_out, "logits")
+                            else host_out[0]
+                        )
+                    # Hinton-style soft-label KL with tau^2 rescaling.
+                    # Direction matches saeforge/eval/faithfulness.py
+                    # (KL(host || forged)) so the training objective
+                    # is the same quantity the eval reports.
+                    tau = config.distill_temperature
+                    kd_loss = (tau ** 2) * F.kl_div(
+                        F.log_softmax(logits / tau, dim=-1),
+                        F.softmax(host_logits / tau, dim=-1),
+                        reduction="batchmean",
+                    )
+                    loss = config.distill_alpha * ce_loss + (1.0 - config.distill_alpha) * kd_loss
+                else:
+                    loss = ce_loss
 
             if scaler is not None:
                 scaler.scale(loss).backward()

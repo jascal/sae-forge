@@ -295,6 +295,13 @@ def perform_regrowth(ctx: dict, _payload: dict | None = None) -> dict:
     ``layer=10`` / ``model_name="gpt2"`` ctx fallbacks were a footgun on
     non-GPT-2 hosts; polygram-tuning-config removed the corresponding
     polygram-side defaults so callers must now declare them explicitly.
+
+    The per-cycle count is read from ``effective_regrow_count`` when
+    present (written by ``adapt_and_regrow`` under
+    ``adaptive_regrow=True``) and falls back to the configured
+    ``regrow_count`` otherwise. The gate that turns the action into a
+    pass-through is the configured ``regrow_count == 0`` — unchanged
+    from v0.2.
     """
     if ctx.get("regrow_count", 0) == 0 or not ctx.get("compression_report_path"):
         _log(ctx, "perform_regrowth", {"mode": "passthrough"})
@@ -327,18 +334,117 @@ def perform_regrowth(ctx: dict, _payload: dict | None = None) -> dict:
     # entry supply one.
     prompts = config.prompts if config.prompts is not None else tuple([""] * 16)
 
+    # Per-cycle count: prefer the adaptive controller's
+    # ``effective_regrow_count`` (when set by ``adapt_and_regrow``) over
+    # the configured ``regrow_count``. ``top_k`` is the polygram-side
+    # field that caps the regrow population.
+    effective = ctx.get("effective_regrow_count")
+    top_k = int(effective) if effective is not None else int(ctx["regrow_count"])
+
     regrower = Regrower.from_compression_report(
         report,
         sae_checkpoint=Path(ctx["compressed_sae_path"]),
         config=config,
         prompts=list(prompts),
+        top_k=top_k,
     )
     result = regrower.run(output_path)
-    _log(ctx, "perform_regrowth", {"mode": "polygram", "n_regrown": len(result.report.populations)})
+    _log(
+        ctx,
+        "perform_regrowth",
+        {
+            "mode": "polygram",
+            "n_regrown": len(result.report.populations),
+            "top_k": top_k,
+            "source": "effective" if effective is not None else "configured",
+        },
+    )
     return {
         "regrown_sae_path": str(output_path),
         "inner_refine_idx": ctx.get("inner_refine_idx", 0) + 1,
     }
+
+
+def _compute_effective_regrow_count(ctx: dict) -> dict:
+    """Run the RegrowController against ctx and stash the result.
+
+    Mutates ``ctx['effective_regrow_count']`` AND appends an
+    ``adapt_regrow_count`` entry to ``transitions_log``. Returns a
+    dict delta for orca-runtime to merge back. The two writes (ctx
+    mutation + delta return) are kept in lock-step so callers that
+    consume ctx directly (the composed action) and callers that rely
+    on the runtime's delta merge (the FSM dispatch) both see the new
+    field.
+    """
+    from saeforge.basis import RegrowController
+
+    kept = int(ctx.get("current_feature_count", 0))
+    target = int(ctx.get("n_features_target", 0))
+    regrow_count = int(ctx.get("regrow_count", 0))
+    regrow_max = int(ctx.get("regrow_max", 0))
+    damping = float(ctx.get("regrow_damping", 0.5))
+
+    value = RegrowController.next_count(
+        n_features_kept=kept,
+        n_features_target=target,
+        regrow_count=regrow_count,
+        regrow_max=regrow_max,
+        regrow_damping=damping,
+    )
+    gap = max(0, target - kept)
+    _log(
+        ctx,
+        "adapt_regrow_count",
+        {"value": value, "gap": gap, "target": target},
+    )
+    ctx["effective_regrow_count"] = value
+    return {"effective_regrow_count": value}
+
+
+def adapt_and_regrow(ctx: dict, payload: dict | None = None) -> dict:
+    """Composed BasisMachine action: optionally compute ``effective_regrow_count`` then regrow.
+
+    Three paths, in order:
+
+    1. **Disabled toggle** — ``ctx['adaptive_regrow']`` is falsy. The
+       controller is NOT invoked. ``effective_regrow_count`` is NOT
+       written. The call reduces to ``perform_regrowth(ctx, payload)``
+       — byte-identical to v0.2.
+    2. **Cold start** — ``adaptive_regrow=True`` but no prior
+       compression has populated ``current_feature_count`` (it is
+       ``None`` or ``0``). The controller is NOT invoked; the action
+       falls through to ``perform_regrowth`` using the configured
+       ``regrow_count``. No ``adapt_regrow_count`` log entry is
+       appended.
+    3. **Enabled, warm** — ``adaptive_regrow=True`` AND a prior
+       compression populated ``current_feature_count``. The controller
+       runs, writes ``effective_regrow_count`` to ctx, appends an
+       ``adapt_regrow_count`` log entry, and then calls
+       ``perform_regrowth`` which reads the just-written field.
+
+    The ``transitions_log`` records two consecutive entries per
+    enabled-warm cycle: ``adapt_regrow_count`` then
+    ``perform_regrowth``. Existing readers indexed by action name see
+    one extra entry per regrow cycle.
+    """
+    if not ctx.get("adaptive_regrow"):
+        return perform_regrowth(ctx, payload)
+
+    # Cold-start: skip the controller entirely on the first cycle.
+    # ``current_feature_count`` is unset (None) or zero (the initial
+    # ctx default) until the first ``compress_with_polygram`` runs in
+    # polygram mode. Pass-through compression also leaves it at zero;
+    # in that case there's nothing meaningful for the controller to
+    # target on the first pass, so we use the configured ``regrow_count``.
+    if not ctx.get("current_feature_count"):
+        return perform_regrowth(ctx, payload)
+
+    delta: dict = {}
+    delta.update(_compute_effective_regrow_count(ctx))
+    inner_delta = perform_regrowth(ctx, payload)
+    if isinstance(inner_delta, dict):
+        delta.update(inner_delta)
+    return delta
 
 
 def project_to_subspace(ctx: dict, _payload: dict | None = None) -> dict:
@@ -551,6 +657,8 @@ def _run_recipe_fine_tune(ctx: dict, model, corpus, iterator) -> dict:
         save_every_steps=ctx.get("finetune_save_every", 250),
         save_dir=ctx.get("finetune_save_dir") or finetuned_dir / "checkpoints",
         log_every_steps=ctx.get("finetune_log_every", 10),
+        distill_alpha=ctx.get("finetune_distill_alpha", 1.0),
+        distill_temperature=ctx.get("finetune_distill_temperature", 2.0),
     )
 
     host = ctx.get("_host_model")
@@ -579,23 +687,90 @@ def _run_recipe_fine_tune(ctx: dict, model, corpus, iterator) -> dict:
 
 
 def evaluate_faithfulness(ctx: dict, _payload: dict | None = None) -> dict:
-    """Compute KL faithfulness, then derive ``should_continue`` and ``advance_stream``.
+    """Compute faithfulness, then derive ``should_continue`` and ``advance_stream``.
 
-    Both predicate fields are written here so the FSM's `eval_done`
+    Dispatches on ``forged.config.family``:
+
+    - **LM families** (``gpt2`` / ``llama`` / ``gemma2`` / ``qwen2`` /
+      ``qwen3``): per-token KL between forged and host logits via
+      :func:`saeforge.forge._kl_from_input_ids`. The ``faithfulness``
+      ctx field carries the KL value (lower = more faithful);
+      ``perplexity`` is ``exp(KL)``. ``min_faithfulness`` follows the
+      v0.1 negation convention — pass a negative threshold to encode
+      "max allowed KL" (e.g. ``min_faithfulness=-0.05`` continues only
+      while ``KL ≤ 0.05``).
+
+    - **whisper_encoder**: per-frame cosine similarity between forged
+      encoder states and the host's encoder states projected through
+      the forge's ``basis_encode`` buffer, via
+      :func:`saeforge.audio_eval.cosine_faithfulness`. The
+      ``faithfulness`` ctx field carries the cosine score (range
+      ``[0, 1]``, higher = more faithful); ``perplexity`` carries
+      ``1 - cosine`` so the existing ``perplexity < best_perplexity``
+      progress check keeps the right direction (a lower
+      ``1 - cosine`` means a higher cosine). ``min_faithfulness`` is
+      reinterpreted as "minimum cosine similarity" with the natural
+      positive convention — pass ``min_faithfulness=0.95`` to require
+      cosine ≥ 0.95.
+
+    The ``should_continue`` predicate is family-aware; the
+    ``advance_stream`` stream-loop computation is family-agnostic
+    (it consumes the family-appropriate perplexity analog). Both
+    predicate fields are written here so the FSM's ``eval_done``
     guards can be a flat ctx read. The stream-loop dominance contract
     (``advance_stream == true`` wins over ``should_continue``) lives
-    in the guard expression `refine_same_shard`, which requires
+    in the guard expression ``refine_same_shard``, which requires
     ``advance_stream == false``.
+    """
+    host = ctx.get("_host_model")
+    forged = ctx.get("_native_model")
+    device = ctx.get("device", "cpu")
+    family = (
+        forged.config.family
+        if forged is not None and hasattr(forged, "config")
+        else None
+    )
+
+    if family == "whisper_encoder":
+        faithfulness, perplexity, should_continue = _evaluate_whisper_encoder(
+            ctx, host, forged, device
+        )
+    else:
+        faithfulness, perplexity, should_continue = _evaluate_lm(
+            ctx, host, forged, device
+        )
+
+    advance_stream = _compute_advance_stream(ctx, faithfulness, perplexity)
+
+    _log(
+        ctx,
+        "evaluate_faithfulness",
+        {
+            "faithfulness": faithfulness,
+            "perplexity": perplexity,
+            "should_continue": should_continue,
+            "advance_stream": advance_stream,
+        },
+    )
+    return {
+        "faithfulness": float(faithfulness),
+        "perplexity": perplexity,
+        "should_continue": should_continue,
+        "advance_stream": advance_stream,
+    }
+
+
+def _evaluate_lm(ctx, host, forged, device) -> tuple[float, float, bool]:
+    """LM-family faithfulness: per-token KL, exp(KL) perplexity, KL-negation
+    threshold convention. v0.3 behavior preserved byte-for-byte.
     """
     from saeforge.forge import _kl_from_input_ids
 
-    host = ctx.get("_host_model")
-    forged = ctx.get("_native_model")
     eval_input_ids = ctx.get("_eval_input_ids")
     if host is None or forged is None or eval_input_ids is None:
         kl = 0.0
     else:
-        kl = _kl_from_input_ids(forged, host, eval_input_ids, device=ctx.get("device", "cpu"))
+        kl = _kl_from_input_ids(forged, host, eval_input_ids, device=device)
     perplexity = float(np.exp(kl)) if kl >= 0 else float("inf")
     iters = ctx.get("iterations", 1)
     current = ctx.get("current_iter", 0)
@@ -606,25 +781,45 @@ def evaluate_faithfulness(ctx: dict, _payload: dict | None = None) -> dict:
         and (kl >= min_faith if min_faith == 0.0 else kl <= min_faith * -1)
         and perplexity < best_perp
     )
+    return float(kl), perplexity, should_continue
 
-    advance_stream = _compute_advance_stream(ctx, kl, perplexity)
 
-    _log(
-        ctx,
-        "evaluate_faithfulness",
-        {
-            "faithfulness": kl,
-            "perplexity": perplexity,
-            "should_continue": should_continue,
-            "advance_stream": advance_stream,
-        },
+def _evaluate_whisper_encoder(ctx, host, forged, device) -> tuple[float, float, bool]:
+    """Whisper-encoder faithfulness: per-frame cosine similarity in basis
+    space; ``perplexity = 1 - cosine`` so the LM-shaped progress check
+    keeps pointing the right way; ``min_faithfulness`` is the minimum
+    cosine threshold (positive convention).
+    """
+    from saeforge.audio_eval import cosine_faithfulness
+
+    audio_features = ctx.get("_eval_audio_features")
+    precomputed_host_states = ctx.get("_eval_encoder_states")
+    # The pre-capture fast path lets the caller run the host encoder once
+    # outside the FSM and pass states in via ``_eval_encoder_states`` —
+    # the action no longer needs the host in that case.
+    if forged is None or audio_features is None:
+        cosine = 0.0
+    elif precomputed_host_states is None and host is None:
+        cosine = 0.0
+    else:
+        cosine = cosine_faithfulness(
+            forged,
+            host,
+            audio_features,
+            precomputed_host_states=precomputed_host_states,
+            device=device,
+        )
+    perplexity = 1.0 - cosine
+    iters = ctx.get("iterations", 1)
+    current = ctx.get("current_iter", 0)
+    min_faith = ctx.get("min_faithfulness", 0.0)
+    best_perp = ctx.get("best_perplexity", float("inf"))
+    should_continue = bool(
+        current + 1 < iters
+        and cosine >= min_faith
+        and perplexity < best_perp
     )
-    return {
-        "faithfulness": float(kl),
-        "perplexity": perplexity,
-        "should_continue": should_continue,
-        "advance_stream": advance_stream,
-    }
+    return float(cosine), perplexity, should_continue
 
 
 def _compute_advance_stream(ctx: dict, kl: float, perplexity: float) -> bool:
@@ -785,6 +980,7 @@ ACTION_TABLE: dict[str, Any] = {
     "load_and_scan": load_and_scan,
     "compress_with_polygram": compress_with_polygram,
     "perform_regrowth": perform_regrowth,
+    "adapt_and_regrow": adapt_and_regrow,
     "project_to_subspace": project_to_subspace,
     "fine_tune_model": fine_tune_model,
     "evaluate_faithfulness": evaluate_faithfulness,

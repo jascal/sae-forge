@@ -63,7 +63,27 @@ intel = ["torch==2.2.2", "transformers>=4.46,<4.50", "numpy<2"]
 # adds the GeometricProfile registry (clustered / uniform-sphere) and
 # the bf16 safetensors slice-path fix; the upgrade is non-breaking
 # (default profile="clustered" is byte-identical to the 0.1.0 path).
-polygram = ["polygram>=0.3.0"]
+# Polygram 0.4.0 adds target-K compression (CompressionConfig grows
+# `target_n_features_kept` + `score_field`, Compressor gains
+# `plan_with_target` / `plan_pareto`, ParetoReport is exported);
+# required for the `pareto-sweep` capability that consumes the
+# `k_{K}.safetensors` artifacts emitted by
+# `polygram compress --pareto --pareto-materialize`. Polygram 0.5.0
+# adds `CompressionConfig.rep_selection="kl_attribution"`, a
+# behavioural-ablation rep picker that flows through plan() /
+# plan_with_target() / plan_pareto(); already exposed via
+# sae-forge's `--rep-selection kl_attribution` CLI choice. Polygram
+# 0.6.0 adds `from_sae_lens(..., assign_phase_knobs=True)` which
+# un-dormants MPS-substrate α (PC2) and φ (PC3) on MPSRung1 / Rung3
+# / Rung4 (HEA_Rung2 is a structural no-op). Default unchanged
+# (False); sae-forge does not plumb the assign_* flags yet, so the
+# bump is byte-identical for existing flows. Behavioural-incompat
+# note for callers depending on PR-#63-era amp-on gram numbers:
+# `assign_amp_knobs` PCA allocation shifted PC2-5 → PC4-7 to make
+# room for the phase channels; qualitative invariants hold but
+# exact values change (polygram v2.2 Axis-1 numbers need
+# regeneration on a torch host).
+polygram = ["polygram>=0.6.0"]
 # orca-runtime-python — the classical orca-lang FSM runtime that drives
 # the v0.1 forge-outer-loop-fsm orchestrator. Required only for the
 # `--fsm` opt-in path; the default imperative ForgePipeline does not
@@ -72,6 +92,13 @@ orca = ["orca-runtime-python>=0.1.27"]
 # v0.3 forge-finetune-recipe — pulls HuggingFace `datasets` for the
 # stream-from-HF corpus path. Local-file corpora work without this.
 recipe = ["datasets>=2.16"]
+# v0.4 forge-whisper-encoder — librosa for real-audio mel extraction
+# from .wav / .flac. The synthetic fixture path
+# (saeforge.audio_data.synthetic_mel_features) is pure-numpy and does
+# not need this; pre-extracted mel features piped in via
+# --audio-features-path also work without librosa. Install this extra
+# only when you need to feed real audio through the forge eval.
+audio = ["librosa>=0.10"]
 all = [
     "pytest",
     "ruff",
@@ -79,9 +106,10 @@ all = [
     "jupyter",
     "torch>=2.2",
     "transformers>=4.46",
-    "polygram>=0.3.0",
+    "polygram>=0.6.0",
     "orca-runtime-python>=0.1.27",
     "datasets>=2.16",
+    "librosa>=0.10",
 ]
 
 [project.scripts]

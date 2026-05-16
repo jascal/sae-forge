@@ -31,6 +31,13 @@ Recent landed work:
   (structural EWC), replay buffer for fine-tune. All knobs default to
   values that recover the single-shard pipeline byte-identically. See
   [`docs/advanced-fsm-options.md`](docs/advanced-fsm-options.md).
+- **forge-whisper-encoder**: encoder-only Whisper forging — the first
+  non-causal-LM architecture in the registry. New
+  `WhisperEncoderAdapter`, `ForgedWhisperEncoder` native module (with
+  a frozen-copied conv stem and a `basis_encode` buffer at the
+  d → f boundary), `cosine_faithfulness` eval, family-aware
+  `evaluate_faithfulness` dispatch. LM byte-equivalence net stays
+  green. See [`docs/audio-forge.md`](docs/audio-forge.md).
 
 New work is staged through OpenSpec changes — see ``openspec/changes/``.
 
@@ -338,6 +345,223 @@ sae-forge forge sae.compressed.safetensors \
 sae-forge inspect sae.compressed.safetensors --report basis_report.md
 sae-forge --version
 ```
+
+#### Pareto sweep (Axis 4)
+
+`sae-forge sweep-pareto` forges across the per-K SAE checkpoints
+produced by `polygram compress --pareto --pareto-materialize`,
+optionally spanning multiple labelled encodings. It is the
+load-bearing primitive for Axis 4 of polygram's rung-viability
+methodology — end-to-end downstream confirmation that the
+compression-coverage lift visible in EpochCompressor cashes out in
+forged-model KL space.
+
+There are two ways to run an Axis-4 sweep:
+
+##### One-tool workflow (recommended): `--auto-materialise`
+
+`sae-forge sweep-pareto --auto-materialise` collapses polygram-side
+compression and the per-K forge sweep into a single invocation, with
+the validation-vs-eval-prompts leakage firewall as a first-class API
+constraint.
+
+**Pre-flight first**: before paying validator cost, dry-run with
+`--plan-only` to inspect what would happen — per-encoding cache
+status, SHA-256 fingerprints of the SAE and validation prompts, the
+target K list, and an estimated validator-forward count:
+
+```bash
+sae-forge sweep-pareto --auto-materialise --plan-only \
+    --encoding mps:mps_sae.safetensors \
+    --host-model gpt2 --layer 8 \
+    --pareto 8,16,24,32 \
+    --validation-prompts data/validation.jsonl \
+    --eval-prompts data/eval.jsonl \
+    --output-dir runs/axis4/
+```
+
+Output (cold cache):
+
+```
+sweep-pareto --plan-only: per-encoding plan
+  label=mps
+    cache_status=MISS (cold)
+    sae_sha256=4f3a...
+    validation_prompts_sha256=1b9c...
+    targets=[8, 16, 24, 32]
+    encoding_class=MPSRung1
+    encoding_kwargs={}
+    validator_forward_count_estimate=2400
+```
+
+If everything looks right, drop `--plan-only` and run for real:
+
+```bash
+sae-forge sweep-pareto \
+    --auto-materialise \
+    --encoding mps:mps_sae.safetensors \
+    --encoding rung4:rung4_sae.safetensors \
+    --encoding-class mps:MPSRung1 \
+    --encoding-class rung4:Rung4 \
+    --host-model gpt2 --layer 8 \
+    --pareto 8,16,24,32 \
+    --validation-prompts data/validation.jsonl \
+    --eval-prompts data/eval.jsonl \
+    --validation-threshold 0.95 \
+    --rep-selection kl_attribution \
+    --output-dir runs/axis4/
+```
+
+This runs polygram's `BehaviouralValidator → Compressor.plan_pareto →
+apply` per encoding (artifacts cached under
+`runs/axis4/_materialised/<label>/`), then forges each materialised
+K and emits `frontier.jsonl` with the four diagnostics fields PLUS
+three provenance fields (`validation_threshold`, `encoding_class`,
+`validation_eval_overlap`).
+
+**Leakage firewall**: `--validation-prompts` and `--eval-prompts`
+MUST resolve to distinct file paths by default. The CLI refuses
+same-path resolution at parse time; override via
+`--allow-validation-eval-overlap` if you accept the methodological
+compromise (surfaces as `validation_eval_overlap=true` in every
+frontier row so analysis can flag it). This separation is the
+*reason* the auto-materialise flow exists — collapsing prompt sets
+would invite the validator to gate features against the same
+corpus that later scores faithfulness.
+
+**For SAEs with >8 features**: MPSRung1's default cap is 8. Use
+`--encoding-class LABEL:HEA_Rung2 --encoding-qubits LABEL:N` (cap
+= 2^N) for larger feature counts:
+
+```bash
+sae-forge sweep-pareto --auto-materialise \
+    --encoding rung4:rung4_sae.safetensors \
+    --encoding-class rung4:HEA_Rung2 \
+    --encoding-qubits rung4:5 \
+    ...
+```
+
+**Pre-flight check before paying validator cost**: `--plan-only`
+prints per-encoding cache status (`HIT` / `MISS` with diffing
+fields), SHA-256 fingerprints, target K list, and a
+validator-forward-count estimate, then exits 0 without running
+anything. Mutually exclusive with `--frontier-only`.
+
+**Escape hatch**: `--force-rematerialise` bypasses the cache when
+you've manually edited polygram-side state the cache doesn't
+fingerprint (rare).
+
+##### Two-tool workflow (manual control)
+
+When you need polygram-side knobs the auto-materialise CLI doesn't
+expose (`min_firing_rate`, `min_both_fire`, custom `confirmer`,
+exotic encoding kwargs), drop down to the two-tool flow. **Step 1
+(polygram, cheap-then-expensive):**
+
+```bash
+# Plan + materialise N SAEs per encoding. Pareto planning is
+# O(one validator pass) per encoding amortised across all K.
+polygram compress --sae-checkpoint mps_sae.safetensors \
+    --validation-report mps_report.json \
+    --pareto 200,500,1000,2000 --pareto-materialize \
+    --out runs/mps/
+
+polygram compress --sae-checkpoint rung4_sae.safetensors \
+    --validation-report rung4_report.json \
+    --pareto 200,500,1000,2000 --pareto-materialize \
+    --out runs/rung4/
+```
+
+**Step 2 (sae-forge, the actual sweep):**
+
+```bash
+sae-forge sweep-pareto \
+    --encoding mps:runs/mps/pareto \
+    --encoding rung4:runs/rung4/pareto \
+    --host-model gpt2 \
+    --output-dir runs/axis4/ \
+    --eval-prompts data/eval.jsonl
+```
+
+This writes `runs/axis4/frontier.jsonl` (one row per `(encoding, K)`)
+and per-forge directories under `runs/axis4/<label>/k_{K}/`. The
+JSONL row schema is in
+`openspec/specs/pareto-sweep/spec.md`; the key fields are
+`encoding_label`, `target_n_features_kept`, `n_features_kept_actual`,
+`faithfulness_kl`, `perplexity`, `final_fine_tune_loss`. Filter on
+`error_message is None` before reading metric fields.
+
+The sweep is **resumable** (rerun the same command after a crash —
+completed rows are skipped) and **per-row failure-isolated** (one
+bad K records `error_message` and the sweep continues). It exits
+non-zero if any row errored, with `frontier.jsonl` still written.
+
+For cheap exploratory triage before committing forge compute, add
+`--frontier-only` — it emits a JSONL with only the manifest-derived
+columns (no forge calls). Pipe through `jq` to find candidate K
+values:
+
+```bash
+sae-forge sweep-pareto --encoding mps:runs/mps/pareto \
+    --host-model gpt2 --output-dir runs/triage/ --frontier-only
+
+jq -r 'select(.error_message == null) |
+    [.encoding_label, .target_n_features_kept, .n_features_kept_actual]
+    | @tsv' runs/triage/frontier.jsonl | sort -t$'\t' -k2 -n
+```
+
+For large hosts (Gemma-2-2B / 8B-tier), split sweeps by encoding
+into separate processes rather than packing many `--encoding` flags
+into one invocation — every row inside a single sweep loads the
+host + per-K forged model into the same process, and transient
+state accumulates across rows.
+
+##### Forge-quality diagnostics
+
+Every sweep row carries four diagnostic fields telling you whether
+the row's KL is worth reading at all:
+
+- `host_d_model` — host transformer's residual stream width
+  (`AutoConfig.hidden_size`)
+- `basis_rank` — numerical rank of the kept-features `W_dec`
+- `quality_ratio` — `basis_rank / host_d_model`
+- `quality_tier` — one of `saturated` / `good` / `undersized` /
+  `degenerate` (heuristic thresholds: 1.0 / 0.5 / 0.0625)
+
+The recommended frontier-triage workflow is to filter on
+`quality_tier` *before* reading `faithfulness_kl`:
+
+```bash
+jq -r 'select(.quality_tier == "good" or .quality_tier == "saturated") |
+    [.encoding_label, .target_n_features_kept, .quality_tier, .faithfulness_kl]
+    | @tsv' runs/axis4/frontier.jsonl | sort -t$'\t' -k2 -n
+```
+
+When the smallest K's basis falls into the `undersized` or
+`degenerate` tier for any encoding, the sweep prints a stderr
+advisory before doing any forge work and suggests a higher K floor.
+For strict refusal (exit non-zero before any forge cost), add
+`--quality-floor 0.5` — sweeps only proceed if every row would be
+at least in the `good` tier. `--quality-tier-thresholds
+saturated:1.0,good:0.5,undersized:0.0625` overrides the heuristic
+boundaries for callers running specific research.
+
+The wording note in the advisory body matters: `degenerate`
+describes the **rank ratio**, not the validity of the run.
+Exploratory low-rank smokes remain valid for impl validation; the
+advisory is informational, not a refusal by default.
+
+**Custom hosts**: `host_d_model` is resolved automatically from
+`AutoConfig.from_pretrained(host_model_id).hidden_size`. For hosts
+whose config doesn't expose `hidden_size` canonically (Whisper
+encoder, encoder-decoder architectures, non-transformer hosts), the
+resolution returns `None` and diagnostics fall back gracefully —
+all four row fields stay `None` and no advisory prints. If you know
+the residual width for your host, the Python API accepts
+`host_d_model_override=N` on `ForgePipeline.sweep_pareto(...)` to
+short-circuit the AutoConfig lookup and force diagnostics on.
+
+### Inspect
 
 `sae-forge inspect` is the no-torch triage command: it loads the basis,
 prints kept-id count, decoder-norm distribution, scale-compression ratio

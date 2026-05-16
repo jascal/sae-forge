@@ -41,7 +41,7 @@ stateDiagram-v2
       [*] --> starting
       starting --> compressed : start / compress_with_polygram
       starting --> [*] : error / log_error
-      compressed --> regrown : compress_done [should_regrow] / perform_regrowth
+      compressed --> regrown : compress_done [should_regrow] / adapt_and_regrow
       compressed --> compressed : compress_done [no_regrow_more_passes] / compress_with_polygram
       compressed --> projected : compress_done [no_regrow_done] / project_to_subspace
       compressed --> [*] : error / log_error
@@ -194,6 +194,98 @@ optional regrow, exit to projected. `=2` adds a second compress
 that prunes anything dead in the regrowth output. `=3+` is rarely
 useful — diminishing returns and you are spending compress passes
 on increasingly tiny improvements.
+
+#### Adaptive regrow
+
+`--regrow-count N` (the v0.2 default) regrows exactly `N` features
+every basis-loop cycle, on every shard. That's fine for single-shard
+runs and for runs where you've already tuned `N` against your data.
+On real multi-shard / continual-learning runs it shows two friction
+points:
+
+- **Per-domain tuning.** The right `N` for a small-vocab shard
+  differs from the right `N` for a distribution-shifted shard later
+  in the stream.
+- **No back-pressure.** A run that compressed too aggressively keeps
+  regrowing the same fixed `N` and underfits all the way through. A
+  run that compressed gently inflates uncontrollably.
+
+`--adaptive-regrow` opts into a controller that consumes the
+polygram-side `n_features_kept` signal (post-compression basis size)
+and targets a configured `--n-features-target`, bounded by
+`[regrow_count, regrow_max]`.
+
+**The controller equation (verbatim from `saeforge.basis.RegrowController.next_count`):**
+
+```python
+gap     = max(0, n_features_target - n_features_kept)
+damped  = round(gap * regrow_damping)
+return    max(regrow_count, min(damped, regrow_max))
+```
+
+Properties:
+
+- `regrow_count <= effective_regrow_count <= regrow_max` always.
+- Larger gap → larger effective (until capped at `regrow_max`).
+- When the basis already exceeds the target, the controller returns
+  `regrow_count` (no growth pressure).
+- The first basis-loop cycle in a forge run (before any compression
+  has populated `current_feature_count`) skips the controller and
+  uses `regrow_count` directly.
+
+**Signal source.** v1 uses `n_features_kept` from the polygram
+`CompressionReport` *exclusively*. The choice is deliberate: the
+signal is direct (it's already the controller's target metric),
+already on the `transitions_log`, and fully deterministic given the
+seed. Loss-based signals (`recent_eval_losses`) are intentionally
+deferred — fine-tune RNG and eval-input ordering would have to be
+pinned project-wide to keep the controller reproducible. Tracked in
+the follow-up `adaptive-regrow-loss` change.
+
+**Tuning guidelines.** Concrete combinations that produce different
+growth profiles (mapped against the synthetic scenario in
+`tests/fsm/test_adaptive_regrow.py::test_adaptive_regrow_grows_smoothly_toward_target`,
+which drives `current=100, target=300, regrow_count=5, regrow_max=64`
+through 6 cycles):
+
+| Goal | `--regrow-damping` | `--regrow-max` | Behaviour |
+|------|--------------------|----------------|-----------|
+| Conservative, smooth (default) | `0.5` | `≈ 0.2 × n_features_target` | Asymptotes toward target over many cycles; no overshoot |
+| Hit target faster | `→ 1.0` | `≈ 0.5 × n_features_target` | Reaches target in 2-3 cycles, can plateau hard |
+| Hit target slower | `→ 0.25` | `≈ 0.2 × n_features_target` | Smoother curve, more cycles to reach target |
+| No adaptation | (toggle off) | `0` (inert) | v0.2 fixed-regrow path; byte-identical to v0.2 |
+
+Typical CLI invocation for continual-learning with adaptive growth
+toward a 300-feature basis, capped at 64 new features per cycle:
+
+```bash
+sae-forge forge ./compressed.safetensors \
+  --host-model gpt2 \
+  --output-dir runs/adaptive \
+  --regrow-count 5 \
+  --regrow-layer 8 \
+  --adaptive-regrow \
+  --n-features-target 300 \
+  --regrow-max 64 \
+  --regrow-damping 0.5
+```
+
+**Interaction with `--protect-top-k`.** Adaptive regrow grows the
+basis without touching the protected set. The protected count is
+fixed (absolute, not a ratio), so growing the basis from 100 to 200
+features while `--protect-top-k 5` shrinks the protected fraction
+from 5% to 2.5%. This is documented behavior, not a bug: the right
+long-term fix is `--protect-top-k-ratio` (tracked as the
+`protect-top-k-ratio` follow-up). For now, set `--protect-top-k`
+relative to your *final* expected basis size (i.e.
+`n_features_target`), not the starting count.
+
+**Determinism.** Two runs with identical seeds and configs produce
+byte-identical forged weights under `--adaptive-regrow` — the
+controller is a pure function of the polygram-side signal, which is
+itself deterministic given the seed. The byte-equivalence gate
+(`test_imperative_and_fsm_byte_equivalent`) continues to pass
+unchanged under `--adaptive-regrow` off (the v0.2 default).
 
 #### `protect_score` choices
 

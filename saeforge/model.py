@@ -20,7 +20,16 @@ from saeforge.projector import SubspaceProjector
 from saeforge.utils.lazy import require_extra
 
 
-_SUPPORTED_FAMILIES = ("gpt2", "llama", "gemma2", "qwen2", "qwen3", "qwen3_moe")
+_SUPPORTED_FAMILIES = (
+    "gpt2",
+    "llama",
+    "gemma2",
+    "qwen2",
+    "qwen3",
+    "qwen3_moe",
+    "whisper_encoder",
+)
+_SUPPORTED_OUTPUT_KINDS = ("logits", "encoder_states")
 
 
 @dataclass
@@ -44,6 +53,10 @@ class NativeModelConfig:
       (``input_layernorm``, ``post_attention_layernorm``,
       ``pre_feedforward_layernorm``, ``post_feedforward_layernorm``)
       and optional logit soft-capping post-``lm_head``.
+    - ``"whisper_encoder"`` — non-causal audio encoder. Conv1d mel stem
+      (frozen-copied, not projected), sinusoidal positional embeddings,
+      Linear MHA q/k/v/o, GELU MLP (fc1/fc2). No ``lm_head``;
+      ``output_kind`` is ``"encoder_states"`` and ``vocab_size`` is 0.
     """
 
     family: str
@@ -53,7 +66,11 @@ class NativeModelConfig:
     num_heads: int
     head_dim: int
     intermediate_size: int
-    vocab_size: int
+    vocab_size: int = 0
+    # ``"logits"`` (default — every LM family) produces a vocab-shaped head.
+    # ``"encoder_states"`` (whisper_encoder) returns per-frame hidden states
+    # and forbids a vocab head. Cross-constraints enforced in ``__post_init__``.
+    output_kind: str = "logits"
     max_position_embeddings: int = 1024
     layer_norm_epsilon: float = 1e-5
     activation: str = "gelu"
@@ -102,6 +119,36 @@ class NativeModelConfig:
                 f"family must be one of {_SUPPORTED_FAMILIES}; "
                 f"got {self.family!r}"
             )
+        if self.output_kind not in _SUPPORTED_OUTPUT_KINDS:
+            raise ValueError(
+                f"output_kind must be one of {_SUPPORTED_OUTPUT_KINDS}; "
+                f"got {self.output_kind!r}"
+            )
+        # Cross-constraints between family / output_kind / vocab_size.
+        # whisper_encoder is the only encoder-states family in v0.4; LM
+        # families require a vocab head.
+        if self.family == "whisper_encoder":
+            if self.output_kind != "encoder_states":
+                raise ValueError(
+                    f"family='whisper_encoder' requires "
+                    f"output_kind='encoder_states'; got {self.output_kind!r}"
+                )
+        if self.output_kind == "logits" and self.vocab_size <= 0:
+            raise ValueError(
+                f"output_kind='logits' requires vocab_size > 0; "
+                f"got vocab_size={self.vocab_size}"
+            )
+        if self.output_kind == "encoder_states":
+            if self.vocab_size != 0:
+                raise ValueError(
+                    f"output_kind='encoder_states' requires vocab_size == 0; "
+                    f"got vocab_size={self.vocab_size}"
+                )
+            if self.family != "whisper_encoder":
+                raise ValueError(
+                    f"output_kind='encoder_states' is only valid for "
+                    f"family='whisper_encoder'; got family={self.family!r}"
+                )
         if self.attention_width not in ("host", "feature_native"):
             raise ValueError(
                 f"attention_width must be 'host' or 'feature_native'; got {self.attention_width!r}"
@@ -182,6 +229,10 @@ def _build_torch_module(config: NativeModelConfig):
         from saeforge.adapters.llama import build_llama_family_module
 
         return build_llama_family_module(config)
+    if config.family == "whisper_encoder":
+        from saeforge.adapters.whisper import build_whisper_encoder_module
+
+        return build_whisper_encoder_module(config)
     raise ValueError(
         f"_build_torch_module: unknown family {config.family!r} "
         f"(NativeModelConfig.__post_init__ should have caught this)"

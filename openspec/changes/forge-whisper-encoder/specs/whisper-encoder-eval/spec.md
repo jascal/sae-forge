@@ -10,12 +10,13 @@ distinct from the existing per-token KL evaluator
 per-frame vectors, not distributions over a vocabulary — KL is the
 wrong signal.
 
-## Requirements
+## ADDED Requirements
 
 ### Requirement: cosine_faithfulness returns per-frame averaged similarity
 
-`saeforge.audio_eval.cosine_faithfulness(forged, host, audio_features,
-*, device="cpu") -> float` SHALL:
+`saeforge.audio_eval.cosine_faithfulness` SHALL be a callable with the
+signature `(forged, host, audio_features, *, device="cpu") -> float`
+that:
 
 1. Run the host encoder on `audio_features` to produce host states
    of shape `(batch, n_frames, d_model)`. The host's encoder is
@@ -125,13 +126,13 @@ The dispatch SHALL be local to the action — no FSM topology change.
 
 ### Requirement: Pre-captured host states are an optimization, not a contract
 
-The action MAY consume a pre-captured `ctx["_eval_encoder_states"]`
-tensor instead of running the host encoder forward inline, when the
-caller has chosen to pre-capture them outside the FSM (e.g. to skip
-loading the host model into the action). When
-`_eval_encoder_states` is present, the action SHALL use it directly
-and SHALL NOT call `host.encoder(audio_features)` — the host encoder
-forward is the costly step we are skipping.
+`evaluate_faithfulness` SHALL consume a pre-captured
+`ctx["_eval_encoder_states"]` tensor when present (and SHALL NOT call
+`host.encoder(audio_features)` in that case — the host encoder
+forward is the costly step we are skipping). When the field is
+absent, the action MUST run the host forward inline. Both paths
+produce the same `faithfulness` scalar to within fp32 accumulation
+noise.
 
 When `_eval_encoder_states` is absent, the action SHALL run the host
 forward via `host.encoder(audio_features)` (or

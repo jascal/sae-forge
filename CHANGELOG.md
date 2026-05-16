@@ -33,6 +33,247 @@ their corresponding OpenSpec change is archived.
   registration. Synthetic small-MoE adapter tests
   (3 layers × 4 experts × top-2) cover the M4 surface.
 
+### Added (add-auto-materialise-sweep)
+
+- **One-tool Axis-4 workflow.** `sae-forge sweep-pareto --auto-materialise`
+  bundles polygram's `BehaviouralValidator → Compressor.plan_pareto →
+  apply` into the same invocation, with the
+  validation-vs-eval-prompts leakage firewall as a first-class API
+  constraint (refused same-path resolution by default;
+  `--allow-validation-eval-overlap` surfaces the choice in every
+  frontier row's `validation_eval_overlap` field).
+- **New CLI flags** on `sweep-pareto`: `--auto-materialise`,
+  `--validation-prompts`, `--pareto`, `--layer`,
+  `--validation-threshold`, `--validation-jaccard-threshold`,
+  `--score-field`, `--rep-selection` (passes polygram 0.5.0's
+  `kl_attribution` through), `--encoding-class LABEL:CLASS`
+  (repeatable), `--encoding-qubits LABEL:N` (repeatable),
+  `--allow-validation-eval-overlap`, `--force-rematerialise`,
+  `--plan-only`.
+- **`ParetoFrontierRow` gains three methodological provenance
+  fields**: `validation_threshold`, `encoding_class`,
+  `validation_eval_overlap`. Populated only under
+  `--auto-materialise`; default `None`. Backwards-compatible (old
+  consumers see null).
+- **Cache under `<output-dir>/_materialised/<label>/`**, content-
+  addressed via SHA-256 of the SAE checkpoint and validation prompts
+  plus the threshold/encoding/layer/targets fields. Reruns with
+  unchanged inputs skip the validator + Compressor entirely.
+  `--force-rematerialise` is the escape hatch.
+- **`--plan-only`**: prints per-encoding cache status
+  (`HIT` / `MISS` with diffing-fields), SHA-256 fingerprints,
+  target K list, validator-forward-count estimate, then exits 0
+  without invoking validator / Compressor / forge. Mutually
+  exclusive with `--frontier-only` (different lifecycle stages).
+- **`saeforge.auto_materialise` module**: `AutoMaterialiseSpec`
+  dataclass, `compute_cache_key`, `is_cache_hit`,
+  `materialise()`, `format_plan_only_block`. Numpy-only on the cold
+  paths; lazy polygram + transformers imports.
+- **CLI refusal behaviour** spelled out in the spec: validator-tuning
+  flags require `--auto-materialise`; mixed mode (auto + directory
+  encoding paths) refused; same-path validation/eval prompts refused
+  unless overridden; unknown encoding class names refused at parse
+  time with the supported set listed; `HEA_Rung2` without
+  `--encoding-qubits` defaults `n_qubits=3` (polygram default).
+- **ClusteredDictionary explicitly excluded.** The supported encoding
+  class set is `MPSRung1` / `Rung3` / `Rung4` / `HEA_Rung2` —
+  `BehaviouralValidator.__post_init__` requires `.features` access
+  that `ClusteredDictionary` doesn't satisfy. For N>8 SAEs, use
+  `HEA_Rung2(n_qubits=N)`.
+
+### Added (add-forge-quality-diagnostics)
+
+- **Forge-quality diagnostics on every sweep row.** `ParetoFrontierRow`
+  gains four new optional fields populated when the sweep can resolve
+  the host's residual stream width:
+  - `host_d_model` — `AutoConfig.from_pretrained(host_model_id).hidden_size`
+    (config-only fetch; cached once per sweep).
+  - `basis_rank` — `numpy.linalg.matrix_rank(W_dec_kept)` for the
+    surviving (non-zero) rows of the polygram-compressed SAE.
+  - `quality_ratio` — `basis_rank / host_d_model`.
+  - `quality_tier` — heuristic four-tier categorical (`saturated` ≥
+    1.0, `good` ≥ 0.5, `undersized` ≥ 0.0625, else `degenerate`).
+    Tweakable via `--quality-tier-thresholds`.
+- **Pre-flight stderr advisory** when any encoding's smallest-K basis
+  is in the `undersized` or `degenerate` tier. Names the encoding,
+  K, basis_rank, host_d_model, computed ratio, suggested K floor,
+  and a fixed clarification sentence: "'degenerate' describes the
+  rank ratio, not the validity of the run; exploratory low-rank
+  smokes remain valid for impl validation."
+- **Opt-in `--quality-floor RATIO`** refuses the sweep before any
+  forge call when any encoding's smallest-K ratio falls below the
+  floor. Default behaviour is advisory-only.
+- **`--quality-tier-thresholds STR`** overrides the heuristic
+  boundaries (e.g.,
+  `--quality-tier-thresholds saturated:2.0,good:1.0,undersized:0.25`).
+  Parser enforces format, name set, and ordering constraint.
+- **Diagnostics populated regardless of forge outcome.** Failure
+  rows (`error_message` populated) and `--frontier-only` rows both
+  carry the four diagnostic fields, so analysts can distinguish
+  "forge bug" from "structurally doomed setup" without reading row
+  metrics.
+- **`QualityTier` and `QualityThresholds` exported from `saeforge`**
+  for downstream tooling that wants to consume the schema.
+- **Public surface bumped** to include `QualityTier` and
+  `QualityThresholds`; backwards-compatible (existing readers see
+  `null` for the four new fields).
+- **No new dependencies.** Uses the existing `transformers` extra
+  for `AutoConfig` (already pulled in by `[torch]`/`[intel]`).
+  Failure to resolve `host_d_model` (offline, gated model, non-LM
+  host) silently disables diagnostics — the sweep proceeds with
+  all four fields as `None` and no advisory printed.
+
+### Added (add-pareto-sweep-driver)
+
+- **Bundled fix: `torch_dtype=` for transformers compat.** Two
+  `AutoModelForCausalLM.from_pretrained(..., dtype=...)` call sites
+  (`forge.py` `_run_real_imperative` and `_run_real_fsm`) used the
+  transformers≥4.50 `dtype=` alias, which doesn't exist on the
+  `[intel]` extra's pinned `transformers>=4.46,<4.50`. Switched both
+  to `torch_dtype=` — canonical name, works on both pin lines. Caught
+  during the live Axis-4 MBP smoke for this PR (latent regression from
+  PR #9, surfaced because the sweep is the first user-facing
+  multi-row path that triggers `from_pretrained` repeatedly on Intel).
+- **Pareto sweep driver.** New `saeforge sweep-pareto` CLI subcommand
+  and `ForgePipeline.sweep_pareto()` method that forge across per-K
+  materialised SAE checkpoints produced by
+  `polygram compress --pareto --pareto-materialize`. Optionally spans
+  multiple labelled encodings (e.g. MPS vs Rung4) — pass
+  `--encoding LABEL:PATH` repeatedly. Emits one JSONL row per
+  `(encoding, target_n_features_kept)` capturing kept-feature count,
+  downstream KL, perplexity, fine-tune loss, and elapsed seconds.
+  The load-bearing primitive for Axis 4 of polygram's rung-viability
+  methodology — end-to-end downstream confirmation that the Axis 1
+  compression-coverage lift cashes out in forged-model KL space.
+- **Three lifecycle states per row.** *Success* (forge ran),
+  *frontier-only* (`--frontier-only` flag, no forge), and
+  *row failure* (forge raised). Downstream consumers filter on
+  `error_message is None` before reading metric fields. Failure rows
+  are recorded with `error_message` populated; the sweep continues to
+  the next row.
+- **Resumable.** `frontier.jsonl` is append-only; rerunning the sweep
+  skips already-completed `(label, K)` pairs. Truncated last lines
+  (mid-write crashes) are detected, dropped, and rewritten on the
+  next invocation. No lockfiles or sentinel files.
+- **`--frontier-only` mode** emits manifest-derived columns only
+  (`target_n_features_kept`, `n_features_kept_actual`,
+  `pareto_reached_target`) without invoking the forge — cheap
+  exploratory triage. Pipe through `jq` to find candidate K values
+  before committing forge compute. Falls back to non-zero-row counting
+  on the SAE checkpoint when `pareto.json` is absent.
+- **`ParetoFrontierRow` dataclass** exported from `saeforge`, with
+  `to_json_dict` / `from_json_dict` round-trip. Schema documented in
+  the `pareto-sweep` capability spec.
+- **Polygram pin bumped to `>=0.4.0`.** The new
+  `CompressionConfig.target_n_features_kept` and `score_field` fields
+  flow through the existing `_ConfigMixin.to_dict/from_dict` ctx
+  round-trip in `polygram-tuning-passthrough` with no sae-forge-side
+  code change — `Compressor` dispatches to `plan_with_target` when
+  the field is set.
+- **No FSM change.** The sweep is a flat Python loop; each row's
+  forge call uses the existing `StreamMachine → RefineMachine →
+  BasisMachine` hierarchy. The driver hot-swaps `pipeline.basis` and
+  `pipeline.projector` per row via a context manager that restores
+  the originals afterwards.
+- Tests: `tests/test_sweep.py` — 27 tests covering row validation +
+  JSON round-trip, manifest parsing, checkpoint enumeration (both
+  `pareto/` subdir and flat layouts), multi-K sweep, resumability,
+  multi-encoding, per-row failure isolation, retry-on-next-sweep,
+  frontier-only with and without manifest, CLI argument parsing,
+  and a `--frontier-only` end-to-end CLI smoke.
+
+### Added (add-host-distillation-finetune-loss)
+
+- **Host distillation in fine-tune.** `TrainingConfig` gains
+  `distill_alpha` (default 1.0 = pure LM-CE, byte-identical to
+  v0.3) and `distill_temperature` (default 2.0). When
+  `distill_alpha < 1.0`, the loss becomes
+  `α·CE(corpus) + (1-α)·τ²·KL(host ‖ forged)` — Hinton-style
+  soft-label distillation with the same KL direction as
+  `faithfulness_kl` (so the training objective matches the eval
+  metric). The host forward runs under `torch.no_grad()` in the
+  same autocast context as the student.
+- **`ForgePipeline` exposes the same knobs** as
+  `finetune_distill_alpha` / `finetune_distill_temperature`,
+  threading them into the per-step `TrainingConfig` via the
+  existing ctx-build path.
+- **`α=1.0` is zero-cost.** When `distill_alpha >= 1.0` the host
+  forward is skipped entirely; pre-change pipeline tests
+  pass unchanged.
+- **`run_finetune` rejects `host=None` + `α<1.0` at the top of
+  the function** before any batches are consumed, so the
+  misconfiguration can't waste work.
+- Docs: new "Host distillation" section in
+  `docs/finetune-recipe.md`. Tests:
+  `tests/test_distillation.py` (14 tests covering field
+  validation, byte-identity at `α=1.0`, gradient-flow at
+  `α=0.5`, host-unchanged invariant, `α=0.0` pure-KD path,
+  pipeline kwargs plumbing).
+
+### Added (forge-whisper-encoder)
+
+- **Whisper-encoder forging — first non-causal-LM architecture in the
+  registry.** New `WhisperEncoderAdapter` walks the encoder of either
+  `WhisperForConditionalGeneration` or `WhisperModel` into the
+  projected weight dict the matching native module consumes. The
+  decoder is out of scope for v0.4 (tracked as `forge-whisper-decoder`).
+- **`ForgedWhisperEncoder` native module.** Pre-LN block layout
+  matching HF Whisper, GELU MLP, MHA (no GQA). The conv stem
+  (`conv1`/`conv2`) and `embed_positions` are frozen-copied from the
+  host bit-for-bit — ε_conv accounting per `docs/algorithm.md` §10.5.
+  A `basis_encode` buffer carries the d → f bridge
+  (`projector.basis.pseudoinverse() * scale_boost`) at the conv-stem
+  → first-block boundary; state-dict-resident but not a parameter, so
+  the no-randomly-initialised-weights invariant applies cleanly.
+- **`NativeModelConfig.output_kind`** — new field, defaults to
+  `"logits"`. Accepts `"encoder_states"` for the Whisper-encoder
+  family. `vocab_size` now defaults to `0` and is gated by
+  `output_kind`. Cross-constraints enforced at construction. Existing
+  LM callers see byte-identical behaviour.
+- **`saeforge.audio_eval.cosine_faithfulness`** — per-frame cosine
+  similarity between forged encoder states and host states projected
+  through the forge's own `basis_encode` buffer. Optional
+  `precomputed_host_states` kwarg skips the host forward when the FSM
+  has pre-captured states.
+- **Family-aware `evaluate_faithfulness` dispatch.** LM families go
+  through `_kl_from_input_ids` verbatim (FSM byte-equivalence net
+  green); `whisper_encoder` goes through `cosine_faithfulness`. The
+  `faithfulness` ctx field carries the family-appropriate scalar;
+  `perplexity` carries `1 - cosine` for encoder so the existing
+  `perplexity < best_perplexity` progress check keeps the right
+  direction. `min_faithfulness` is reinterpreted per family (KL
+  negation for LM; positive cosine threshold for encoder).
+- **`ForgePipeline.eval_audio_features` and `eval_encoder_states`.**
+  Pipeline-level fields plumbed through `_build_fsm_ctx`. Mutually
+  exclusive with `eval_prompts` at construction. The
+  `eval_encoder_states` field is the audio-side analog of pre-
+  tokenised `_eval_input_ids` — when set, the host forward is
+  skipped inside the FSM.
+- **`saeforge.audio_data.synthetic_mel_features`** — pure-numpy
+  sine-sweep + Gaussian noise synthesiser producing
+  `(batch, 80, n_frames)` tensors shaped like Whisper input. Used
+  by the synthetic example + tests; no `[audio]` extra required.
+- **`sae-forge forge --audio-features-path FILE.pt`** — CLI flag,
+  argparse-level mutually exclusive with `--eval-prompts`. Loads a
+  `torch.save`'d tensor and passes it through to
+  `ForgePipeline.eval_audio_features`.
+- **`[audio]` pyproject extra** pinning `librosa>=0.10`. Optional —
+  only the real-audio `.wav`/`.flac` mel-extraction path needs it.
+  Added to `[all]`.
+- **New examples and docs.** `examples/forge_whisper_synthetic.py`
+  runs the full pipeline on a tiny synthetic Whisper without HF
+  download or audio files. `docs/audio-forge.md` is the user-facing
+  reference; `docs/algorithm.md` §10.5 documents the algorithmic
+  surface (output_kind, vocab_size=0, the d→f bridge, ε_conv).
+- **Spec correction in the same change.** The architecture-adapters
+  spec delta for Whisper originally listed q/k/v_proj.weight as
+  `(f, d)` and out_proj.weight as `(d, f)`; under HF
+  `nn.Linear (out, in)` convention these need to be `(d, f)` and
+  `(f, d)` respectively. The `(d,)` `q_proj.bias` alongside the
+  original `(f, d)` `q_proj.weight` was self-inconsistent (Linear
+  bias must match the first weight axis). Spec now matches the
+  implementation and HF convention.
+
 ### Added (qwen3-dense-support)
 
 - **Qwen3 dense architecture adapter.** `Qwen3Adapter` inherits from
@@ -59,6 +300,43 @@ their corresponding OpenSpec change is archived.
   weights through three bases, and then silently dropped the bridges
   on the forward pass. Llama, Gemma-2, and Qwen2 hybrid forges now
   work end-to-end. Default-off behavior is byte-identical to today.
+### Added (adaptive-regrow)
+
+- **Adaptive regrow controller** in `BasisMachine`. Opt-in via
+  `--adaptive-regrow` (or `ForgePipeline(adaptive_regrow=True)`).
+  Consumes the polygram-side `n_features_kept` signal and grows the
+  basis toward `--n-features-target`, bounded by
+  `[regrow_count, regrow_max]` and damped by `--regrow-damping`.
+  Defaults preserve byte-equivalence with the v0.2 fixed-regrow path
+  (the master toggle is off by default; the byte-equivalence gate
+  continues to pass unmodified).
+- `saeforge.basis.RegrowController.next_count(...)` — deterministic
+  pure-function controller; testable in isolation.
+- `saeforge.actions.adapt_and_regrow` — composed action that wraps
+  `perform_regrowth` with the controller. Short-circuits to
+  `perform_regrowth` under disabled / cold-start, so v0.2 behavior is
+  bit-for-bit identical.
+- Four new CLI flags on `sae-forge forge`: `--adaptive-regrow`,
+  `--regrow-max`, `--n-features-target`, `--regrow-damping`.
+- Four new `ForgePipeline` fields: `adaptive_regrow`, `regrow_max`,
+  `n_features_target`, `regrow_damping`. Validated in
+  `__post_init__` when the master toggle is on (require
+  `regrow_max > regrow_count` AND `n_features_target > 0`); silently
+  inert otherwise.
+
+### Changed (adaptive-regrow)
+
+- `BasisMachine`'s `compressed → regrown` transition action renames
+  from `perform_regrowth` to `adapt_and_regrow`. State set,
+  transition graph, and guard expressions are unchanged — the
+  topology test (`tests/fsm/test_topology.py`) continues to pass.
+  The committed Mermaid diagram in `docs/advanced-fsm-options.md`
+  regenerates with one label change.
+- `transitions_log` schema is additive — under
+  `adaptive_regrow=True`, each regrow cycle gains one extra entry
+  (`adapt_regrow_count`) before the existing `perform_regrowth`
+  entry. Under `adaptive_regrow=False` the log shape is byte-identical
+  to v0.2.
 
 ### Changed (hierarchical-fsm)
 

@@ -38,6 +38,17 @@ class TrainingConfig:
 
     log_every_steps: int = 10
 
+    # Host-distillation knobs (add-host-distillation-finetune-loss).
+    # With distill_alpha=1.0 (default), the per-step loss is pure
+    # corpus cross-entropy and the host forward is skipped entirely —
+    # byte-identical to the pre-change training loop. With
+    # distill_alpha < 1.0, run_finetune additionally runs a host
+    # forward under no_grad on the same batch and the loss becomes
+    # alpha * CE(corpus) + (1-alpha) * tau**2 * KL(host || forged).
+    # Requires a non-None `host` argument at run_finetune call time.
+    distill_alpha: float = 1.0
+    distill_temperature: float = 2.0
+
     def __post_init__(self) -> None:
         if self.precision not in ("fp32", "bf16", "fp16"):
             raise ValueError(
@@ -45,6 +56,14 @@ class TrainingConfig:
             )
         if self.warmup_steps < 0 or self.total_steps < 1:
             raise ValueError("warmup_steps must be >=0 and total_steps must be >=1")
+        if not (0.0 <= self.distill_alpha <= 1.0):
+            raise ValueError(
+                f"distill_alpha must lie in [0.0, 1.0]; got {self.distill_alpha}"
+            )
+        if self.distill_temperature <= 0:
+            raise ValueError(
+                f"distill_temperature must be > 0; got {self.distill_temperature}"
+            )
 
 
 @dataclass
