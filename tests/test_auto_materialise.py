@@ -88,6 +88,35 @@ class TestAutoMaterialiseSpec:
         )
         assert spec.encoding_kwargs["n_qubits"] == 5
 
+    def test_accepts_rung5_with_amp_qubits(self, tmp_path):
+        sae = tmp_path / "sae.safetensors"
+        _write_dummy_sae(sae)
+        spec = AutoMaterialiseSpec(
+            label="rung5",
+            sae_checkpoint=sae,
+            encoding_class="Rung5",
+            encoding_kwargs={"n_amp_qubits": 3},
+        )
+        assert spec.encoding_class == "Rung5"
+        assert spec.encoding_kwargs["n_amp_qubits"] == 3
+
+    def test_rung5_resolves_to_polygram_class(self, tmp_path):
+        """End-to-end resolution: AutoMaterialiseSpec(Rung5, k=3) →
+        polygram.Rung5(n_amp_qubits=3) → max_features=64."""
+        pytest.importorskip("polygram")
+        sae = tmp_path / "sae.safetensors"
+        _write_dummy_sae(sae)
+        spec = AutoMaterialiseSpec(
+            label="rung5",
+            sae_checkpoint=sae,
+            encoding_class="Rung5",
+            encoding_kwargs={"n_amp_qubits": 3},
+        )
+        cls = _resolve_encoding_class(spec.encoding_class)
+        instance = cls(**spec.encoding_kwargs)
+        assert instance.max_features == 64
+        assert instance.n_amp_qubits == 3
+
     def test_hea_rung2_polygram_default_is_n_qubits_3(self, tmp_path):
         """Pins polygram's HEA_Rung2 default n_qubits=3 (cap=8). The CLI
         help text describes the fallback users hit when --encoding-qubits
