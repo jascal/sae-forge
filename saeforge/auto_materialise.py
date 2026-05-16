@@ -104,6 +104,7 @@ def compute_cache_key(
     score_field: str,
     rep_selection: str,
     assign_phase_knobs: bool = False,
+    learn_axis_assignment: bool = False,
 ) -> dict[str, Any]:
     """Compute the cache key for a materialisation run.
 
@@ -142,6 +143,7 @@ def compute_cache_key(
         "score_field": str(score_field),
         "rep_selection": str(rep_selection),
         "assign_phase_knobs": bool(assign_phase_knobs),
+        "learn_axis_assignment": bool(learn_axis_assignment),
     }
 
 
@@ -217,6 +219,7 @@ def materialise(
     output_root: Path,
     force_rematerialise: bool = False,
     assign_phase_knobs: bool = False,
+    learn_axis_assignment: bool = False,
 ) -> tuple[Path, dict[str, Any], list[str]]:
     """Run polygram's validator + plan_pareto + apply chain for one encoding.
 
@@ -252,6 +255,7 @@ def materialise(
         score_field=score_field,
         rep_selection=rep_selection,
         assign_phase_knobs=assign_phase_knobs,
+        learn_axis_assignment=learn_axis_assignment,
     )
 
     if not force_rematerialise:
@@ -274,6 +278,7 @@ def materialise(
         rep_selection=rep_selection,
         materialised_dir=materialised_dir,
         assign_phase_knobs=assign_phase_knobs,
+        learn_axis_assignment=learn_axis_assignment,
     )
 
     (materialised_dir / "auto_materialise_meta.json").write_text(
@@ -295,6 +300,7 @@ def _run_materialisation_chain(
     rep_selection: str,
     materialised_dir: Path,
     assign_phase_knobs: bool = False,
+    learn_axis_assignment: bool = False,
 ) -> None:
     """Run polygram's BehaviouralValidator + Compressor.plan_pareto + apply
     against ``spec``, writing artifacts to ``materialised_dir``.
@@ -337,6 +343,8 @@ def _run_materialisation_chain(
     from_sae_lens_kwargs: dict[str, Any] = {"encoding": encoding_instance}
     if assign_phase_knobs:
         from_sae_lens_kwargs["assign_phase_knobs"] = True
+    if learn_axis_assignment:
+        from_sae_lens_kwargs["learn_axis_assignment"] = True
 
     dictionary, _selection_report = from_sae_lens(
         records, slot_ids, **from_sae_lens_kwargs
@@ -420,6 +428,7 @@ def format_plan_only_block(
         f"    encoding_class={cache_key['encoding_class']}",
         f"    encoding_kwargs={cache_key['encoding_kwargs']}",
         f"    assign_phase_knobs={cache_key.get('assign_phase_knobs', False)}",
+        f"    learn_axis_assignment={cache_key.get('learn_axis_assignment', False)}",
         f"    validator_forward_count_estimate={estimated_forwards}",
     ]
     return "\n".join(lines)

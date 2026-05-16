@@ -348,6 +348,23 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     sweep.add_argument(
+        "--learn-axis-assignment",
+        action="store_true",
+        help=(
+            "[--auto-materialise only] Pass learn_axis_assignment=True to "
+            "polygram's from_sae_lens (polygram >=0.8.0). Replaces the "
+            "hardcoded PC2→α / PC3→φ / PC4..→amp_knobs permutation with "
+            "a greedy axis-to-knob search that maximises decoder-Gram "
+            "Spearman. On synthetic SAEs the prototype lifts Spearman "
+            "by ~3× while improving gram conditioning ~10 decades; "
+            "real-SAE replication is the gate before flipping to default. "
+            "Default off. HEA_Rung2 falls back to the hardcoded helpers. "
+            "Flips the cache key — expect one MISS the first time you "
+            "set or clear this flag. See polygram's "
+            "docs/research/learned-axis-assignment.md."
+        ),
+    )
+    sweep.add_argument(
         "--encoding-class",
         action="append",
         default=None,
@@ -815,6 +832,8 @@ def _cmd_sweep_pareto(args: argparse.Namespace) -> int:
             auto_only_flags_set.append("--rep-selection")
         if args.assign_phase_knobs:
             auto_only_flags_set.append("--assign-phase-knobs")
+        if args.learn_axis_assignment:
+            auto_only_flags_set.append("--learn-axis-assignment")
         if args.encoding_class:
             auto_only_flags_set.append("--encoding-class")
         if args.encoding_qubits:
@@ -1089,6 +1108,7 @@ def _cmd_sweep_pareto(args: argparse.Namespace) -> int:
             score_field=args.score_field or "polygram_overlap",
             rep_selection=args.rep_selection or "scale_aware",
             assign_phase_knobs=bool(args.assign_phase_knobs),
+            learn_axis_assignment=bool(args.learn_axis_assignment),
             validation_eval_overlap=validation_eval_overlap,
             force_rematerialise=args.force_rematerialise,
             plan_only=args.plan_only,

@@ -499,3 +499,97 @@ class TestAssignPhaseKnobs:
             )
         assert "assign_phase_knobs" not in captured
         assert "encoding" in captured
+
+    def test_cache_key_learn_axis_assignment_default_false(self, tmp_path):
+        spec, prompts = self._inputs(tmp_path)
+        key = compute_cache_key(
+            spec=spec, validation_prompts_path=prompts, **self._common()
+        )
+        assert key["learn_axis_assignment"] is False
+
+    def test_cache_key_learn_axis_assignment_flip_invalidates(self, tmp_path):
+        spec, prompts = self._inputs(tmp_path)
+        k_off = compute_cache_key(
+            spec=spec, validation_prompts_path=prompts, **self._common()
+        )
+        k_on = compute_cache_key(
+            spec=spec, validation_prompts_path=prompts,
+            learn_axis_assignment=True, **self._common()
+        )
+        assert k_off != k_on
+        assert k_off["learn_axis_assignment"] is False
+        assert k_on["learn_axis_assignment"] is True
+
+    def test_plan_only_block_surfaces_learn_axis_assignment(self, tmp_path):
+        spec, prompts = self._inputs(tmp_path)
+        key = compute_cache_key(
+            spec=spec, validation_prompts_path=prompts,
+            learn_axis_assignment=True, **self._common()
+        )
+        block = format_plan_only_block(
+            spec=spec, cache_key=key, diff_fields=[], cache_hit=True,
+            n_prompts=1, avg_prompt_tokens=1.0,
+        )
+        assert "learn_axis_assignment=True" in block
+
+    def test_run_chain_forwards_learn_axis_to_from_sae_lens(
+        self, tmp_path, monkeypatch
+    ):
+        """learn_axis_assignment=True reaches polygram.from_sae_lens."""
+        pytest.importorskip("polygram")
+        import polygram
+
+        from saeforge.auto_materialise import _run_materialisation_chain
+
+        captured: dict[str, object] = {}
+
+        def fake_from_sae_lens(records, slot_ids, **kw):
+            captured.update(kw)
+            raise RuntimeError("captured-and-stop")
+
+        monkeypatch.setattr(polygram, "from_sae_lens", fake_from_sae_lens)
+
+        spec, prompts = self._inputs(tmp_path)
+        materialised_dir = tmp_path / "out_learn"
+        materialised_dir.mkdir()
+
+        with pytest.raises(RuntimeError, match="captured-and-stop"):
+            _run_materialisation_chain(
+                spec=spec,
+                validation_prompts_path=prompts,
+                materialised_dir=materialised_dir,
+                learn_axis_assignment=True,
+                **self._common(),
+            )
+        assert captured.get("learn_axis_assignment") is True
+
+    def test_run_chain_omits_learn_axis_kwarg_when_false(
+        self, tmp_path, monkeypatch
+    ):
+        """Default (False) omits the kwarg entirely so polygram < 0.8.0
+        without learn_axis_assignment in its signature would also work."""
+        pytest.importorskip("polygram")
+        import polygram
+
+        from saeforge.auto_materialise import _run_materialisation_chain
+
+        captured: dict[str, object] = {}
+
+        def fake_from_sae_lens(records, slot_ids, **kw):
+            captured.update(kw)
+            raise RuntimeError("captured-and-stop")
+
+        monkeypatch.setattr(polygram, "from_sae_lens", fake_from_sae_lens)
+
+        spec, prompts = self._inputs(tmp_path)
+        materialised_dir = tmp_path / "out_no_learn"
+        materialised_dir.mkdir()
+
+        with pytest.raises(RuntimeError, match="captured-and-stop"):
+            _run_materialisation_chain(
+                spec=spec,
+                validation_prompts_path=prompts,
+                materialised_dir=materialised_dir,
+                **self._common(),
+            )
+        assert "learn_axis_assignment" not in captured
