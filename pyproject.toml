@@ -83,7 +83,11 @@ intel = ["torch==2.2.2", "transformers>=4.46,<4.50", "numpy<2"]
 # room for the phase channels; qualitative invariants hold but
 # exact values change (polygram v2.2 Axis-1 numbers need
 # regeneration on a torch host).
-polygram = ["polygram>=0.6.0"]
+# Polygram 0.7.0 adds Rung5 — configurable-amp-width product encoding
+# (max_features = 8·2^k, k cap=16) for pareto sweeps above Rung4's
+# 32-feature cap. Plumbed through `--encoding-class LABEL:Rung5
+# --encoding-amp-qubits LABEL:K`.
+polygram = ["polygram>=0.7.0"]
 # orca-runtime-python — the classical orca-lang FSM runtime that drives
 # the v0.1 forge-outer-loop-fsm orchestrator. Required only for the
 # `--fsm` opt-in path; the default imperative ForgePipeline does not
@@ -106,7 +110,7 @@ all = [
     "jupyter",
     "torch>=2.2",
     "transformers>=4.46",
-    "polygram>=0.6.0",
+    "polygram>=0.7.0",
     "orca-runtime-python>=0.1.27",
     "datasets>=2.16",
     "librosa>=0.10",

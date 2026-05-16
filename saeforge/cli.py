@@ -355,9 +355,10 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "[--auto-materialise only, repeatable] Map an encoding label "
             "to a polygram encoding class. Supported: MPSRung1 (default; "
-            "cap=8), Rung3 (cap=16), Rung4 (cap=32), HEA_Rung2 (cap=2^N "
-            "via --encoding-qubits). For N>8 sliced SAEs, use "
-            "'--encoding-class LABEL:HEA_Rung2 --encoding-qubits LABEL:N'."
+            "cap=8), Rung3 (cap=16), Rung4 (cap=32), Rung5 (cap=8·2^k "
+            "via --encoding-amp-qubits), HEA_Rung2 (cap=2^N via "
+            "--encoding-qubits). For Rung5 sweeps, use "
+            "'--encoding-class LABEL:Rung5 --encoding-amp-qubits LABEL:K'."
         ),
     )
     sweep.add_argument(
@@ -372,6 +373,19 @@ def _build_parser() -> argparse.ArgumentParser:
             "(n_qubits=3, cap=8) — usually too small for stride-sampled "
             "SAEs; pass --encoding-qubits LABEL:5 (cap=32) or higher "
             "to match your sliced feature count."
+        ),
+    )
+    sweep.add_argument(
+        "--encoding-amp-qubits",
+        action="append",
+        default=None,
+        metavar="LABEL:K",
+        help=(
+            "[--auto-materialise only, repeatable, Rung5 only] "
+            "n_amp_qubits for the named encoding. Per-feature Hilbert "
+            "dim becomes 8·2^k. Required when --encoding-class LABEL:Rung5 "
+            "is set (Rung5 has no default amp-width). Polygram caps k at "
+            "RUNG5_MAX_N_AMP_QUBITS=16 (cap=524288)."
         ),
     )
     sweep.add_argument(
@@ -920,6 +934,10 @@ def _cmd_sweep_pareto(args: argparse.Namespace) -> int:
             qubits_map = _parse_label_value_specs(
                 args.encoding_qubits or [], flag_name="--encoding-qubits"
             )
+            amp_qubits_map = _parse_label_value_specs(
+                args.encoding_amp_qubits or [],
+                flag_name="--encoding-amp-qubits",
+            )
         except ValueError as exc:
             print(f"sae-forge sweep-pareto: {exc}", file=sys.stderr)
             return 2
@@ -951,11 +969,34 @@ def _cmd_sweep_pareto(args: argparse.Namespace) -> int:
                         file=sys.stderr,
                     )
                     return 2
+            if label in amp_qubits_map:
+                try:
+                    enc_kwargs["n_amp_qubits"] = int(amp_qubits_map[label])
+                except ValueError:
+                    print(
+                        f"sae-forge sweep-pareto: --encoding-amp-qubits "
+                        f"{label}:{amp_qubits_map[label]} must be an integer",
+                        file=sys.stderr,
+                    )
+                    return 2
             # HEA_Rung2 requires `depth` (no polygram default). Default to
             # depth=2, the standard HEA depth; expose --encoding-depth in a
             # future PR if real callers need to tune it.
             if enc_class == "HEA_Rung2":
                 enc_kwargs.setdefault("depth", 2)
+            # Rung5 requires `n_amp_qubits` (no polygram default).
+            # When --encoding-amp-qubits was not supplied for a Rung5
+            # encoding label, refuse rather than silently picking a
+            # value — k materially changes the per-feature Hilbert
+            # dim (8·2^k) so the user must state intent explicitly.
+            if enc_class == "Rung5" and "n_amp_qubits" not in enc_kwargs:
+                print(
+                    f"sae-forge sweep-pareto: --encoding-class "
+                    f"{label}:Rung5 requires --encoding-amp-qubits "
+                    f"{label}:K (Rung5 has no default amp-width).",
+                    file=sys.stderr,
+                )
+                return 2
             auto_materialise_specs.append(
                 AutoMaterialiseSpec(
                     label=label,

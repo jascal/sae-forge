@@ -1059,6 +1059,36 @@ class TestAutoMaterialiseCLIValidation:
         err = capsys.readouterr().err
         assert "Bogus" in err or "supported" in err.lower()
 
+    def test_rung5_without_amp_qubits_refused(
+        self, tmp_path, synthetic_compressed_sae, capsys
+    ):
+        """--encoding-class LABEL:Rung5 without --encoding-amp-qubits
+        LABEL:K is refused — Rung5 has no default amp-width."""
+        sae_file = self._make_sae_file(tmp_path, synthetic_compressed_sae)
+        validation = tmp_path / "v.txt"
+        validation.write_text("hello\n")
+        eval_p = tmp_path / "e.txt"
+        eval_p.write_text("world\n")
+        from saeforge.cli import main
+
+        rc = main([
+            "sweep-pareto",
+            "--auto-materialise",
+            "--encoding", f"r5:{sae_file}",
+            "--encoding-class", "r5:Rung5",
+            # Intentionally no --encoding-amp-qubits.
+            "--host-model", "gpt2",
+            "--output-dir", str(tmp_path / "out"),
+            "--validation-prompts", str(validation),
+            "--eval-prompts", str(eval_p),
+            "--pareto", "2",
+            "--layer", "8",
+        ])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "--encoding-amp-qubits" in err
+        assert "Rung5" in err
+
     def test_plan_only_on_cold_cache_prints_miss(
         self, tmp_path, synthetic_compressed_sae, capsys
     ):

@@ -27,6 +27,7 @@ _ENCODING_CLASS_REGISTRY: dict[str, str] = {
     "MPSRung1": "MPSRung1",
     "Rung3": "Rung3",
     "Rung4": "Rung4",
+    "Rung5": "Rung5",
     "HEA_Rung2": "HEA_Rung2",
 }
 
@@ -39,9 +40,12 @@ class AutoMaterialiseSpec:
     ``"rung4"``); appears in frontier rows and as the materialised
     directory's subdir name. ``sae_checkpoint`` is the path to an
     uncompressed SAE-Lens checkpoint (W_enc, W_dec, b_enc, b_dec).
-    ``encoding_class`` is one of the four supported polygram encoding
-    class names; ``encoding_kwargs`` carries class-specific arguments
-    (e.g. ``{"n_qubits": 5}`` for HEA_Rung2).
+    ``encoding_class`` is one of the supported polygram encoding
+    class names (``MPSRung1``, ``Rung3``, ``Rung4``, ``Rung5``,
+    ``HEA_Rung2``); ``encoding_kwargs`` carries class-specific
+    arguments — ``{"n_qubits": 5}`` for ``HEA_Rung2`` (MPS-core
+    width), ``{"n_amp_qubits": 3}`` for ``Rung5`` (amp-register
+    width; per-feature dim becomes ``8 · 2^k``).
     """
 
     label: str
