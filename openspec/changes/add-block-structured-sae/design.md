@@ -75,6 +75,29 @@ For any label that has `--encoding-partition LABEL:PATH`, the CLI refuses these 
 
 **Alternative considered**: global exclusivity (any `--encoding-partition` excludes all single-encoding flags across all labels). Rejected — would force the user to convert single-encoding labels into trivial single-block manifests just to mix modes in one sweep. Per-label is the minimum useful exclusivity.
 
+**Worked example — mixed sweep** (one partitioned label, one single-encoding label, with the global `--learn-axis-assignment` flag):
+
+```
+saeforge sweep-pareto \
+  --auto-materialise \
+  --encoding mps:gpt2_l8.safetensors \
+  --encoding hea:gpt2_l8.safetensors \
+  --encoding-partition mps:manifests/heavy_rung5_tail_mps.json \
+  --encoding-class hea:HEA_Rung2 \
+  --encoding-qubits hea:5 \
+  --learn-axis-assignment \
+  --validation-prompts vp.jsonl --eval-prompts ep.jsonl \
+  --pareto 25,50,100,211 --layer 8 \
+  --host-model gpt2 --output-dir out/
+```
+
+Behaviour:
+- The `mps` label materialises via the partition manifest. Each block's `learn_axis_assignment` is owned by the manifest; the global `--learn-axis-assignment` flag does NOT override any block.
+- The `hea` label materialises via single-encoding `HEA_Rung2(n_qubits=5)`. The global `--learn-axis-assignment` flag applies → polygram is called with `learn_axis_assignment=True` for that label.
+- Frontier rows: `mps` rows carry `encoding_class="BlockStructured"`, `partition_label="heavy:Rung5(k=4,learn)+tail:MPSRung1"`. `hea` rows carry `encoding_class="HEA_Rung2"`, `partition_label=null`. Both row sets share the same eval prompts so KL is directly comparable across them.
+
+If the user converts the `hea` label to a partition too (`--encoding-partition hea:hea_manifest.json` and removes `--encoding-class hea:... --encoding-qubits hea:...`), the global `--learn-axis-assignment` flag is then refused at parse time per Refusal 4 — every label owns its own policy and the global flag is meaningless.
+
 ## Risks
 
 1. **Polygram-side scope creep.** If polygram's `BlockStructuredDictionary` ends up needing per-block thresholds (e.g. the cancellation pair-score threshold has to vary across blocks because the heavy block's features are more cancellable), this sae-forge proposal's manifest schema is too thin. Mitigation: the manifest is a JSON object with named keys; adding `compression_threshold` per block is forward-compatible. Existing manifests stay valid.

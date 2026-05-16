@@ -1,3 +1,7 @@
+# Block-Structured Encoding
+
+Heterogeneous per-block encoding (capacity + axis-assignment policy) within a single SAE layer's dictionary. The on-disk change ID remains `add-block-structured-sae` for git-history continuity with the prior draft.
+
 ## Why
 
 Today, one layer's SAE feature dictionary is compressed by exactly one polygram encoding — the `--encoding-class` choice picks `MPSRung1` (cap=8), `Rung3` (cap=16), `Rung4` (cap=32), `Rung5(k)` (cap=8·2^k), or `HEA_Rung2(n_qubits=N)` (cap=2^N) for the *whole* dictionary, and every surviving feature is allocated the same parameter budget and the same axis-assignment policy.
@@ -107,5 +111,5 @@ Required follow-up (M4):
 - **Modified**: `saeforge/auto_materialise.py` (partition kwarg through `materialise` and `_run_materialisation_chain`; cache key includes partition SHA-256); `saeforge/sweep.py` (`ParetoFrontierRow.partition_label` field; propagated through `_process_row`); `saeforge/forge.py` (`ForgePipeline.sweep_pareto` pass-through); `saeforge/cli.py` (`--encoding-partition` flag, mutually exclusive with single per-label `--encoding-class` / `--encoding-amp-qubits` / `--encoding-qubits` / `--learn-axis-assignment`).
 - **New module**: `saeforge/partition.py` — manifest parser, schema validation (disjoint + complete coverage, encoding-class allowlist, per-block kwargs validation including `Rung5` requiring `n_amp_qubits`), SHA-256 helper, deterministic `partition_label` formatter. Numpy-only.
 - **No breaking changes**: row schema extension is forward-compatible (existing readers see `null`); no behaviour change unless `--encoding-partition` is set.
-- **Dependencies**: polygram `>=0.9.0` once the `add-encoding-partition` polygram-side capability ships (lands on top of polygram 0.8.0's `learn_axis_assignment`). Until then, this sae-forge proposal is **blocked** at the implementation tasks step. The proposal itself is a design lock-in so both sides can be written against the same contract.
+- **Dependencies**: polygram `>=0.9.0` once the `add-encoding-partition` polygram-side capability ships (lands on top of polygram 0.8.0's `learn_axis_assignment`). The exact version pin SHALL be revisited when the polygram-side PR lands — if the capability ships as 0.8.1 or 0.10.0 instead of 0.9.0, this proposal's `Dependencies` line is updated in the implementation PR rather than re-spec'd. Until then, this sae-forge proposal is **blocked** at the implementation tasks step. The proposal itself is a design lock-in so both sides can be written against the same contract.
 - **Risk note**: the polygram-side cross-block cancellation claim is the load-bearing assumption. If `Compressor`'s pair-scoring pass turns out to need per-block-aware similarity metrics (rather than running on the union with one threshold), the polygram-side proposal needs to surface that; this sae-forge proposal does not pre-commit to either path.
