@@ -43,10 +43,13 @@ dispatch — pinned by the byte-identity test in
 ### Requirement: adapter registry exposes a family-set helper
 
 `saeforge.adapters` SHALL expose
-`registered_families() -> frozenset[str]` returning the live set of
-`adapter.family` values across registered adapters. The helper
-SHALL be the source of truth for "which families does this build
-support".
+`registered_families() -> frozenset[str]` as a public helper
+returning the live set of `adapter.family` values across registered
+adapters. It SHALL be the single source of truth for "which
+families does this build support" and SHALL be importable as
+`from saeforge.adapters import registered_families` (added to
+`saeforge.adapters.__all__`). Tests, docs, and downstream tooling
+consume this helper instead of re-deriving the family set.
 
 `saeforge.model._SUPPORTED_FAMILIES` SHALL be populated at module
 import from `registered_families()` rather than maintained as a

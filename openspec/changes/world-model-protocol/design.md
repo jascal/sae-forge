@@ -166,6 +166,14 @@ groups five families into one builder via a switch on
 than a hardcoded family list inside `_build_torch_module` and the
 test count stays the same.
 
+If the per-family wrapper pattern grows beyond the five Llama
+families (e.g. a future "qwen3_audio" or another shared-builder
+group needs its own thin wrapper), the implementation should
+consolidate to a small factory helper inside the Llama adapter
+module — `_family_module_class(family: str) -> type` returning a
+cached per-family subclass. v1 keeps the inline subclasses; the
+factory is a follow-up if the pattern repeats.
+
 ### Decision 4: `_SUPPORTED_FAMILIES` becomes a derived property
 
 Today it's a module-level tuple in `model.py`:
@@ -226,8 +234,12 @@ attribute the dispatcher really requires is `family`.
 
 We accept the trade-off that type-checkers can't statically verify
 `build_native_config` returns a concrete type. A formal
-`NativeConfigProtocol` (with `family: str`, `hidden_size: int`,
-`to_dict()`, `from_dict()`) is a follow-up.
+`NativeConfigProtocol` is the planned follow-up — see the
+"Out of Scope" entry in `proposal.md` for the minimal contract
+(`family: str`, `hidden_size: int`, `to_dict()`, `from_dict()`).
+It is deliberately deferred until a non-transformer adapter
+exists to validate the shape against; speculating now risks a
+protocol that no concrete adapter needs.
 
 ### Decision 7: Migration is internal — no public API breaks
 

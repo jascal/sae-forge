@@ -116,6 +116,46 @@ equivalent is the adapter's `native_module_class()`.
   `CosineTarget()`. Future non-transformer adapters override to
   whatever's appropriate for the family.
 
+Structural conformance — a third-party adapter does NOT need to
+inherit from `ArchitectureAdapter`. Defining the four protocol
+members on any class is enough:
+
+```python
+class MyMambaAdapter:
+    family = "mamba"
+
+    def walk(self, host, projector, *, attention_width="host"):
+        # Return {param_name: np.ndarray}. attention_width is ignored
+        # for non-transformer adapters (kept on the protocol signature
+        # for transformer compatibility).
+        ...
+
+    def build_native_config(self, host, n_features, *, attention_width="host"):
+        # Return any object with a `.family: str` attribute matching
+        # self.family. Non-transformer adapters return their own
+        # config dataclass instead of NativeModelConfig.
+        ...
+
+    def native_module_class(self):
+        from saeforge_mamba.module import ForgedMamba
+        return ForgedMamba
+
+    def default_faithfulness_target(self):
+        # Inherit FaithfulnessTarget protocol; SSM-style adapters
+        # might return a per-state-step KL scorer instead of KL.
+        from saeforge_mamba.eval import StateTrajectoryKL
+        return StateTrajectoryKL()
+
+
+register_adapter(MyMambaHostClass, MyMambaAdapter())
+```
+
+This is the same ergonomic property `FaithfulnessTarget` provides:
+no required base class, just a shape. The bundled
+`ArchitectureAdapter` ABC is for adapters that want the inherited
+helpers (`grad_checkpoint_targets`, `to_numpy` import path), not
+a gating requirement on third parties.
+
 ### Modified artifacts
 
 - **`saeforge/model.py`**:
