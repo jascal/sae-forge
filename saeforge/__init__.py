@@ -15,7 +15,7 @@ from saeforge.model import NativeModel
 from saeforge.projector import SubspaceProjector
 from saeforge.sweep import ParetoFrontierRow, sweep_pareto
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 __all__ = [
     "ANOMALOUS_TOKEN_IDS",
