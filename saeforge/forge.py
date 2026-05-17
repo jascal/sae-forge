@@ -111,6 +111,16 @@ class ForgeResult:
     Constructing with ``faithfulness_kl=`` is also accepted and forwards
     to ``faithfulness`` / ``faithfulness_target_name = "kl"`` (with the
     same warning).
+
+    Note on the custom ``__init__``: a plain ``@dataclass`` cannot alias
+    a field name. The deprecation contract needs ``faithfulness_kl=`` to
+    be accepted on construction (forwarding to ``faithfulness=`` + the
+    ``"kl"`` target name with a ``DeprecationWarning``) and ``.faithfulness_kl``
+    to be readable as a property (returning the value when the target is
+    KL, ``None`` otherwise, also warning). That combination requires a
+    hand-written ``__init__`` and a ``@property`` / setter pair. The
+    ``@dataclass`` decorator is left in place for the field-list metadata
+    only — the synthesised ``__init__`` is overridden below.
     """
 
     model: NativeModel | None

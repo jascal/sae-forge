@@ -26,6 +26,13 @@ __all__ = [
 ]
 
 
+# Built-in family → default-target mapping. Kept as an explicit table
+# so adding a new host family (or a new built-in target) is one entry,
+# not a code change to a dispatch tree.
+#
+#   gpt2 / llama / gemma2 / qwen2 / qwen3   →   KLTarget
+#   whisper_encoder                         →   CosineTarget
+#   anything else (including None)          →   ValueError
 _LM_FAMILIES = frozenset({"gpt2", "llama", "gemma2", "qwen2", "qwen3"})
 
 

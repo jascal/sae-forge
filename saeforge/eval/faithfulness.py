@@ -46,7 +46,9 @@ class FaithfulnessTarget(Protocol):
           (canonical: ``exp(score)`` for KL).
         - ``better_when == "higher"``: ``perplexity_analog`` is a
           monotonically *decreasing* function of the score
-          (canonical: ``1 - score`` for cosine, clamped at 0).
+          (canonical: ``1 - score`` for cosine, clamped at 0; any
+          decreasing transform of ``score`` works as long as it is
+          positive-real).
 
     Notes for implementers
     ----------------------
