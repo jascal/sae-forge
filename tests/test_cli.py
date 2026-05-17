@@ -278,7 +278,7 @@ class TestAudioFeaturesPath:
                     model=None,
                     output_dir=output_dir,
                     n_params=0,
-                    faithfulness_kl=None,
+                    faithfulness=None,
                     extras={},
                 )
 
@@ -343,7 +343,7 @@ class TestEvalPromptsWiring:
                     model=None,
                     output_dir=output_dir,
                     n_params=0,
-                    faithfulness_kl=None,
+                    faithfulness=None,
                     extras={},
                 )
 
@@ -393,7 +393,7 @@ class TestEvalPromptsWiring:
                     model=None,
                     output_dir=output_dir,
                     n_params=0,
-                    faithfulness_kl=None,
+                    faithfulness=None,
                     extras={},
                 )
 

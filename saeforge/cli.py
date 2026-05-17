@@ -718,8 +718,9 @@ def _cmd_forge(args: argparse.Namespace) -> int:
     )
     result = pipeline.run(args.output_dir)
     print(f"forged: {result.output_dir} ({result.n_params} params)")
-    if result.faithfulness_kl is not None:
-        print(f"faithfulness KL: {result.faithfulness_kl:.4f}")
+    if result.faithfulness is not None:
+        target = result.faithfulness_target_name or "faithfulness"
+        print(f"{target}: {result.faithfulness:.4f}")
     return 0
 
 

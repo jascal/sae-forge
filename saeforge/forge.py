@@ -12,6 +12,7 @@ import numpy as np
 
 from saeforge.basis import FeatureBasis
 from saeforge.bridges import BridgeConfig
+from saeforge.eval.faithfulness import FaithfulnessTarget
 from saeforge.hybrid_basis import HybridBasisBundle
 from saeforge.model import NativeModel, _config_from_host
 from saeforge.projector import SubspaceProjector
@@ -32,7 +33,7 @@ class ForgeFailed(RuntimeError):
     from the GPT-2-only grad-checkpointing path running against a
     ForgedLlama) was swallowed into ``final_state: failed`` and
     returned to the caller as a ``ForgeResult`` with ``n_params=0`` and
-    ``faithfulness_kl=0.0`` — exit code 0 with no exception. Callers
+    ``faithfulness=0.0`` — exit code 0 with no exception. Callers
     had no signal that anything went wrong. The FSM dispatch now
     raises this exception when the run ends in ``failed``.
 
@@ -71,7 +72,7 @@ def _raise_if_failed(final: dict) -> None:
         transitions_log=final.get("transitions_log", []),
         extras={
             "n_params": final.get("n_params", 0),
-            "faithfulness_kl": final.get("faithfulness"),
+            "faithfulness": final.get("faithfulness"),
             "n_features": final.get("current_feature_count"),
         },
     )
@@ -85,15 +86,107 @@ if TYPE_CHECKING:  # pragma: no cover — type-only imports
     from saeforge.training.task_stream import TaskStream  # noqa: F401
 
 
+_FAITHFULNESS_KL_DEPRECATION_MSG = (
+    "ForgeResult.faithfulness_kl is deprecated in favour of the generic "
+    "ForgeResult.faithfulness (with ForgeResult.faithfulness_target_name "
+    "naming the active scorer). The property returns the value only when "
+    "the active target is 'kl' and will be removed one minor version after "
+    "the pluggable-faithfulness change lands."
+)
+
+
 @dataclass
 class ForgeResult:
-    """Structured output of a ``ForgePipeline.run`` call."""
+    """Structured output of a ``ForgePipeline.run`` call.
+
+    ``faithfulness`` is the active target's score (KL by default for LM
+    hosts, cosine for whisper_encoder, or a user-supplied scorer when
+    ``ForgePipeline(faithfulness=...)`` is set). ``faithfulness_target_name``
+    names the scorer so downstream consumers can match without re-deriving
+    it from ``host_model_id``.
+
+    ``faithfulness_kl`` is a deprecated alias kept for one minor version:
+    it returns ``faithfulness`` when the active target is ``"kl"`` and
+    ``None`` otherwise, emitting a :class:`DeprecationWarning` on read.
+    Constructing with ``faithfulness_kl=`` is also accepted and forwards
+    to ``faithfulness`` / ``faithfulness_target_name = "kl"`` (with the
+    same warning).
+
+    Note on the custom ``__init__``: a plain ``@dataclass`` cannot alias
+    a field name. The deprecation contract needs ``faithfulness_kl=`` to
+    be accepted on construction (forwarding to ``faithfulness=`` + the
+    ``"kl"`` target name with a ``DeprecationWarning``) and ``.faithfulness_kl``
+    to be readable as a property (returning the value when the target is
+    KL, ``None`` otherwise, also warning). That combination requires a
+    hand-written ``__init__`` and a ``@property`` / setter pair. The
+    ``@dataclass`` decorator is left in place for the field-list metadata
+    only — the synthesised ``__init__`` is overridden below.
+    """
 
     model: NativeModel | None
     output_dir: Path
     n_params: int = 0
-    faithfulness_kl: float | None = None
+    faithfulness: float | None = None
+    faithfulness_target_name: str | None = None
     extras: dict = field(default_factory=dict)
+
+    def __init__(
+        self,
+        model: NativeModel | None,
+        output_dir: Path,
+        n_params: int = 0,
+        faithfulness: float | None = None,
+        faithfulness_target_name: str | None = None,
+        extras: dict | None = None,
+        *,
+        faithfulness_kl: float | None = None,
+    ) -> None:
+        if faithfulness_kl is not None:
+            warnings.warn(
+                _FAITHFULNESS_KL_DEPRECATION_MSG,
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            if faithfulness is None:
+                faithfulness = faithfulness_kl
+            if faithfulness_target_name is None:
+                faithfulness_target_name = "kl"
+        self.model = model
+        self.output_dir = output_dir
+        self.n_params = n_params
+        self.faithfulness = faithfulness
+        self.faithfulness_target_name = faithfulness_target_name
+        self.extras = extras if extras is not None else {}
+
+    @property
+    def faithfulness_kl(self) -> float | None:
+        """Deprecated. Use :attr:`faithfulness` and
+        :attr:`faithfulness_target_name`.
+
+        Returns :attr:`faithfulness` when the active target is ``"kl"``,
+        otherwise ``None``. Always emits :class:`DeprecationWarning`.
+        Removed one minor version after the pluggable-faithfulness
+        change lands.
+        """
+        warnings.warn(
+            _FAITHFULNESS_KL_DEPRECATION_MSG,
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        if self.faithfulness_target_name == "kl":
+            return self.faithfulness
+        return None
+
+    @faithfulness_kl.setter
+    def faithfulness_kl(self, value: float | None) -> None:
+        warnings.warn(
+            _FAITHFULNESS_KL_DEPRECATION_MSG,
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self.faithfulness = value
+        if value is not None and self.faithfulness_target_name is None:
+            self.faithfulness_target_name = "kl"
 
 
 @dataclass
@@ -222,6 +315,13 @@ class ForgePipeline:
     regrow_max: int = 0
     n_features_target: int = 0
     regrow_damping: float = 0.5
+
+    # pluggable-faithfulness. ``None`` keeps the v0.4 family-dispatch
+    # default (KLTarget for LM hosts, CosineTarget for whisper_encoder),
+    # which is byte-identical to v0.4. Set to a ``FaithfulnessTarget``
+    # instance to override; the instance flows through the imperative
+    # path and the FSM ctx (as ``_faithfulness_target``) identically.
+    faithfulness: FaithfulnessTarget | None = None
 
     # ----------------------------------------------------------------
     # Construction-time validation + dict round-trip
@@ -648,6 +748,109 @@ class ForgePipeline:
             n_layer=int(n_layer),
         )
 
+    def _score_faithfulness_imperative(
+        self, model: NativeModel, host: Any, *, transformers: Any
+    ) -> tuple[float | None, str | None]:
+        """Real-host imperative scoring path.
+
+        When ``self.faithfulness is None`` and ``eval_prompts`` is set,
+        delegate to the legacy :func:`faithfulness_kl` call exactly as
+        v0.4 did — this is what the byte-identity test pins. When a
+        target is set, call it directly with an FSM-shaped ctx so it
+        sees the same inputs the FSM action would pass.
+        """
+        if not self.eval_prompts and self.faithfulness is None:
+            return None, None
+        if self.faithfulness is None:
+            from saeforge.eval.faithfulness import faithfulness_kl
+
+            tokenizer = transformers.AutoTokenizer.from_pretrained(self.host_model_id)
+            score = faithfulness_kl(
+                model,
+                host,
+                self.eval_prompts,
+                tokenizer=tokenizer,
+                device=self.device,
+            )
+            return float(score), "kl"
+        ctx = self._build_imperative_score_ctx(transformers=transformers)
+        score, _ = self.faithfulness.score(forged=model, host=host, ctx=ctx)
+        return float(score), self.faithfulness.name
+
+    def _score_faithfulness_synthetic(
+        self,
+        model: NativeModel,
+        host_model: Any,
+        eval_input_ids: Any,
+    ) -> tuple[float | None, str | None]:
+        """Synthetic-host imperative scoring path.
+
+        Mirrors ``_score_faithfulness_imperative`` but uses the already-
+        tokenised ``eval_input_ids`` argument (the synthetic path skips
+        the AutoTokenizer step). When no target is set and no eval ids
+        are present, return ``(None, None)`` — matches v0.4.
+        """
+        if self.faithfulness is None and eval_input_ids is None:
+            return None, None
+        if self.faithfulness is None:
+            score = _kl_from_input_ids(model, host_model, eval_input_ids, device=self.device)
+            return float(score), "kl"
+        ctx = {
+            "_eval_input_ids": eval_input_ids,
+            "_eval_audio_features": self.eval_audio_features,
+            "_eval_encoder_states": self.eval_encoder_states,
+            "device": self.device,
+        }
+        score, _ = self.faithfulness.score(forged=model, host=host_model, ctx=ctx)
+        return float(score), self.faithfulness.name
+
+    def _build_imperative_score_ctx(self, *, transformers: Any) -> dict:
+        """Construct the ctx dict a custom target sees on the imperative
+        real-host path. Pre-tokenises ``eval_prompts`` so the target's
+        ``ctx["_eval_input_ids"]`` is populated identically to the FSM
+        path.
+        """
+        ctx: dict[str, Any] = {
+            "device": self.device,
+            "_eval_audio_features": self.eval_audio_features,
+            "_eval_encoder_states": self.eval_encoder_states,
+        }
+        if self.eval_prompts:
+            tokenizer = transformers.AutoTokenizer.from_pretrained(self.host_model_id)
+            if tokenizer.pad_token is None:
+                tokenizer.pad_token = tokenizer.eos_token
+            encoded = tokenizer(
+                list(self.eval_prompts),
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+            )
+            ctx["_eval_input_ids"] = encoded["input_ids"]
+        return ctx
+
+    def _resolve_target_name(self, model: NativeModel | None) -> str | None:
+        """Best-effort target-name resolution for result metadata.
+
+        When ``self.faithfulness`` is set, use its ``name``. Otherwise,
+        ask the family-dispatch policy what the default would have been
+        — mirrors what the action layer wrote into the FSM log entry.
+        Returns ``None`` if the model isn't available or the family is
+        unrecognised (e.g. a failed FSM run that never built a model).
+        """
+        if self.faithfulness is not None:
+            return self.faithfulness.name
+        from saeforge.eval.targets import _default_target_for
+
+        family = (
+            model.config.family
+            if model is not None and hasattr(model, "config")
+            else None
+        )
+        try:
+            return _default_target_for(family).name
+        except ValueError:
+            return None
+
     def _run_real_imperative(self, output_dir: Path) -> ForgeResult:
         """Pre-recipe forge path: load → project → eval → save. No fine-tune."""
         import warnings
@@ -710,18 +913,9 @@ class ForgePipeline:
         model = NativeModel.from_projected_weights(config, weights)
         model._move(dtype=self.dtype, device=self.device)
 
-        faithfulness = None
-        if self.eval_prompts:
-            from saeforge.eval.faithfulness import faithfulness_kl
-
-            tokenizer = transformers.AutoTokenizer.from_pretrained(self.host_model_id)
-            faithfulness = faithfulness_kl(
-                model,
-                host,
-                self.eval_prompts,
-                tokenizer=tokenizer,
-                device=self.device,
-            )
+        faithfulness, target_name = self._score_faithfulness_imperative(
+            model, host, transformers=transformers
+        )
 
         forged_dir = output_dir / "forged"
         model.save_pretrained(forged_dir)
@@ -730,7 +924,9 @@ class ForgePipeline:
         result_meta = {
             "host_model_id": self.host_model_id,
             "n_params": n_params,
-            "faithfulness_kl": faithfulness,
+            "faithfulness": faithfulness,
+            "faithfulness_target_name": target_name,
+            "faithfulness_kl": faithfulness if target_name == "kl" else None,
             "n_features": self.basis.n_features,
             "scale_compression_ratio": self.basis.scale_compression_ratio,
         }
@@ -740,7 +936,8 @@ class ForgePipeline:
             model=model,
             output_dir=output_dir,
             n_params=n_params,
-            faithfulness_kl=faithfulness,
+            faithfulness=faithfulness,
+            faithfulness_target_name=target_name,
             extras=result_meta,
         )
 
@@ -801,10 +998,13 @@ class ForgePipeline:
         faithfulness = (
             final.get("faithfulness") if eval_input_ids is not None else None
         )
+        target_name = self._resolve_target_name(model)
         result_meta = {
             "host_model_id": self.host_model_id,
             "n_params": final.get("n_params", 0),
-            "faithfulness_kl": faithfulness,
+            "faithfulness": faithfulness,
+            "faithfulness_target_name": target_name,
+            "faithfulness_kl": faithfulness if target_name == "kl" else None,
             "n_features": final.get("current_feature_count"),
             "scale_compression_ratio": self.basis.scale_compression_ratio,
             "transitions_log": final.get("transitions_log", []),
@@ -816,7 +1016,8 @@ class ForgePipeline:
             model=model,
             output_dir=output_dir,
             n_params=final.get("n_params", 0),
-            faithfulness_kl=faithfulness,
+            faithfulness=faithfulness,
+            faithfulness_target_name=target_name,
             extras=result_meta,
         )
 
@@ -865,9 +1066,9 @@ class ForgePipeline:
         model = NativeModel.from_projected_weights(config, weights)
         model._move(dtype=self.dtype, device=self.device)
 
-        faithfulness = None
-        if eval_input_ids is not None:
-            faithfulness = _kl_from_input_ids(model, host_model, eval_input_ids, device=self.device)
+        faithfulness, target_name = self._score_faithfulness_synthetic(
+            model, host_model, eval_input_ids
+        )
 
         forged_dir = output_dir / "forged"
         model.save_pretrained(forged_dir)
@@ -875,7 +1076,9 @@ class ForgePipeline:
         result_meta = {
             "host_model_id": "<in-memory>",
             "n_params": n_params,
-            "faithfulness_kl": faithfulness,
+            "faithfulness": faithfulness,
+            "faithfulness_target_name": target_name,
+            "faithfulness_kl": faithfulness if target_name == "kl" else None,
             "n_features": self.basis.n_features,
             "scale_compression_ratio": self.basis.scale_compression_ratio,
             "attention_width": self.attention_width,
@@ -885,7 +1088,8 @@ class ForgePipeline:
             model=model,
             output_dir=output_dir,
             n_params=n_params,
-            faithfulness_kl=faithfulness,
+            faithfulness=faithfulness,
+            faithfulness_target_name=target_name,
             extras=result_meta,
         )
 
@@ -925,15 +1129,22 @@ class ForgePipeline:
         # ForgeResult with n_params=0 / KL=0.0. See ForgeFailed.
         _raise_if_failed(final)
         model = final.get("_native_model")
+        faithfulness = (
+            final.get("faithfulness") if eval_input_ids is not None else None
+        )
+        target_name = self._resolve_target_name(model)
         return ForgeResult(
             model=model,
             output_dir=output_dir,
             n_params=final.get("n_params", 0),
-            faithfulness_kl=final.get("faithfulness") if eval_input_ids is not None else None,
+            faithfulness=faithfulness,
+            faithfulness_target_name=target_name,
             extras={
                 "host_model_id": "<in-memory>",
                 "n_params": final.get("n_params", 0),
-                "faithfulness_kl": final.get("faithfulness"),
+                "faithfulness": faithfulness,
+                "faithfulness_target_name": target_name,
+                "faithfulness_kl": faithfulness if target_name == "kl" else None,
                 "n_features": final.get("current_feature_count"),
                 "transitions_log": final.get("transitions_log", []),
                 "final_state": _final_state_for_log(final),
@@ -982,6 +1193,7 @@ class ForgePipeline:
             "device": self.device,
             "_host_model": host_model,
             "_eval_input_ids": eval_input_ids,
+            "_faithfulness_target": self.faithfulness,
             # v0.4 forge-whisper-encoder: audio-side eval input. None when
             # the host is an LM family; populated when a Whisper host is
             # being forged. ``_eval_encoder_states`` is an optional pre-

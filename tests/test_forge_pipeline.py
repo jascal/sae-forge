@@ -20,8 +20,8 @@ def test_run_synthetic_end_to_end(tiny_gpt2, tiny_synthetic_basis, tmp_path):
 
     assert isinstance(result.model, NativeModel)
     assert result.n_params > 0
-    assert result.faithfulness_kl is not None
-    assert result.faithfulness_kl >= 0.0
+    assert result.faithfulness is not None
+    assert result.faithfulness >= 0.0
     assert (tmp_path / "toy" / "forged" / "config.json").is_file()
     assert (tmp_path / "toy" / "forged" / "model.safetensors").is_file()
     payload = json.loads((tmp_path / "toy" / "forge_result.json").read_text())
@@ -61,7 +61,7 @@ def test_faithfulness_kl_matches_when_forged_equals_host(tiny_gpt2):
     pipeline = ForgePipeline(basis=identity_basis, projector=projector)
     input_ids = torch.randint(0, tiny_gpt2.config.vocab_size, (1, 4))
     result = pipeline.run_synthetic(tiny_gpt2, "/tmp/sae-forge-identity", eval_input_ids=input_ids)
-    assert result.faithfulness_kl < 1e-3, f"identity-basis forge should be ~zero KL, got {result.faithfulness_kl}"
+    assert result.faithfulness < 1e-3, f"identity-basis forge should be ~zero KL, got {result.faithfulness}"
 
 
 def test_faithfulness_kl_signature(tiny_gpt2, tiny_synthetic_basis, tmp_path):
@@ -72,8 +72,8 @@ def test_faithfulness_kl_signature(tiny_gpt2, tiny_synthetic_basis, tmp_path):
     pipeline = ForgePipeline(basis=tiny_synthetic_basis, projector=projector)
     input_ids = torch.randint(0, tiny_gpt2.config.vocab_size, (1, 4))
     forged = pipeline.run_synthetic(tiny_gpt2, tmp_path / "sig", eval_input_ids=input_ids)
-    assert isinstance(forged.faithfulness_kl, float)
-    assert forged.faithfulness_kl >= 0.0
+    assert isinstance(forged.faithfulness, float)
+    assert forged.faithfulness >= 0.0
 
 
 def test_toy_example_runs(tmp_path, monkeypatch):
@@ -167,7 +167,7 @@ def test_run_fsm_dispatches_through_recipe(
 
     # Faithfulness was computed on the post-tune model (eval_prompts
     # supplied → input_ids tokenised → FSM evaluate_faithfulness ran).
-    assert result.faithfulness_kl is not None
+    assert result.faithfulness is not None
 
 
 def test_run_imperative_warns_when_finetune_corpus_set(

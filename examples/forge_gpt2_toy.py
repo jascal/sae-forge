@@ -54,7 +54,13 @@ def main(output_dir: str | Path = "examples/output/toy/") -> dict:
 
     summary = {
         "n_params": result.n_params,
-        "faithfulness_kl": result.faithfulness_kl,
+        "faithfulness": result.faithfulness,
+        "faithfulness_target_name": result.faithfulness_target_name,
+        # Back-compat: tests + downstream tooling still read
+        # ``summary["faithfulness_kl"]``. Populated when the active
+        # target is "kl"; null otherwise. Removed alongside
+        # ForgeResult.faithfulness_kl.
+        "faithfulness_kl": result.faithfulness if result.faithfulness_target_name == "kl" else None,
         "n_features": basis.n_features,
         "host_param_count": sum(p.numel() for p in host.parameters()),
     }

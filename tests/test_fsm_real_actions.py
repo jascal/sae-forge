@@ -185,4 +185,4 @@ def test_full_compress_then_forge_via_fsm(
     assert (tmp_path / "full" / "compressed.safetensors").is_file()
     assert (tmp_path / "full" / "compressed_compression_report.json").is_file()
     assert (tmp_path / "full" / "forged" / "model.safetensors").is_file()
-    assert result.faithfulness_kl is not None
+    assert result.faithfulness is not None

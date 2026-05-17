@@ -71,7 +71,7 @@ def main(output_dir: str | Path = "examples/output/gpt2_real/", n_features: int 
         "n_features": basis.n_features,
         "d_model": basis.d_model,
         "n_params_forged": result.n_params,
-        "faithfulness_kl": result.faithfulness_kl,
+        "faithfulness_kl": result.faithfulness,
         "wall_clock_s": round(wall, 2),
         "output_dir": str(result.output_dir),
     }

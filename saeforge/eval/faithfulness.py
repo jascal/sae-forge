@@ -1,8 +1,84 @@
-"""Faithfulness KL — token-level KL divergence between a forged model and its host."""
+"""Faithfulness KL — token-level KL divergence between a forged model and its host.
+
+This module also defines :class:`FaithfulnessTarget`, the protocol that
+generalises the loop-gating faithfulness signal beyond hard-coded KL.
+Built-in implementations live in :mod:`saeforge.eval.targets`.
+"""
 
 from __future__ import annotations
 
+from typing import Any, Literal, Mapping, Protocol, runtime_checkable
+
 from saeforge.utils.lazy import require_extra
+
+
+@runtime_checkable
+class FaithfulnessTarget(Protocol):
+    """Protocol for pluggable loop-gating faithfulness scorers.
+
+    A target is a small adapter that turns a forged-vs-host comparison
+    into a scalar score the FSM's refine loop can gate on. ``KLTarget``
+    and ``CosineTarget`` (in :mod:`saeforge.eval.targets`) are the two
+    built-in implementations; users can supply their own by satisfying
+    this protocol.
+
+    Members
+    -------
+    name:
+        Short stable slug (e.g. ``"kl"``, ``"cosine"``, ``"gt_alignment"``).
+        Surfaces as ``ForgeResult.faithfulness_target_name`` and in the
+        FSM transitions-log entry. SHOULD be lowercase snake_case or
+        kebab-case so downstream JSON / metadata consumers can match
+        without quoting surprises.
+    better_when:
+        ``"higher"`` if larger scores indicate higher faithfulness
+        (cosine, GT-alignment, probe accuracy), ``"lower"`` if smaller
+        scores do (KL, MSE). The FSM's ``min_faithfulness`` predicate
+        consults this field per call.
+    score:
+        Called as ``score(forged=..., host=..., ctx=...)`` and returns
+        ``(score, perplexity_analog)`` where ``perplexity_analog`` is a
+        positive-real quantity the FSM's ``perplexity < best_perplexity``
+        progress check consumes. Convention:
+
+        - ``better_when == "lower"``: ``perplexity_analog`` is a
+          monotonically *increasing* function of the score
+          (canonical: ``exp(score)`` for KL).
+        - ``better_when == "higher"``: ``perplexity_analog`` is a
+          monotonically *decreasing* function of the score
+          (canonical: ``1 - score`` for cosine, clamped at 0; any
+          decreasing transform of ``score`` works as long as it is
+          positive-real).
+
+    Notes for implementers
+    ----------------------
+    - The ``host`` argument MAY be ignored. Targets that don't consult
+      a teacher (GT-alignment, monosemanticity, probe accuracy reading
+      a cached probe) SHOULD accept ``host`` for protocol conformance
+      but SHOULD NOT move it or run a forward through it. sae-forge
+      still loads the host on the FSM path today; a future
+      ``requires_host`` opt-out is tracked as a follow-up.
+    - Implementations SHALL NOT mutate ``ctx``. They MUST raise a
+      ``KeyError`` (or ``ValueError``) naming the expected key if a
+      required ctx field is missing — silent zero-score returns from
+      missing inputs are a debugging hazard.
+    - Third-party targets SHOULD namespace their ctx keys with a
+      module-specific prefix (e.g. ``_myorg_input_ids``,
+      ``_gt_alignment_inputs``) to avoid clashes with sae-forge
+      built-ins, which use the ``_eval_*`` prefix.
+    """
+
+    name: str
+    better_when: Literal["higher", "lower"]
+
+    def score(
+        self,
+        *,
+        forged: Any,
+        host: Any,
+        ctx: Mapping[str, Any],
+    ) -> tuple[float, float]:
+        ...
 
 
 def faithfulness_kl(

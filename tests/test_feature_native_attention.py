@@ -166,7 +166,7 @@ def test_feature_native_runs_end_to_end(tiny_gpt2, tiny_synthetic_basis, tmp_pat
     assert isinstance(result.model, NativeModel)
     assert result.model.config.attention_width == "feature_native"
     assert result.model.config.qkv_inner_size == tiny_synthetic_basis.n_features
-    assert result.faithfulness_kl is not None and result.faithfulness_kl >= 0.0
+    assert result.faithfulness is not None and result.faithfulness >= 0.0
 
 
 def test_feature_native_identity_basis_kl_is_zero(tiny_gpt2, tmp_path):
@@ -191,8 +191,8 @@ def test_feature_native_identity_basis_kl_is_zero(tiny_gpt2, tmp_path):
     )
     input_ids = torch.randint(0, tiny_gpt2.config.vocab_size, (1, 4))
     result = pipeline.run_synthetic(tiny_gpt2, tmp_path / "fn-identity", eval_input_ids=input_ids)
-    assert result.faithfulness_kl < 1e-3, (
-        f"feature-native identity-basis forge should be ~zero KL, got {result.faithfulness_kl}"
+    assert result.faithfulness < 1e-3, (
+        f"feature-native identity-basis forge should be ~zero KL, got {result.faithfulness}"
     )
 
 

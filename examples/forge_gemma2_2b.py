@@ -192,7 +192,7 @@ def main(args) -> dict:
         result = pipeline.run(output_dir / "forge")
     forge_wall = time.monotonic() - t0
     print(f"      forged: n_params={result.n_params}, "
-          f"final KL={result.faithfulness_kl}, wall={forge_wall/60:.1f}min")
+          f"final KL={result.faithfulness}, wall={forge_wall/60:.1f}min")
 
     # ---- Stage 5: summary ----------------------------------------
     summary = {
@@ -210,7 +210,7 @@ def main(args) -> dict:
         "forge": {
             "attention_width": args.attention_width,
             "n_params": result.n_params,
-            "faithfulness_kl": result.faithfulness_kl,
+            "faithfulness_kl": result.faithfulness,
             "wall_minutes": round(forge_wall / 60, 2),
         },
         "finetune": {
