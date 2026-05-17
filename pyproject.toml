@@ -91,7 +91,7 @@ intel = ["torch==2.2.2", "transformers>=4.46,<4.50", "numpy<2"]
 # decoder-PCA→polygram-knob projection from data. Plumbed through
 # `--learn-axis-assignment`; see polygram's
 # docs/research/learned-axis-assignment.md.
-polygram = ["polygram>=0.8.0"]
+polygram = ["polygram>=0.8.1"]
 # orca-runtime-python — the classical orca-lang FSM runtime that drives
 # the v0.1 forge-outer-loop-fsm orchestrator. Required only for the
 # `--fsm` opt-in path; the default imperative ForgePipeline does not
@@ -114,7 +114,7 @@ all = [
     "jupyter",
     "torch>=2.2",
     "transformers>=4.46",
-    "polygram>=0.8.0",
+    "polygram>=0.8.1",
     "orca-runtime-python>=0.1.27",
     "datasets>=2.16",
     "librosa>=0.10",
