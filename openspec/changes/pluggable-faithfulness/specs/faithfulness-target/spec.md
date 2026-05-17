@@ -20,12 +20,16 @@ notebooks, and the CLI continue to produce byte-identical results.
 
 ### Requirement: `FaithfulnessTarget` protocol shape
 
-`saeforge.eval.target.FaithfulnessTarget` SHALL be a
+`saeforge.eval.faithfulness.FaithfulnessTarget` SHALL be a
 `@runtime_checkable` `typing.Protocol` with the following members:
 
 - `name: str` — short identifier (e.g. `"kl"`, `"cosine"`,
-  `"gt_alignment"`). Used as `ForgeResult.faithfulness_target_name`
-  and in FSM transitions-log entries.
+  `"gt_alignment"`). Used as `ForgeResult.faithfulness_target_name`,
+  in FSM transitions-log entries, and as a stable key in
+  `forge_result.json` metadata. Implementations SHOULD use a stable,
+  serialisation-friendly slug (lowercase, snake_case or kebab-case)
+  so the value can be matched in downstream tooling without quoting
+  surprises.
 - `better_when: Literal["higher", "lower"]` — direction of
   improvement for the scalar score.
 - `score(*, forged, host, ctx: Mapping[str, Any]) -> tuple[float,
@@ -40,6 +44,13 @@ notebooks, and the CLI continue to produce byte-identical results.
     monotonically decreasing function of the score (canonical:
     `1 - score` for cosine, clamped at `0.0`).
 
+The `host` argument MAY be ignored by an implementation. Targets that
+do not consult the host (GT-alignment scorers, monosemanticity
+metrics, probe-accuracy scorers reading a cached probe) SHOULD accept
+`host` for protocol conformance but SHOULD NOT load or move it.
+sae-forge still loads the host on the FSM path today; a
+`requires_host` opt-out is tracked as a follow-up.
+
 Implementations SHALL be sync functions. Async scoring is out of
 scope for v1; if/when needed, a separate `score_async` method may
 be added in a follow-up without breaking the sync surface.
@@ -48,7 +59,9 @@ Implementations SHALL accept arbitrary keys in `ctx` and SHALL NOT
 mutate `ctx`. Implementations MUST raise a clear `KeyError` (or
 `ValueError`) if a required ctx key is missing, naming the expected
 key — silent zero-score returns from missing inputs are a debugging
-hazard.
+hazard. Third-party targets SHOULD namespace their ctx keys (e.g.
+`_myorg_input_ids`, `_gt_alignment_inputs`) to avoid collisions with
+sae-forge built-ins, which use the `_eval_*` prefix.
 
 #### Scenario: protocol is runtime-checkable
 

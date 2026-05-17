@@ -1,9 +1,14 @@
 ## 1. Protocol and built-in targets
 
-- [ ] 1.1 Create `saeforge/eval/target.py` defining the
-  `FaithfulnessTarget` protocol (`name`, `better_when`, `score`).
-  Document the `(score, perplexity_analog)` contract and the
-  `Mapping[str, Any]` ctx convention.
+- [ ] 1.1 Extend `saeforge/eval/faithfulness.py` (the existing module
+  housing `faithfulness_kl`) with the `FaithfulnessTarget` protocol
+  (`name`, `better_when`, `score`). Co-located with `faithfulness_kl`
+  so callers have one import surface and the protocol sits next to
+  the function it generalises. The docstring SHALL call out: stable
+  `name` slug convention; `host` may be ignored (and why); third-party
+  ctx keys SHOULD use a namespaced prefix to avoid clashes with
+  built-in `_eval_*` keys. Document the `(score, perplexity_analog)`
+  contract and the `Mapping[str, Any]` ctx convention.
 - [ ] 1.2 Create `saeforge/eval/targets/kl.py::KLTarget`. `name="kl"`,
   `better_when="lower"`. `score(...)` reads
   `ctx["_eval_input_ids"]` and `ctx.get("device", "cpu")`, delegates
@@ -16,10 +21,12 @@
   `saeforge.audio_eval.cosine_faithfulness`, returns
   `(cosine, 1.0 - cosine)`.
 - [ ] 1.4 Create `saeforge/eval/targets/__init__.py`. Exports
-  `FaithfulnessTarget`, `KLTarget`, `CosineTarget`, and
+  `KLTarget`, `CosineTarget`, and
   `_default_target_for(family: str) -> FaithfulnessTarget` (returns
   `CosineTarget()` for `"whisper_encoder"`, `KLTarget()` otherwise;
-  unknown family raises `ValueError`).
+  unknown family raises `ValueError`). The protocol itself
+  (`FaithfulnessTarget`) lives in `saeforge.eval.faithfulness` and is
+  re-exported from `saeforge.eval` for convenience.
 
 ## 2. `evaluate_faithfulness` rewrite
 
@@ -70,7 +77,10 @@
 - [ ] 4.3 Accept `faithfulness_kl=` as a constructor kwarg in a
   custom `__init__` (since `@dataclass` won't let us alias). Forward
   to `faithfulness=` and set `faithfulness_target_name="kl"`. Emit
-  `DeprecationWarning` on the kwarg path too.
+  `DeprecationWarning` on the kwarg path too — every test under
+  4.4 (in-repo write-site migration) MUST be a counterexample to
+  ensure the warning fires only on legacy call sites, not on our own
+  code.
 - [ ] 4.4 Update every in-repo write site to use `faithfulness=` and
   `faithfulness_target_name=` directly:
   - `_run_real_imperative` (currently writes `faithfulness_kl=`)
@@ -173,7 +183,26 @@
   faithfulness target" entry listing the new field, the two
   built-in targets, the deprecation of
   `ForgeResult.faithfulness_kl`, and the planned removal one minor
-  version later.
+  version later. Include an explicit before/after migration block
+  for the most common consumer pattern:
+
+  ```text
+  Before:
+      result = pipeline.run(...)
+      print(result.faithfulness_kl)            # DeprecationWarning
+
+  After (KL default — no code change required):
+      result = pipeline.run(...)
+      print(result.faithfulness)               # same value
+
+  After (custom target):
+      from saeforge.eval.faithfulness import FaithfulnessTarget
+      result = ForgePipeline(faithfulness=MyTarget(), ...).run(...)
+      print(result.faithfulness, result.faithfulness_target_name)
+  ```
+
+  The migration block sits at the top of the entry so anyone scanning
+  for "faithfulness_kl" finds the rename inline.
 
 ## 8. Validation
 

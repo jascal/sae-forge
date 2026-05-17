@@ -64,8 +64,13 @@ target is `"kl"`, and emit `DeprecationWarning` pointing at
 
 ### New artifacts
 
-- **`saeforge/eval/target.py`** — defines the `FaithfulnessTarget`
-  protocol:
+- **`saeforge/eval/faithfulness.py`** (existing module — extended) —
+  defines the `FaithfulnessTarget` protocol alongside the existing
+  `faithfulness_kl` function. Co-locating the protocol with the
+  KL implementation it generalises keeps a single import surface
+  (`from saeforge.eval.faithfulness import FaithfulnessTarget,
+  faithfulness_kl`) and avoids the import-clutter of a sibling
+  `target.py`:
 
   ```python
   class FaithfulnessTarget(Protocol):
@@ -87,6 +92,39 @@ target is `"kl"`, and emit `DeprecationWarning` pointing at
   that matches their `better_when` so the LM-shaped progress check
   keeps pointing the right way.
 
+  Minimal custom-target sketch (full version in
+  `examples/forge_with_gt_alignment.py`):
+
+  ```python
+  from saeforge.eval.faithfulness import FaithfulnessTarget
+
+  class GTAlignmentTarget:
+      name = "gt_alignment"
+      better_when = "higher"
+
+      def __init__(self, labels):
+          self._labels = labels  # ground-truth cluster assignment
+
+      def score(self, *, forged, host, ctx):
+          # `host` is ignored — GT alignment doesn't need a teacher.
+          features = forged.encode(ctx["_gt_alignment_inputs"])
+          alignment = _cluster_alignment(features, self._labels)
+          return float(alignment), float(1.0 - alignment)
+
+  # Plug into the pipeline:
+  pipeline = ForgePipeline(
+      basis=basis,
+      projector=projector,
+      host_model_id="gpt2",
+      faithfulness=GTAlignmentTarget(labels=cluster_ids),
+      # …
+  )
+  ```
+
+  `_gt_alignment_inputs` is the third-party ctx key the target reads —
+  the protocol docstring recommends namespacing such keys (e.g.
+  `_myorg_input_ids`) to avoid collisions with built-ins.
+
 - **`saeforge/eval/targets/kl.py`** — `KLTarget(FaithfulnessTarget)`,
   `name="kl"`, `better_when="lower"`. Delegates to
   `_kl_from_input_ids` and exponentiates. Reads
@@ -95,9 +133,9 @@ target is `"kl"`, and emit `DeprecationWarning` pointing at
   `name="cosine"`, `better_when="higher"`. Delegates to
   `cosine_faithfulness`. Reads `ctx["_eval_audio_features"]` and
   `ctx["_eval_encoder_states"]`.
-- **`saeforge/eval/targets/__init__.py`** — exports the protocol and
-  the two built-in targets; documents the `Mapping[str, Any]` ctx
-  contract.
+- **`saeforge/eval/targets/__init__.py`** — exports the two built-in
+  targets and `_default_target_for(family)`. The protocol itself is
+  imported from `saeforge.eval.faithfulness`.
 
 ### Modified artifacts
 
