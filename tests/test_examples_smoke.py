@@ -59,6 +59,29 @@ def test_forge_synthetic_llama_main_runs_end_to_end(
     assert (forged_dir / "config.json").is_file()
 
 
+def test_forge_with_gt_alignment_runs_end_to_end(
+    tmp_path: Path, add_project_root_to_path
+):
+    """examples/forge_with_gt_alignment.py runs end-to-end with a custom
+    FaithfulnessTarget. Verifies the protocol surface: the custom
+    target's ``name`` and score reach the ``ForgeResult`` unchanged.
+
+    Wall-clock budget: ~15s on CPU (tiny GPT-2, 3-feature basis,
+    one-shot synthetic eval).
+    """
+    pytest.importorskip("torch")
+    pytest.importorskip("transformers")
+
+    from examples.forge_with_gt_alignment import main
+
+    summary = main(tmp_path / "gt-alignment")
+    assert summary["faithfulness_target_name"] == "gt_alignment"
+    # The basis is built directly from the GT directions, so absolute
+    # cosine alignment is exactly 1.0 in the example's setup.
+    assert summary["faithfulness"] == pytest.approx(1.0, abs=1e-9)
+    assert summary["n_features"] == 3
+
+
 def test_forge_whisper_synthetic_main_runs_end_to_end(
     tmp_path: Path, add_project_root_to_path
 ):

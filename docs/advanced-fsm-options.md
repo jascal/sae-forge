@@ -188,12 +188,22 @@ not an FSM change.
 | `--inner-refine-passes` | 1 | ≥1 | Compress↔regrow rounds before projecting |
 | `--protect-top-k` | 0 | ≥0 | Number of features the compressor cannot remove |
 | `--protect-score` | `mean_act` | `mean_act \| usage \| grad_importance` | How protected features are ranked |
+| `faithfulness` (Python only) | `None` (family-dispatched) | any `FaithfulnessTarget` | Loop-gating scorer. `None` picks `KLTarget` for LM hosts, `CosineTarget` for whisper_encoder. Custom targets override family dispatch. |
 
 `inner_refine_passes=1` (default) is single-pass: one compress, one
 optional regrow, exit to projected. `=2` adds a second compress
 that prunes anything dead in the regrowth output. `=3+` is rarely
 useful — diminishing returns and you are spending compress passes
 on increasingly tiny improvements.
+
+The `faithfulness` knob is a Python-API extension (no CLI flag yet) —
+pass `ForgePipeline(faithfulness=<target>)` to swap the loop-gating
+scorer. The target's `better_when` field controls the
+`min_faithfulness` semantics: `"lower"` keeps the legacy KL-negation
+convention (`min_faithfulness < 0` encodes a max allowed score);
+`"higher"` uses the natural `score >= min_faithfulness` convention.
+See `docs/finetune-recipe.md` and `examples/forge_with_gt_alignment.py`
+for the full protocol and a worked example.
 
 #### Adaptive regrow
 

@@ -687,139 +687,143 @@ def _run_recipe_fine_tune(ctx: dict, model, corpus, iterator) -> dict:
 
 
 def evaluate_faithfulness(ctx: dict, _payload: dict | None = None) -> dict:
-    """Compute faithfulness, then derive ``should_continue`` and ``advance_stream``.
+    """Compute faithfulness via the active target, then derive
+    ``should_continue`` and ``advance_stream``.
 
-    Dispatches on ``forged.config.family``:
+    Target dispatch:
 
-    - **LM families** (``gpt2`` / ``llama`` / ``gemma2`` / ``qwen2`` /
-      ``qwen3``): per-token KL between forged and host logits via
-      :func:`saeforge.forge._kl_from_input_ids`. The ``faithfulness``
-      ctx field carries the KL value (lower = more faithful);
-      ``perplexity`` is ``exp(KL)``. ``min_faithfulness`` follows the
-      v0.1 negation convention — pass a negative threshold to encode
-      "max allowed KL" (e.g. ``min_faithfulness=-0.05`` continues only
-      while ``KL ≤ 0.05``).
+    1. ``ctx["_faithfulness_target"]`` overrides everything when set
+       (the user-supplied ``ForgePipeline(faithfulness=...)`` path).
+    2. Otherwise, the family-based default policy in
+       :func:`saeforge.eval.targets._default_target_for` picks
+       :class:`~saeforge.eval.targets.KLTarget` for LM families and
+       :class:`~saeforge.eval.targets.CosineTarget` for
+       ``whisper_encoder``. Unknown family raises ``ValueError``.
 
-    - **whisper_encoder**: per-frame cosine similarity between forged
-      encoder states and the host's encoder states projected through
-      the forge's ``basis_encode`` buffer, via
-      :func:`saeforge.audio_eval.cosine_faithfulness`. The
-      ``faithfulness`` ctx field carries the cosine score (range
-      ``[0, 1]``, higher = more faithful); ``perplexity`` carries
-      ``1 - cosine`` so the existing ``perplexity < best_perplexity``
-      progress check keeps the right direction (a lower
-      ``1 - cosine`` means a higher cosine). ``min_faithfulness`` is
-      reinterpreted as "minimum cosine similarity" with the natural
-      positive convention — pass ``min_faithfulness=0.95`` to require
-      cosine ≥ 0.95.
+    The ``faithfulness`` ctx field carries the target's score; the
+    ``perplexity`` ctx field carries the target's perplexity analog
+    (``exp(score)`` for ``better_when="lower"`` targets; ``1 - score``
+    for ``better_when="higher"`` targets, clamped at 0). The
+    ``should_continue`` predicate consults ``target.better_when``:
 
-    The ``should_continue`` predicate is family-aware; the
-    ``advance_stream`` stream-loop computation is family-agnostic
-    (it consumes the family-appropriate perplexity analog). Both
+    - ``"lower"`` (KL, MSE): ``min_faithfulness`` follows the v0.1
+      negation convention — pass a negative threshold to encode
+      "max allowed score" (``min_faithfulness=-0.05`` continues only
+      while ``score ≤ 0.05``).
+    - ``"higher"`` (cosine, GT-alignment): ``min_faithfulness`` is
+      the minimum required score — pass ``min_faithfulness=0.95``
+      to require ``score ≥ 0.95``.
+
+    The ``advance_stream`` stream-loop computation is target-agnostic
+    (it consumes the target-supplied perplexity analog). Both
     predicate fields are written here so the FSM's ``eval_done``
     guards can be a flat ctx read. The stream-loop dominance contract
     (``advance_stream == true`` wins over ``should_continue``) lives
     in the guard expression ``refine_same_shard``, which requires
     ``advance_stream == false``.
     """
+    from saeforge.eval.targets import _default_target_for
+
     host = ctx.get("_host_model")
     forged = ctx.get("_native_model")
-    device = ctx.get("device", "cpu")
     family = (
         forged.config.family
         if forged is not None and hasattr(forged, "config")
         else None
     )
 
-    if family == "whisper_encoder":
-        faithfulness, perplexity, should_continue = _evaluate_whisper_encoder(
-            ctx, host, forged, device
-        )
-    else:
-        faithfulness, perplexity, should_continue = _evaluate_lm(
-            ctx, host, forged, device
-        )
+    target = ctx.get("_faithfulness_target")
+    if target is None:
+        # Default policy: family dispatch into the built-in targets.
+        # Pre-loading bootstrap paths can hit `evaluate_faithfulness`
+        # before a native model exists in ctx; v0.4 silently fell to
+        # the LM/KL arm and returned 0.0. Preserve that — only consult
+        # family dispatch when a forged model is actually present.
+        if forged is None:
+            from saeforge.eval.targets import KLTarget
 
-    advance_stream = _compute_advance_stream(ctx, faithfulness, perplexity)
+            target = KLTarget()
+        else:
+            target = _default_target_for(family)
+
+    # Preserve the v0.4 defensive zero: when the forged module or its
+    # required eval input is missing the target's score() would raise,
+    # but the legacy action returned 0.0 in those cases so the
+    # imperative byte-identity test could pass with no eval inputs.
+    if forged is None or _missing_required_eval_input(ctx, target):
+        score = 0.0
+        perplexity = _default_perplexity_for(target, score)
+    else:
+        score, perplexity = target.score(forged=forged, host=host, ctx=ctx)
+
+    should_continue = _should_continue_for(target, ctx, score, perplexity)
+    advance_stream = _compute_advance_stream(ctx, score, perplexity)
 
     _log(
         ctx,
         "evaluate_faithfulness",
         {
-            "faithfulness": faithfulness,
+            "faithfulness": score,
             "perplexity": perplexity,
             "should_continue": should_continue,
             "advance_stream": advance_stream,
+            "target": getattr(target, "name", "?"),
         },
     )
     return {
-        "faithfulness": float(faithfulness),
-        "perplexity": perplexity,
+        "faithfulness": float(score),
+        "perplexity": float(perplexity),
         "should_continue": should_continue,
         "advance_stream": advance_stream,
     }
 
 
-def _evaluate_lm(ctx, host, forged, device) -> tuple[float, float, bool]:
-    """LM-family faithfulness: per-token KL, exp(KL) perplexity, KL-negation
-    threshold convention. v0.3 behavior preserved byte-for-byte.
-    """
-    from saeforge.forge import _kl_from_input_ids
+def _missing_required_eval_input(ctx: dict, target: Any) -> bool:
+    """Replicate the v0.4 defensive-zero gate.
 
-    eval_input_ids = ctx.get("_eval_input_ids")
-    if host is None or forged is None or eval_input_ids is None:
-        kl = 0.0
-    else:
-        kl = _kl_from_input_ids(forged, host, eval_input_ids, device=device)
-    perplexity = float(np.exp(kl)) if kl >= 0 else float("inf")
+    Built-in targets read fixed ctx keys; if they're absent the legacy
+    action returned 0.0 instead of raising. Replicate that policy for
+    the two built-ins. Third-party targets are expected to raise their
+    own ``KeyError`` from inside ``score`` per the protocol contract,
+    so this helper only checks the names sae-forge ships.
+    """
+    name = getattr(target, "name", None)
+    if name == "kl":
+        return ctx.get("_eval_input_ids") is None
+    if name == "cosine":
+        return ctx.get("_eval_audio_features") is None
+    return False
+
+
+def _default_perplexity_for(target: Any, score: float) -> float:
+    """Match the perplexity analog the target would have produced for
+    ``score`` — used only on the defensive-zero path so the FSM's
+    ``perplexity < best_perplexity`` check stays well-defined.
+    """
+    if getattr(target, "better_when", "lower") == "higher":
+        return max(0.0, 1.0 - score)
+    return float(np.exp(score)) if score >= 0 else float("inf")
+
+
+def _should_continue_for(target: Any, ctx: dict, score: float, perplexity: float) -> bool:
+    """Loop-continuation predicate, target-aware.
+
+    ``better_when == "lower"`` preserves the v0.4 KL semantics exactly:
+    ``min_faithfulness == 0.0`` keeps the gate open as long as ``score
+    >= 0.0``; ``min_faithfulness < 0.0`` encodes a max allowed score via
+    the legacy ``score <= min_faithfulness * -1`` predicate. ``better_when
+    == "higher"`` preserves the v0.4 cosine semantics: ``score >=
+    min_faithfulness``.
+    """
     iters = ctx.get("iterations", 1)
     current = ctx.get("current_iter", 0)
     min_faith = ctx.get("min_faithfulness", 0.0)
     best_perp = ctx.get("best_perplexity", float("inf"))
-    should_continue = bool(
-        current + 1 < iters
-        and (kl >= min_faith if min_faith == 0.0 else kl <= min_faith * -1)
-        and perplexity < best_perp
-    )
-    return float(kl), perplexity, should_continue
-
-
-def _evaluate_whisper_encoder(ctx, host, forged, device) -> tuple[float, float, bool]:
-    """Whisper-encoder faithfulness: per-frame cosine similarity in basis
-    space; ``perplexity = 1 - cosine`` so the LM-shaped progress check
-    keeps pointing the right way; ``min_faithfulness`` is the minimum
-    cosine threshold (positive convention).
-    """
-    from saeforge.audio_eval import cosine_faithfulness
-
-    audio_features = ctx.get("_eval_audio_features")
-    precomputed_host_states = ctx.get("_eval_encoder_states")
-    # The pre-capture fast path lets the caller run the host encoder once
-    # outside the FSM and pass states in via ``_eval_encoder_states`` —
-    # the action no longer needs the host in that case.
-    if forged is None or audio_features is None:
-        cosine = 0.0
-    elif precomputed_host_states is None and host is None:
-        cosine = 0.0
+    if getattr(target, "better_when", "lower") == "higher":
+        gate = score >= min_faith
     else:
-        cosine = cosine_faithfulness(
-            forged,
-            host,
-            audio_features,
-            precomputed_host_states=precomputed_host_states,
-            device=device,
-        )
-    perplexity = 1.0 - cosine
-    iters = ctx.get("iterations", 1)
-    current = ctx.get("current_iter", 0)
-    min_faith = ctx.get("min_faithfulness", 0.0)
-    best_perp = ctx.get("best_perplexity", float("inf"))
-    should_continue = bool(
-        current + 1 < iters
-        and cosine >= min_faith
-        and perplexity < best_perp
-    )
-    return float(cosine), perplexity, should_continue
+        gate = score >= min_faith if min_faith == 0.0 else score <= min_faith * -1
+    return bool(current + 1 < iters and gate and perplexity < best_perp)
 
 
 def _compute_advance_stream(ctx: dict, kl: float, perplexity: float) -> bool:
@@ -940,15 +944,40 @@ def save_final_model(ctx: dict, _payload: dict | None = None) -> dict:
     _log(ctx, "save_final_model", {"n_params": n_params})
     import json
 
-    summary = {
+    target = ctx.get("_faithfulness_target")
+    target_name = getattr(target, "name", None)
+    if target_name is None:
+        # Reconstruct the family-default's name so the JSON metadata
+        # carries it even on the no-explicit-target path. Mirrors the
+        # dispatch in `evaluate_faithfulness`.
+        from saeforge.eval.targets import _default_target_for
+
+        forged = ctx.get("_native_model")
+        family = (
+            forged.config.family
+            if forged is not None and hasattr(forged, "config")
+            else None
+        )
+        try:
+            target_name = _default_target_for(family).name
+        except ValueError:
+            target_name = None
+    score = ctx.get("faithfulness")
+    summary: dict[str, Any] = {
         "host_model_id": ctx.get("host_model_id"),
         "n_params": n_params,
-        "faithfulness_kl": ctx.get("faithfulness"),
+        "faithfulness": score,
+        "faithfulness_target_name": target_name,
         "n_features": ctx.get("current_feature_count"),
         "iterations": ctx.get("current_iter", 0) + 1,
         "compress_mode": _last_log_extra(ctx, "compress_with_polygram", "mode"),
         "finetune_mode": _last_log_extra(ctx, "fine_tune_model", "mode"),
     }
+    # Back-compat shim: every consumer of forge_result.json's
+    # `faithfulness_kl` field keeps reading it through one minor
+    # version. Populated when the active target is "kl"; null
+    # otherwise. Removed alongside ForgeResult.faithfulness_kl.
+    summary["faithfulness_kl"] = score if target_name == "kl" else None
     (output_dir / "forge_result.json").write_text(json.dumps(summary, indent=2))
     return {"final_model_path": str(forged_dir), "n_params": n_params}
 

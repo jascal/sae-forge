@@ -174,7 +174,7 @@ def main(
     t0 = time.monotonic()
     result = pipeline.run(output_dir / "forge")
     forge_wall = time.monotonic() - t0
-    print(f"      forged: n_params={result.n_params}, KL={result.faithfulness_kl:.3f}, "
+    print(f"      forged: n_params={result.n_params}, KL={result.faithfulness:.3f}, "
           f"wall={forge_wall:.1f}s")
 
     # ---- Stage 5: summary ------------------------------------------
@@ -191,7 +191,7 @@ def main(
         "polygram_wall_s": round(epoch_wall, 2),
         "forge_wall_s": round(forge_wall, 2),
         "n_params_forged": result.n_params,
-        "faithfulness_kl": result.faithfulness_kl,
+        "faithfulness_kl": result.faithfulness,
         "compressed_sae_path": str(compressed_path),
         "forged_dir": str(result.output_dir),
     }

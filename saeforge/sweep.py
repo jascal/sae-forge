@@ -1024,7 +1024,14 @@ def _process_row(
         target_n_features_kept=target_k,
         n_features_kept_actual=n_features_actual,
         pareto_reached_target=reached,
-        faithfulness_kl=getattr(result, "faithfulness_kl", None),
+        # ParetoFrontierRow.faithfulness_kl is the JSONL schema field;
+        # populated from the generic result.faithfulness when the active
+        # target is "kl" (the sweep's only supported configuration today).
+        faithfulness_kl=(
+            getattr(result, "faithfulness", None)
+            if getattr(result, "faithfulness_target_name", None) == "kl"
+            else None
+        ),
         perplexity=_finite_or_none(extras.get("perplexity")),
         final_fine_tune_loss=_finite_or_none(extras.get("final_loss")),
         sae_checkpoint=str(ckpt_path.resolve()),

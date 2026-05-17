@@ -91,6 +91,95 @@ single-point default doesn't beat the pure-CE baseline on
   (the `SubspaceProjector` already ensures this by construction;
   defensive shape check at the KL site).
 
+## Swapping the faithfulness target
+
+By default, `ForgePipeline` uses KL divergence between the host's and
+the forged model's next-token distributions as the loop-gating
+faithfulness signal (for LM hosts; per-frame cosine for
+`whisper_encoder` hosts). The `pluggable-faithfulness` change makes
+that signal pluggable: pass any object satisfying the
+`saeforge.eval.faithfulness.FaithfulnessTarget` protocol to
+`ForgePipeline(faithfulness=...)` and the FSM consults it instead.
+
+Protocol shape:
+
+```python
+from typing import Any, Literal, Mapping, Protocol
+
+
+class FaithfulnessTarget(Protocol):
+    name: str                           # e.g. "kl", "cosine", "gt_alignment"
+    better_when: Literal["higher", "lower"]
+
+    def score(
+        self,
+        *,
+        forged: Any,
+        host: Any,
+        ctx: Mapping[str, Any],
+    ) -> tuple[float, float]:
+        """Returns (score, perplexity_analog)."""
+```
+
+The second tuple element is the "perplexity analog" the FSM's
+`perplexity < best_perplexity` progress check consumes. For
+`better_when="lower"` targets (KL, MSE) the canonical analog is
+`exp(score)`; for `better_when="higher"` targets (cosine,
+GT-alignment) it is `1 - score` clamped at 0.
+
+Built-in targets:
+
+| Target | `name` | `better_when` | Default for |
+|--------|--------|---------------|-------------|
+| `saeforge.eval.targets.KLTarget` | `"kl"` | `"lower"` | LM hosts (gpt2 / llama / gemma2 / qwen2 / qwen3) |
+| `saeforge.eval.targets.CosineTarget` | `"cosine"` | `"higher"` | `whisper_encoder` hosts |
+
+A minimal custom target (full version in
+`examples/forge_with_gt_alignment.py`):
+
+```python
+from saeforge.eval.faithfulness import FaithfulnessTarget
+
+
+class GTAlignmentTarget:
+    name = "gt_alignment"
+    better_when = "higher"
+
+    def __init__(self, labels):
+        self._labels = labels
+
+    def score(self, *, forged, host, ctx):
+        # `host` is ignored — GT alignment doesn't need a teacher.
+        features = forged.encode(ctx["_gt_alignment_inputs"])
+        alignment = _cluster_alignment(features, self._labels)
+        return float(alignment), float(1.0 - alignment)
+
+
+pipeline = ForgePipeline(
+    basis=basis,
+    projector=projector,
+    host_model_id="gpt2",
+    faithfulness=GTAlignmentTarget(labels=cluster_ids),
+    # …
+)
+result = pipeline.run(output_dir)
+print(result.faithfulness, result.faithfulness_target_name)
+```
+
+Third-party targets SHOULD namespace their `ctx` keys with a
+module-specific prefix (e.g. `_myorg_inputs`) to avoid clashes with
+the built-in `_eval_*` keys.
+
+`ForgePipeline(faithfulness=None)` (the default) is byte-identical to
+the pre-change behaviour: the family-based default policy picks
+`KLTarget` for LM hosts and `CosineTarget` for `whisper_encoder`. No
+migration is required.
+
+`ForgeResult.faithfulness_kl` is deprecated in favour of the generic
+`ForgeResult.faithfulness` (with `ForgeResult.faithfulness_target_name`
+naming the active scorer). Reads still work for one minor version and
+emit `DeprecationWarning`; new code should use `.faithfulness` directly.
+
 ## Corpus formats
 
 `build_iterator` (used internally when you pass `finetune_corpus`) accepts:

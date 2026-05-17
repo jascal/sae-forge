@@ -38,7 +38,8 @@ from saeforge.sweep import (
 @dataclass
 class _StubResult:
     output_dir: Path
-    faithfulness_kl: float | None = 0.5
+    faithfulness: float | None = 0.5
+    faithfulness_target_name: str | None = "kl"
     extras: dict = field(default_factory=lambda: {"perplexity": 1.5, "final_loss": 2.7})
 
 

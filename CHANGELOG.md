@@ -5,6 +5,61 @@ their corresponding OpenSpec change is archived.
 
 ## [Unreleased]
 
+### Added (pluggable-faithfulness)
+
+`ForgePipeline` now accepts an optional `faithfulness` argument
+implementing the new `saeforge.eval.faithfulness.FaithfulnessTarget`
+protocol. The protocol generalises the loop-gating signal beyond
+hard-coded KL: built-in `KLTarget` and `CosineTarget` preserve v0.4
+behaviour as family-dispatched defaults, and any user-supplied target
+(GT-alignment, probe accuracy, monosemanticity, …) overrides them.
+
+`ForgePipeline(faithfulness=None, ...)` (the default) is byte-identical
+to the previous behaviour — the family-based default policy picks
+`KLTarget` for LM hosts (`gpt2` / `llama` / `gemma2` / `qwen2` / `qwen3`)
+and `CosineTarget` for `whisper_encoder`.
+
+`ForgeResult.faithfulness_kl` is deprecated in favour of two new
+fields: `ForgeResult.faithfulness` (the active target's score) and
+`ForgeResult.faithfulness_target_name` (the active target's `name`).
+The property keeps working for one minor version and emits a
+`DeprecationWarning` on read; the constructor still accepts
+`faithfulness_kl=` as a kwarg shim that forwards to `faithfulness=` /
+`faithfulness_target_name="kl"` (also with `DeprecationWarning`).
+Removal is scheduled for the next minor version after this lands.
+
+Migration:
+
+```text
+Before (still works, emits DeprecationWarning):
+    result = pipeline.run(...)
+    print(result.faithfulness_kl)
+
+After (KL default — no code change required):
+    result = pipeline.run(...)
+    print(result.faithfulness)                       # same value
+
+After (custom target):
+    from saeforge.eval.faithfulness import FaithfulnessTarget
+    result = ForgePipeline(faithfulness=MyTarget(), ...).run(...)
+    print(result.faithfulness, result.faithfulness_target_name)
+```
+
+`forge_result.json` gains `faithfulness` and `faithfulness_target_name`
+keys alongside the existing `faithfulness_kl` (which is `null` when
+the active target is not `"kl"`; removed alongside the property in the
+same release).
+
+New artifacts: `saeforge/eval/faithfulness.py::FaithfulnessTarget`,
+`saeforge/eval/targets/{kl,cosine,__init__}.py`,
+`examples/forge_with_gt_alignment.py`,
+`tests/test_faithfulness_target_protocol.py`,
+`tests/test_pipeline_with_custom_target.py`,
+`tests/test_forge_result_deprecation.py`. Docs:
+`docs/finetune-recipe.md` gains a "Swapping the faithfulness target"
+section; `docs/advanced-fsm-options.md` documents the `faithfulness`
+knob in the basis-loop knobs table.
+
 ### Added (fix-scale-boost-calibration — diagnostics-only)
 
 This change started as a `scale_boost="calibrate"` auto-picker. The

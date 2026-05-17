@@ -95,8 +95,8 @@ def test_fsm_run_synthetic_end_to_end(tiny_gpt2, tiny_synthetic_basis, tmp_path)
     eval_input_ids = torch.randint(0, tiny_gpt2.config.vocab_size, (1, 4))
     result = pipeline.run_synthetic(tiny_gpt2, tmp_path / "fsm-out", eval_input_ids=eval_input_ids)
     assert result.n_params > 0
-    assert result.faithfulness_kl is not None
-    assert result.faithfulness_kl >= 0.0
+    assert result.faithfulness is not None
+    assert result.faithfulness >= 0.0
     assert (tmp_path / "fsm-out" / "forged" / "config.json").is_file()
     assert (tmp_path / "fsm-out" / "forged" / "model.safetensors").is_file()
     assert result.extras["final_state"] == "done"
