@@ -560,6 +560,8 @@ class ForgePipeline:
         validation_eval_overlap: bool = False,
         force_rematerialise: bool = False,
         plan_only: bool = False,
+        magnitude_diagnostics: "int | str | Path | None" = None,
+        rank_monotonicity_check: bool = False,
         **forge_kwargs: Any,
     ) -> Path:
         """Forge across per-K materialised SAE checkpoints; emit a JSONL frontier.
@@ -607,6 +609,8 @@ class ForgePipeline:
             validation_eval_overlap=validation_eval_overlap,
             force_rematerialise=force_rematerialise,
             plan_only=plan_only,
+            magnitude_diagnostics=magnitude_diagnostics,
+            rank_monotonicity_check=rank_monotonicity_check,
             **forge_kwargs,
         )
 

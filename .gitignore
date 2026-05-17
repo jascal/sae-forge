@@ -19,5 +19,6 @@ examples/output/
 scratch/
 checkpoints/
 runs/
+smoke_fix_scale_boost/
 *.safetensors
 *.pt

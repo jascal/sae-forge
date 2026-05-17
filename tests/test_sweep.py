@@ -234,6 +234,65 @@ class TestParetoFrontierRow:
         assert d["perplexity"] is None
         assert d["final_fine_tune_loss"] is None
 
+    def test_round_trip_with_magnitude_diagnostics(self):
+        # logit_std_ratio + top1_anomalous added by fix-scale-boost-calibration.
+        row = ParetoFrontierRow(
+            encoding_label="rung4",
+            target_n_features_kept=200,
+            n_features_kept_actual=180,
+            pareto_reached_target=True,
+            faithfulness_kl=0.42,
+            perplexity=1.5,
+            final_fine_tune_loss=None,
+            sae_checkpoint="x",
+            forged_model_path="x",
+            elapsed_seconds=12.5,
+            error_message=None,
+            logit_std_ratio=1.03,
+            top1_anomalous=False,
+        )
+        rt = ParetoFrontierRow.from_json_dict(
+            json.loads(json.dumps(row.to_json_dict()))
+        )
+        assert rt == row
+
+    def test_legacy_row_missing_diagnostic_fields_round_trips(self):
+        # A row dict written by an older version (no diagnostic keys)
+        # should still parse cleanly — the new fields default to None.
+        legacy = {
+            "encoding_label": "rung4",
+            "target_n_features_kept": 8,
+            "n_features_kept_actual": 8,
+            "pareto_reached_target": True,
+            "faithfulness_kl": 1.0,
+            "perplexity": None,
+            "final_fine_tune_loss": None,
+            "sae_checkpoint": "x",
+            "forged_model_path": None,
+            "elapsed_seconds": 0.0,
+            "error_message": None,
+        }
+        row = ParetoFrontierRow.from_json_dict(legacy)
+        assert row.logit_std_ratio is None
+        assert row.top1_anomalous is None
+
+    def test_rejects_negative_logit_std_ratio(self):
+        with pytest.raises(ValueError, match="logit_std_ratio"):
+            ParetoFrontierRow(
+                encoding_label="x",
+                target_n_features_kept=1,
+                n_features_kept_actual=None,
+                pareto_reached_target=None,
+                faithfulness_kl=None,
+                perplexity=None,
+                final_fine_tune_loss=None,
+                sae_checkpoint="x",
+                forged_model_path=None,
+                elapsed_seconds=0.0,
+                error_message=None,
+                logit_std_ratio=-1.0,
+            )
+
 
 # ---------------------------------------------------------------------------
 # Manifest + checkpoint enumeration
@@ -1124,6 +1183,137 @@ class TestAutoMaterialiseCLIValidation:
         assert "HEA_Rung2" in err
         assert "hea" in err  # offending label surfaced
 
+    def test_magnitude_diagnostics_bogus_format_exits_2(
+        self, tmp_path, synthetic_compressed_sae, capsys
+    ):
+        """``--magnitude-diagnostics bogus:value`` exits non-zero with a
+        clear stderr message; no sweep work attempted."""
+        sae_file = self._make_sae_file(tmp_path, synthetic_compressed_sae)
+        validation = tmp_path / "v.txt"
+        validation.write_text("hello\n")
+        eval_p = tmp_path / "e.txt"
+        eval_p.write_text("world\n")
+        from saeforge.cli import main
+
+        rc = main([
+            "sweep-pareto",
+            "--auto-materialise",
+            "--encoding", f"mps:{sae_file}",
+            "--host-model", "gpt2",
+            "--output-dir", str(tmp_path / "out"),
+            "--validation-prompts", str(validation),
+            "--eval-prompts", str(eval_p),
+            "--pareto", "2",
+            "--layer", "8",
+            "--magnitude-diagnostics", "bogus:value",
+            "--plan-only",
+        ])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "--magnitude-diagnostics" in err
+        assert "tokens" in err and "prompts" in err
+
+    def test_magnitude_diagnostics_no_colon_exits_2(
+        self, tmp_path, synthetic_compressed_sae, capsys
+    ):
+        sae_file = self._make_sae_file(tmp_path, synthetic_compressed_sae)
+        validation = tmp_path / "v.txt"
+        validation.write_text("hello\n")
+        eval_p = tmp_path / "e.txt"
+        eval_p.write_text("world\n")
+        from saeforge.cli import main
+
+        rc = main([
+            "sweep-pareto",
+            "--auto-materialise",
+            "--encoding", f"mps:{sae_file}",
+            "--host-model", "gpt2",
+            "--output-dir", str(tmp_path / "out"),
+            "--validation-prompts", str(validation),
+            "--eval-prompts", str(eval_p),
+            "--pareto", "2",
+            "--layer", "8",
+            "--magnitude-diagnostics", "1024",
+            "--plan-only",
+        ])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "tokens:N" in err or "prompts:PATH" in err
+
+    def test_magnitude_diagnostics_missing_prompts_file_exits_2(
+        self, tmp_path, synthetic_compressed_sae, capsys
+    ):
+        sae_file = self._make_sae_file(tmp_path, synthetic_compressed_sae)
+        validation = tmp_path / "v.txt"
+        validation.write_text("hello\n")
+        eval_p = tmp_path / "e.txt"
+        eval_p.write_text("world\n")
+        from saeforge.cli import main
+
+        rc = main([
+            "sweep-pareto",
+            "--auto-materialise",
+            "--encoding", f"mps:{sae_file}",
+            "--host-model", "gpt2",
+            "--output-dir", str(tmp_path / "out"),
+            "--validation-prompts", str(validation),
+            "--eval-prompts", str(eval_p),
+            "--pareto", "2",
+            "--layer", "8",
+            "--magnitude-diagnostics",
+            f"prompts:{tmp_path}/does-not-exist.jsonl",
+            "--plan-only",
+        ])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "prompts" in err.lower() and "not found" in err.lower()
+
+    def test_magnitude_diagnostics_tokens_negative_exits_2(
+        self, tmp_path, synthetic_compressed_sae, capsys
+    ):
+        sae_file = self._make_sae_file(tmp_path, synthetic_compressed_sae)
+        validation = tmp_path / "v.txt"
+        validation.write_text("hello\n")
+        eval_p = tmp_path / "e.txt"
+        eval_p.write_text("world\n")
+        from saeforge.cli import main
+
+        rc = main([
+            "sweep-pareto",
+            "--auto-materialise",
+            "--encoding", f"mps:{sae_file}",
+            "--host-model", "gpt2",
+            "--output-dir", str(tmp_path / "out"),
+            "--validation-prompts", str(validation),
+            "--eval-prompts", str(eval_p),
+            "--pareto", "2",
+            "--layer", "8",
+            "--magnitude-diagnostics", "tokens:0",
+            "--plan-only",
+        ])
+        assert rc == 2
+
+    def test_rank_monotonicity_check_flag_parses(self):
+        """``--rank-monotonicity-check`` is a boolean store_true flag."""
+        from saeforge.cli import _build_parser
+
+        parser = _build_parser()
+        ns = parser.parse_args([
+            "sweep-pareto",
+            "--rank-monotonicity-check",
+            "--encoding", "foo:/tmp/x",
+            "--host-model", "gpt2",
+            "--output-dir", "/tmp/out",
+        ])
+        assert ns.rank_monotonicity_check is True
+        ns2 = parser.parse_args([
+            "sweep-pareto",
+            "--encoding", "foo:/tmp/x",
+            "--host-model", "gpt2",
+            "--output-dir", "/tmp/out",
+        ])
+        assert ns2.rank_monotonicity_check is False
+
     def test_plan_only_on_cold_cache_prints_miss(
         self, tmp_path, synthetic_compressed_sae, capsys
     ):
@@ -1309,3 +1499,167 @@ class TestProvenanceRowPopulation:
         assert result.validation_threshold == 0.95
         assert result.encoding_class == "HEA_Rung2"
         assert result.validation_eval_overlap is False
+
+
+# ---------------------------------------------------------------------------
+# fix-scale-boost-calibration: monotonicity advisory + mutex
+# ---------------------------------------------------------------------------
+
+
+class TestRankMonotonicityAdvisory:
+    """Tests for ``_maybe_advise_rank_monotonicity`` — the post-sweep
+    advisory introduced by ``fix-scale-boost-calibration`` (§4.4)."""
+
+    def _row(self, label, k_actual, kl):
+        return ParetoFrontierRow(
+            encoding_label=label,
+            target_n_features_kept=k_actual,
+            n_features_kept_actual=k_actual,
+            pareto_reached_target=True,
+            faithfulness_kl=kl,
+            perplexity=None,
+            final_fine_tune_loss=None,
+            sae_checkpoint="/x",
+            forged_model_path="/x",
+            elapsed_seconds=0.0,
+            error_message=None,
+        )
+
+    def test_flags_violation(self, capsys):
+        from saeforge.sweep import _maybe_advise_rank_monotonicity
+
+        rows = [
+            self._row("rung4", 25, 6.96),
+            self._row("rung4", 211, 55.6),  # KL exploded → violation
+        ]
+        _maybe_advise_rank_monotonicity(rows)
+        err = capsys.readouterr().err
+        assert "rank-monotonicity advisory" in err
+        assert "encoding=rung4" in err
+        assert "K=25" in err and "K=211" in err
+        assert "delta=" in err
+
+    def test_silent_when_monotone(self, capsys):
+        from saeforge.sweep import _maybe_advise_rank_monotonicity
+
+        rows = [
+            self._row("rung4", 25, 6.0),
+            self._row("rung4", 100, 5.5),
+            self._row("rung4", 211, 5.5),  # monotone non-increasing
+        ]
+        _maybe_advise_rank_monotonicity(rows)
+        assert capsys.readouterr().err == ""
+
+    def test_silent_within_tolerance(self, capsys):
+        # Adjacent KL going from 5.5 → 5.55 is grid noise, not a violation.
+        from saeforge.sweep import _maybe_advise_rank_monotonicity
+
+        rows = [
+            self._row("rung4", 25, 5.5),
+            self._row("rung4", 50, 5.55),  # delta = 0.05, well under 0.1
+        ]
+        _maybe_advise_rank_monotonicity(rows)
+        assert capsys.readouterr().err == ""
+
+    def test_per_label_grouping(self, capsys):
+        from saeforge.sweep import _maybe_advise_rank_monotonicity
+
+        rows = [
+            self._row("rung4", 25, 5.0),
+            self._row("rung4", 100, 5.05),  # OK within rung4
+            self._row("hea", 25, 5.0),
+            self._row("hea", 100, 50.0),  # Violation in hea only
+        ]
+        _maybe_advise_rank_monotonicity(rows)
+        err = capsys.readouterr().err
+        assert "encoding=hea" in err
+        # rung4 shouldn't appear as a violation line.
+        assert "encoding=rung4: K=25" not in err
+
+    def test_error_rows_skipped(self, capsys):
+        from saeforge.sweep import _maybe_advise_rank_monotonicity
+
+        rows = [
+            self._row("rung4", 25, 5.0),
+            ParetoFrontierRow(
+                encoding_label="rung4",
+                target_n_features_kept=100,
+                n_features_kept_actual=100,
+                pareto_reached_target=True,
+                faithfulness_kl=None,
+                perplexity=None,
+                final_fine_tune_loss=None,
+                sae_checkpoint="/x",
+                forged_model_path=None,
+                elapsed_seconds=0.0,
+                error_message="boom",  # excluded from monotonicity check
+            ),
+        ]
+        _maybe_advise_rank_monotonicity(rows)
+        assert capsys.readouterr().err == ""
+
+
+class TestMagnitudeDiagnosticsAdvisory:
+    """Post-sweep advisory introduced by ``fix-scale-boost-calibration``."""
+
+    def test_returns_none_when_no_diagnostics(self):
+        from saeforge.forge_quality import advise_magnitude_diagnostics
+
+        rows = [
+            ParetoFrontierRow(
+                encoding_label="x",
+                target_n_features_kept=8,
+                n_features_kept_actual=8,
+                pareto_reached_target=True,
+                faithfulness_kl=1.0,
+                perplexity=None,
+                final_fine_tune_loss=None,
+                sae_checkpoint="/x",
+                forged_model_path="/x",
+                elapsed_seconds=0.0,
+                error_message=None,
+            )
+        ]
+        assert advise_magnitude_diagnostics(rows) is None
+
+    def test_lists_logit_std_ratio_and_canary(self):
+        from saeforge.forge_quality import advise_magnitude_diagnostics
+
+        rows = [
+            ParetoFrontierRow(
+                encoding_label="hea",
+                target_n_features_kept=8,
+                n_features_kept_actual=8,
+                pareto_reached_target=True,
+                faithfulness_kl=1.2,
+                perplexity=None,
+                final_fine_tune_loss=None,
+                sae_checkpoint="/x",
+                forged_model_path="/x",
+                elapsed_seconds=0.0,
+                error_message=None,
+                logit_std_ratio=0.97,
+                top1_anomalous=False,
+            ),
+            ParetoFrontierRow(
+                encoding_label="hea",
+                target_n_features_kept=16,
+                n_features_kept_actual=16,
+                pareto_reached_target=True,
+                faithfulness_kl=55.6,
+                perplexity=None,
+                final_fine_tune_loss=None,
+                sae_checkpoint="/x",
+                forged_model_path="/x",
+                elapsed_seconds=0.0,
+                error_message=None,
+                logit_std_ratio=23.0,
+                top1_anomalous=True,
+            ),
+        ]
+        out = advise_magnitude_diagnostics(rows)
+        assert out is not None
+        assert "logit_std_ratio=0.9700" in out
+        assert "logit_std_ratio=23.0000" in out
+        assert "anomalous-token canary fired" in out
+        assert "K=16" in out

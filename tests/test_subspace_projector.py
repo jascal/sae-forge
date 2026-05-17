@@ -170,7 +170,7 @@ class TestScaleBoostAuto:
         assert proj.scale_boost == 1.0
 
     def test_unknown_string_rejected(self):
-        with pytest.raises(ValueError, match="positive float or 'auto'"):
+        with pytest.raises(ValueError, match="must be a positive float"):
             SubspaceProjector(_basis(8, 16), scale_boost="not-real")
 
     def test_explicit_numeric_passes_through(self):
@@ -220,3 +220,4 @@ class TestOverCompleteWarning:
             warnings.simplefilter("always")
             SubspaceProjector(_basis(1024, 768), scale_boost="auto")
         assert not any("over-complete" in str(w.message) for w in caught)
+

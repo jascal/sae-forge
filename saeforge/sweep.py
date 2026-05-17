@@ -21,9 +21,12 @@ import json
 import re
 import sys
 import time
+from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterator, Mapping
+
+import numpy as np
 
 if TYPE_CHECKING:
     from saeforge.auto_materialise import AutoMaterialiseSpec  # noqa: F401
@@ -68,6 +71,11 @@ class ParetoFrontierRow:
     validation_threshold: float | None = None
     encoding_class: str | None = None
     validation_eval_overlap: bool | None = None
+    # Forge-magnitude diagnostics, populated when the sweep ran with
+    # ``--magnitude-diagnostics``. See ``saeforge.calibration`` and the
+    # ``fix-scale-boost-calibration`` capability for the row contract.
+    logit_std_ratio: float | None = None
+    top1_anomalous: bool | None = None
 
     def __post_init__(self) -> None:
         if int(self.target_n_features_kept) < 1:
@@ -111,6 +119,14 @@ class ParetoFrontierRow:
                     f"ParetoFrontierRow: quality_tier must be one of "
                     f"{sorted(valid)} or None; got {self.quality_tier!r}"
                 )
+        if (
+            self.logit_std_ratio is not None
+            and float(self.logit_std_ratio) < 0.0
+        ):
+            raise ValueError(
+                f"ParetoFrontierRow: logit_std_ratio must be >= 0 or None; "
+                f"got {self.logit_std_ratio}"
+            )
 
     def to_json_dict(self) -> dict[str, Any]:
         return {
@@ -144,6 +160,8 @@ class ParetoFrontierRow:
             "validation_threshold": _finite_or_none(self.validation_threshold),
             "encoding_class": self.encoding_class,
             "validation_eval_overlap": self.validation_eval_overlap,
+            "logit_std_ratio": _finite_or_none(self.logit_std_ratio),
+            "top1_anomalous": self.top1_anomalous,
         }
 
     @classmethod
@@ -212,6 +230,16 @@ class ParetoFrontierRow:
             encoding_class=(
                 str(data["encoding_class"])
                 if data.get("encoding_class") is not None
+                else None
+            ),
+            logit_std_ratio=(
+                float(data["logit_std_ratio"])
+                if data.get("logit_std_ratio") is not None
+                else None
+            ),
+            top1_anomalous=(
+                bool(data["top1_anomalous"])
+                if data.get("top1_anomalous") is not None
                 else None
             ),
             validation_eval_overlap=(
@@ -425,7 +453,10 @@ def _load_completed_rows(frontier_path: Path) -> set[tuple[str, int]]:
 
 
 @contextlib.contextmanager
-def _basis_swap(pipeline: "ForgePipeline", sae_checkpoint: Path) -> Iterator[None]:
+def _basis_swap(
+    pipeline: "ForgePipeline",
+    sae_checkpoint: Path,
+) -> Iterator[None]:
     """Temporarily rebuild ``pipeline.basis`` and ``pipeline.projector`` from
     ``sae_checkpoint`` for the duration of one forge call.
 
@@ -511,6 +542,8 @@ def sweep_pareto(
     validation_eval_overlap: bool = False,
     force_rematerialise: bool = False,
     plan_only: bool = False,
+    magnitude_diagnostics: "Path | int | None" = None,
+    rank_monotonicity_check: bool = False,
     **forge_kwargs: Any,
 ) -> Path:
     """Run the forge pipeline across per-K SAE checkpoints.
@@ -653,6 +686,51 @@ def sweep_pareto(
             }
         encodings = remapped_encodings
 
+    # Magnitude-diagnostics pre-step. Load the calibration corpus +
+    # host unembed once at sweep entry; threading through to every row
+    # for the logit_std_ratio + top1_anomalous row-field computation.
+    # See ``saeforge.calibration`` and
+    # ``openspec/changes/fix-scale-boost-calibration``.
+    diagnostics_payload: (
+        tuple[np.ndarray, np.ndarray, frozenset[int]] | None
+    ) = None
+    if magnitude_diagnostics is not None:
+        host_model_id_cal = getattr(pipeline, "host_model_id", None)
+        if host_model_id_cal is None:
+            raise RuntimeError(
+                "sweep_pareto: --magnitude-diagnostics requires "
+                "pipeline.host_model_id (to load the calibration corpus + "
+                "lm_head from the host)."
+            )
+        if layer is None:
+            raise RuntimeError(
+                "sweep_pareto: --magnitude-diagnostics requires --layer "
+                "to be set (the residual-stream hook layer must match "
+                "the SAE's training layer)."
+            )
+
+        from saeforge.calibration import (
+            ANOMALOUS_TOKEN_IDS as _ANOM_IDS,
+            load_calibration_corpus,
+            load_host_unembed,
+        )
+
+        if isinstance(magnitude_diagnostics, int):
+            cal_input = load_calibration_corpus(
+                host_model_id_cal,
+                int(layer),
+                n_tokens=int(magnitude_diagnostics),
+            )
+        else:
+            cal_input = load_calibration_corpus(
+                host_model_id_cal,
+                int(layer),
+                prompts_path=Path(magnitude_diagnostics),
+            )
+        cal_unembed = load_host_unembed(host_model_id_cal)
+        anomalous = _ANOM_IDS.get(host_model_id_cal, frozenset())
+        diagnostics_payload = (cal_input, cal_unembed, anomalous)
+
     # Forge-quality diagnostics: resolve host d_model once, build the
     # advisory, enforce --quality-floor if set. All three are best-effort
     # (skipped silently when host d_model can't be resolved).
@@ -709,6 +787,7 @@ def sweep_pareto(
 
     completed = _load_completed_rows(frontier_path)
     failures = 0
+    rows_this_sweep: list[ParetoFrontierRow] = []
 
     with frontier_path.open("a") as fh:
         for label, enc_path in encodings:
@@ -742,11 +821,22 @@ def sweep_pareto(
                     provenance_validation_eval_overlap=provenance.get(
                         "validation_eval_overlap"
                     ),
+                    diagnostics_payload=diagnostics_payload,
                 )
                 fh.write(json.dumps(row.to_json_dict()) + "\n")
                 fh.flush()
+                rows_this_sweep.append(row)
                 if row.error_message is not None:
                     failures += 1
+
+    if rank_monotonicity_check:
+        _maybe_advise_rank_monotonicity(rows_this_sweep)
+
+    from saeforge.forge_quality import advise_magnitude_diagnostics
+
+    diag_advisory = advise_magnitude_diagnostics(rows_this_sweep)
+    if diag_advisory is not None:
+        print(diag_advisory, file=sys.stderr)
 
     if failures > 0:
         raise RuntimeError(
@@ -754,6 +844,58 @@ def sweep_pareto(
             f"{frontier_path} for details"
         )
     return frontier_path
+
+
+def _maybe_advise_rank_monotonicity(
+    rows: list[ParetoFrontierRow],
+    *,
+    tolerance_nats: float = 0.1,
+) -> None:
+    """Print a stderr advisory when ``faithfulness_kl`` is non-monotone
+    in ``n_features_kept_actual`` within any encoding label.
+
+    The check is advisory only — sweeps continue regardless. The
+    tolerance is generous enough to ignore grid noise while still
+    catching the documented 6.96 → 55.6 blow-up pattern at default
+    ``scale_boost`` ([[project_kl_nonmonotonic]]).
+    """
+    by_label: dict[str, list[ParetoFrontierRow]] = defaultdict(list)
+    for row in rows:
+        if row.error_message is not None:
+            continue
+        if row.n_features_kept_actual is None or row.faithfulness_kl is None:
+            continue
+        by_label[row.encoding_label].append(row)
+
+    violations: list[tuple[str, ParetoFrontierRow, ParetoFrontierRow, float]] = []
+    for label, group in sorted(by_label.items()):
+        ordered = sorted(group, key=lambda r: int(r.n_features_kept_actual or 0))
+        for low, high in zip(ordered, ordered[1:]):
+            delta = float(high.faithfulness_kl) - float(low.faithfulness_kl)  # type: ignore[arg-type]
+            if delta > tolerance_nats:
+                violations.append((label, low, high, delta))
+
+    if not violations:
+        return
+
+    lines = [
+        "sweep-pareto: rank-monotonicity advisory — faithfulness_kl is "
+        "non-monotone in kept-feature count for one or more encodings "
+        f"(tolerance {tolerance_nats} nats):"
+    ]
+    for label, low, high, delta in violations:
+        lines.append(
+            f"  encoding={label}: K={low.n_features_kept_actual} "
+            f"KL={float(low.faithfulness_kl):.3f} -> "  # type: ignore[arg-type]
+            f"K={high.n_features_kept_actual} "
+            f"KL={float(high.faithfulness_kl):.3f} "  # type: ignore[arg-type]
+            f"(delta={delta:.3f} > tol)"
+        )
+    lines.append(
+        "  Advisory only — not a refusal. Consider "
+        "--scale-boost-calibrate if running at default scale_boost=1.0."
+    )
+    print("\n".join(lines), file=sys.stderr)
 
 
 def _process_row(
@@ -773,6 +915,9 @@ def _process_row(
     provenance_validation_threshold: float | None = None,
     provenance_encoding_class: str | None = None,
     provenance_validation_eval_overlap: bool | None = None,
+    diagnostics_payload: (
+        tuple[np.ndarray, np.ndarray, frozenset[int]] | None
+    ) = None,
 ) -> ParetoFrontierRow:
     """Build one frontier row — manifest-only when ``frontier_only``, otherwise
     invoke ``pipeline.run`` inside a try/except.
@@ -819,8 +964,30 @@ def _process_row(
 
     row_output_dir = sweep_output_dir / label / f"k_{target_k}"
     started = time.monotonic()
+    logit_std_ratio: float | None = None
+    top1_anomalous: bool | None = None
     try:
         with _basis_swap(pipeline, ckpt_path):
+            if diagnostics_payload is not None:
+                # Compute magnitude/anomaly diagnostics BEFORE pipeline.run
+                # mutates anything downstream. Pure-numpy and cheap.
+                from saeforge.calibration import (
+                    compute_forged_logit_std,
+                    compute_host_logit_std,
+                    top1_is_anomalous,
+                )
+
+                cal_in, cal_unembed, anomalous = diagnostics_payload
+                host_std = compute_host_logit_std(cal_in, cal_unembed)
+                forged_std = compute_forged_logit_std(
+                    cal_in, pipeline.projector, cal_unembed
+                )
+                logit_std_ratio = (
+                    forged_std / host_std if host_std > 0.0 else None
+                )
+                top1_anomalous = top1_is_anomalous(
+                    cal_in, pipeline.projector, cal_unembed, anomalous
+                )
             result = pipeline.run(
                 output_dir=row_output_dir,
                 **forge_kwargs,
@@ -846,6 +1013,8 @@ def _process_row(
             validation_threshold=provenance_validation_threshold,
             encoding_class=provenance_encoding_class,
             validation_eval_overlap=provenance_validation_eval_overlap,
+            logit_std_ratio=logit_std_ratio,
+            top1_anomalous=top1_anomalous,
         )
 
     elapsed = time.monotonic() - started
@@ -869,4 +1038,6 @@ def _process_row(
         validation_threshold=provenance_validation_threshold,
         encoding_class=provenance_encoding_class,
         validation_eval_overlap=provenance_validation_eval_overlap,
+        logit_std_ratio=logit_std_ratio,
+        top1_anomalous=top1_anomalous,
     )

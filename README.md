@@ -611,7 +611,26 @@ Performs the weight projection math:
 
 The optional `scale_boost` knob compensates for under-coverage when the
 basis spans less than the host residual stream — defaults to `1.0` (no
-boost). See `docs/research/scale-boost-design.md` for the rationale (TBD).
+boost). Two resolution modes:
+
+- **Literal float**: `SubspaceProjector(basis, scale_boost=0.25)`.
+  Reproducible, no calibration overhead. Use when you've characterised
+  the basis and know what you want.
+- **`"auto"`**: `min(1.0, d_model/n_features)`. Basis-shape-aware
+  fallback that defends against the over-complete blow-up footgun on
+  random-Gaussian bases. Under-corrects on polygram-compressed bases
+  (see `openspec/changes/fix-scale-boost-calibration/design.md`).
+
+An earlier draft of `fix-scale-boost-calibration` added a
+`scale_boost="calibrate"` auto-picker. The 2026-05-16 smoke gate
+falsified the mechanism (three successive proxies for forge KL all
+picked the wrong value) and the mode was dropped. The change shipped
+as forge-magnitude diagnostics instead: `--magnitude-diagnostics
+tokens:N` (or `prompts:PATH`) populates `logit_std_ratio` and
+`top1_anomalous` on every row, and `--rank-monotonicity-check`
+prints a post-sweep advisory if `faithfulness_kl` is non-monotone in
+K. Together they help diagnose WHY a sweep produced poor forge KL
+without claiming to fix it.
 
 ### `NativeModel`
 

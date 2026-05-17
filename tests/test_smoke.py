@@ -36,6 +36,13 @@ def test_public_surface_is_frozen() -> None:
         "SubspaceProjector",
         "__version__",
         "sweep_pareto",
+        # Calibration helpers + constants added by fix-scale-boost-calibration.
+        "ANOMALOUS_TOKEN_IDS",
+        "compute_forged_logit_std",
+        "compute_host_logit_std",
+        "load_calibration_corpus",
+        "load_host_unembed",
+        "top1_is_anomalous",
     }
     assert set(saeforge.__all__) == expected
 

@@ -245,6 +245,39 @@ def _build_parser() -> argparse.ArgumentParser:
             "saturated:1.0,good:0.5,undersized:0.0625 (defaults)."
         ),
     )
+    sweep.add_argument(
+        "--magnitude-diagnostics",
+        type=str,
+        default=None,
+        metavar="VALUE",
+        help=(
+            "Opt-in forge-magnitude diagnostics "
+            "(fix-scale-boost-calibration). Accepts 'tokens:N' to use "
+            "the built-in token-capped corpus (N tokens, default 1024) "
+            "or 'prompts:PATH' to load JSONL prompts from PATH. When "
+            "set, each row's logit_std_ratio (forged-logit std vs "
+            "host-logit std on the calibration corpus) and "
+            "top1_anomalous (mode top-1 prediction in the curated "
+            "SolidGoldMagikarp-family set) fields are populated. "
+            "Requires --layer and a host model id resolvable from "
+            "--host-model. These are post-mortem diagnostics — they "
+            "don't change scale_boost, just surface why a forge KL "
+            "might be poor."
+        ),
+    )
+    sweep.add_argument(
+        "--rank-monotonicity-check",
+        action="store_true",
+        help=(
+            "After the sweep completes, verify that within each "
+            "encoding label, faithfulness_kl is non-increasing in "
+            "n_features_kept_actual up to a 0.1-nat tolerance. "
+            "Violations print a stderr advisory listing the offending "
+            "(label, K_low, K_high, KL_low, KL_high) tuples — advisory "
+            "only, no refusal. Useful for catching the documented "
+            "blow-up pattern at default scale_boost=1.0."
+        ),
+    )
 
     # ---------------------------------------------------------------
     # Auto-materialise mode (`add-auto-materialise-sweep` capability).
@@ -820,7 +853,10 @@ def _cmd_sweep_pareto(args: argparse.Namespace) -> int:
             auto_only_flags_set.append("--validation-prompts")
         if args.pareto is not None:
             auto_only_flags_set.append("--pareto")
-        if args.layer is not None:
+        # --layer is also required by --magnitude-diagnostics (the
+        # calibration corpus is hooked at this residual-stream layer).
+        # Allow it when diagnostics are in use even outside --auto-materialise.
+        if args.layer is not None and args.magnitude_diagnostics is None:
             auto_only_flags_set.append("--layer")
         if args.validation_threshold is not None:
             auto_only_flags_set.append("--validation-threshold")
@@ -1115,13 +1151,77 @@ def _cmd_sweep_pareto(args: argparse.Namespace) -> int:
         eval_prompts=eval_prompts,
     )
 
+    # Parse --magnitude-diagnostics spec ("tokens:N" → int, "prompts:PATH" → Path).
+    magnitude_diagnostics_arg: "int | Path | None" = None
+    if args.magnitude_diagnostics is not None:
+        raw = str(args.magnitude_diagnostics).strip()
+        if ":" not in raw:
+            print(
+                f"sae-forge sweep-pareto: --magnitude-diagnostics expected "
+                f"'tokens:N' or 'prompts:PATH'; got {raw!r}",
+                file=sys.stderr,
+            )
+            return 2
+        kind, value = raw.split(":", 1)
+        kind = kind.strip().lower()
+        value = value.strip()
+        if kind == "tokens":
+            try:
+                n_tokens = int(value)
+            except ValueError:
+                print(
+                    f"sae-forge sweep-pareto: --magnitude-diagnostics "
+                    f"tokens: expected integer; got {value!r}",
+                    file=sys.stderr,
+                )
+                return 2
+            if n_tokens < 1:
+                print(
+                    f"sae-forge sweep-pareto: --magnitude-diagnostics "
+                    f"tokens: must be >= 1; got {n_tokens}",
+                    file=sys.stderr,
+                )
+                return 2
+            magnitude_diagnostics_arg = n_tokens
+        elif kind == "prompts":
+            prompts_path = Path(value)
+            if not prompts_path.is_file():
+                print(
+                    f"sae-forge sweep-pareto: --magnitude-diagnostics "
+                    f"prompts: file not found: {prompts_path}",
+                    file=sys.stderr,
+                )
+                return 2
+            magnitude_diagnostics_arg = prompts_path
+        else:
+            print(
+                f"sae-forge sweep-pareto: --magnitude-diagnostics kind "
+                f"must be 'tokens' or 'prompts'; got {kind!r}",
+                file=sys.stderr,
+            )
+            return 2
+        if args.layer is None:
+            print(
+                "sae-forge sweep-pareto: --magnitude-diagnostics requires "
+                "--layer (the residual-stream hook layer must match the "
+                "SAE's training layer).",
+                file=sys.stderr,
+            )
+            return 2
+
     sweep_kwargs: dict[str, object] = dict(
         encodings=encodings,
         output_dir=Path(args.output_dir),
         frontier_only=args.frontier_only,
         quality_floor=args.quality_floor,
         quality_thresholds=quality_thresholds,
+        magnitude_diagnostics=magnitude_diagnostics_arg,
+        rank_monotonicity_check=bool(args.rank_monotonicity_check),
     )
+    # --layer is forwarded under --auto-materialise OR --magnitude-diagnostics.
+    # The latter needs it to know which residual-stream layer to hook.
+    if magnitude_diagnostics_arg is not None and not auto_materialise:
+        sweep_kwargs["layer"] = args.layer
     if auto_materialise:
         sweep_kwargs.update(
             auto_materialise_specs=auto_materialise_specs,

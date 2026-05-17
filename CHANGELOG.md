@@ -5,6 +5,48 @@ their corresponding OpenSpec change is archived.
 
 ## [Unreleased]
 
+### Added (fix-scale-boost-calibration — diagnostics-only)
+
+This change started as a `scale_boost="calibrate"` auto-picker. The
+2026-05-16 smoke gate falsified the premise — three successive
+proxies for the forge's faithfulness KL all picked the wrong
+`scale_boost`. The change as merged is **diagnostics-only**: it adds
+the surface that explains WHY a sweep produced bad forge KL, without
+attempting to fix it automatically. See
+`openspec/changes/fix-scale-boost-calibration/design.md` Decision 1
+for the full empirical record.
+
+- **Two new `ParetoFrontierRow` diagnostic fields** populated when
+  the sweep runs with `--magnitude-diagnostics`:
+  - `logit_std_ratio`: forged-logit std ÷ host-logit std on the
+    calibration corpus (layer-L shortcut). Diagnoses
+    magnitude-matching independently of the forge's `faithfulness_kl`.
+  - `top1_anomalous`: mode top-1 prediction in the curated
+    SolidGoldMagikarp-family set. Catches the documented "broken
+    forge predicts glitch tokens" signature.
+  Both default to `None`; forward-compatible with existing readers.
+- **`--magnitude-diagnostics VALUE` CLI flag** on `sweep-pareto`.
+  Accepts `tokens:N` (built-in token-capped English corpus) or
+  `prompts:PATH` (JSONL). Requires `--layer`. Post-sweep advisory
+  prints per-row ratios and any anomalous-canary fires.
+- **`--rank-monotonicity-check` CLI flag** on `sweep-pareto`.
+  Post-sweep advisory (no refusal) that flags adjacent K pairs within
+  an encoding whose `faithfulness_kl` rises by more than 0.1 nats —
+  the documented blow-up pattern at default `scale_boost=1.0`.
+- **`saeforge.calibration` module** exposes the load helpers
+  (`load_calibration_corpus`, `load_host_unembed`), the pure-numpy
+  diagnostic helpers (`compute_host_logit_std`,
+  `compute_forged_logit_std`, `top1_is_anomalous`), and the
+  `ANOMALOUS_TOKEN_IDS` per-tokenizer map.
+- **README guidance** on `scale_boost` modes (literal / auto only;
+  calibrate dropped).
+
+`SubspaceProjector` behaviour is unchanged — only `"auto"` and
+literal-float remain. The structural KL blow-up the original proposal
+targeted lives in the projected NativeModel's stacked-layer
+compounding (not in `scale_boost` magnitude); fixing it is a separate
+proposal.
+
 ### Added (qwen3-moe-support)
 
 - **Qwen3-MoE architecture adapter** — `Qwen3MoEAdapter` inherits from

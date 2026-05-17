@@ -324,6 +324,48 @@ def advise_sweep_quality(
     return "\n".join([header, *lines, footer])
 
 
+def advise_magnitude_diagnostics(rows: "list") -> "str | None":
+    """Build a post-sweep advisory surfacing forge-magnitude diagnostics.
+
+    Fires when one or more rows have ``logit_std_ratio is not None``
+    (i.e. the sweep ran with ``--magnitude-diagnostics``). Renders one
+    line per row listing the forged-vs-host logit-std ratio; when any
+    row also has ``top1_anomalous=True``, appends an
+    ``[!] anomalous-token canary fired`` line per offending (label, K).
+
+    Returns ``None`` when there is nothing to report. Composes with the
+    pre-flight :func:`advise_sweep_quality` advisory by being printed
+    separately (both can fire on the same sweep).
+    """
+    diag_rows = [
+        r for r in rows if getattr(r, "logit_std_ratio", None) is not None
+    ]
+    if not diag_rows:
+        return None
+
+    lines: list[str] = []
+    for r in diag_rows:
+        ratio = r.logit_std_ratio
+        ratio_str = f"{ratio:.4f}" if ratio is not None else "?"
+        lines.append(
+            f"  encoding={r.encoding_label} "
+            f"K={r.n_features_kept_actual} "
+            f"logit_std_ratio={ratio_str}"
+        )
+    canary_rows = [r for r in diag_rows if r.top1_anomalous]
+    for r in canary_rows:
+        lines.append(
+            f"  [!] anomalous-token canary fired on "
+            f"encoding={r.encoding_label}, K={r.n_features_kept_actual}"
+        )
+
+    header = (
+        "sweep-pareto: forge-magnitude diagnostics "
+        "(fix-scale-boost-calibration)."
+    )
+    return "\n".join([header, *lines])
+
+
 def basis_rank_from_safetensors(sae_checkpoint: Path) -> int:
     """Load ``W_dec`` from a polygram-compressed safetensors checkpoint and
     return its numerical rank restricted to surviving (non-zero) rows.

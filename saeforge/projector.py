@@ -67,13 +67,27 @@ class SubspaceProjector:
     The projection math is pure-numpy. Real host models live behind the
     ``[torch]`` extra; ``project_module(...)`` lazy-imports torch on demand.
 
-    ``scale_boost`` accepts a positive float OR the string ``"auto"``.
-    When ``"auto"``, ``__post_init__`` resolves it to
-    ``min(1.0, d_model / n_features)`` — a heuristic for over-complete
-    bases (see module docstring for empirical context). When a literal
-    ``1.0`` (the default) is supplied with an over-complete basis, a
-    ``UserWarning`` surfaces so the silent activation-magnitude footgun
-    can't recur.
+    ``scale_boost`` accepts a positive float OR the string ``"auto"``:
+
+    - Literal float: the classic path; the supplied value is used as-is.
+    - ``"auto"``: resolved to ``min(1.0, d_model / n_features)`` — a
+      heuristic for over-complete bases (see module docstring for
+      empirical context).
+
+    An earlier draft of the ``fix-scale-boost-calibration`` change
+    explored a ``"calibrate"`` mode that auto-picked ``scale_boost`` from
+    a fixed grid to minimise forward KL on a calibration corpus. The
+    2026-05-16 smoke gate ([[project_fix_scale_boost_smoke]]) found that
+    three successive proxies for the forge's faithfulness KL all
+    diverged from the real target — including a "real" end-of-network
+    KL implementation, because the forge's KL measures a fully-projected
+    NativeModel and the residual-perturbation proxy can't see the
+    stacked-projection compounding. The calibrate mode was dropped; the
+    change's diagnostic surface (row fields, advisories) survives.
+
+    When a literal ``1.0`` (the default) is supplied with an
+    over-complete basis, a ``UserWarning`` surfaces so the silent
+    activation-magnitude footgun can't recur.
     """
 
     basis: FeatureBasis
