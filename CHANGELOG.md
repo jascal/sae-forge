@@ -5,6 +5,24 @@ their corresponding OpenSpec change is archived.
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-05-17
+
+The 0.4.0 release bundles every change archived between 0.3.0
+(2026-05-09) and now. The headline item is `pluggable-faithfulness`
+— `ForgePipeline.faithfulness` accepts a user-supplied scorer via
+the new `FaithfulnessTarget` protocol, and `ForgeResult.faithfulness_kl`
+is deprecated in favour of the generic `faithfulness` /
+`faithfulness_target_name` pair (one minor-version removal window).
+
+Two follow-up specs land alongside without code:
+`world-model-protocol` (the seam for non-transformer host adapters)
+is proposed; concrete non-transformer adapters are explicit
+follow-ups against it.
+
+Everything below was previously accumulated under `[Unreleased]`
+and is now bundled into this release. The default surface stays
+byte-identical with v0.3.0 for every non-deprecated call site.
+
 ### Added (pluggable-faithfulness)
 
 `ForgePipeline` now accepts an optional `faithfulness` argument
