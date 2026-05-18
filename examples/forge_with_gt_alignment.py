@@ -118,8 +118,18 @@ def main(output_dir: Path | str | None = None) -> dict:
     n_eval = labels.shape[0]
 
     # Custom extractor: return the cluster-signature signal directly.
-    # In real usage you would omit `hidden_extractor=` and let the
-    # default extractor pull the forged model's residual stream.
+    # This saturates AUC at 1.0 so the example is deterministic and
+    # fast. In real usage you would omit `hidden_extractor=` entirely:
+    #
+    #     target = GroundTruthTarget(labels=labels, pool="mean")
+    #
+    # The default extractor duck-types `forged.torch_module.transformer`
+    # (GPT-2 lineage) then `.model` (Llama / Gemma / Qwen lineage) and
+    # returns the residual stream `(batch, seq, hidden_size)`. The
+    # `pool="mean"` step then reduces across `seq`, and the reported
+    # score is a meaningful measurement of how well the forged model's
+    # residual distinguishes your fixture's labels — not the saturated
+    # 1.0 the cluster-signature extractor produces here by construction.
     def _extractor(forged: Any, input_ids: Any) -> "torch.Tensor":
         return signal_tensor
 
