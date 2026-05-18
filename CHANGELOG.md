@@ -5,6 +5,19 @@ their corresponding OpenSpec change is archived.
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-05-18
+
+The 0.5.0 release ships `add-gt-alignment-target` — the third
+built-in `FaithfulnessTarget`, motivated by `jascal/sm-sae`'s
+production `GroundTruthAlignment` scorer. Family defaults (KL for
+LM hosts, cosine for whisper) are byte-identical to v0.4.0;
+GT-alignment is opt-in only via
+`ForgePipeline(faithfulness=GroundTruthTarget(labels=L))`.
+
+The minor-version bump (vs. a patch) reflects the new `scipy>=1.10`
+runtime dependency: technically a breaking change for callers with
+strict pins, even though the default surface is additive.
+
 ### Added (add-gt-alignment-target)
 
 Third built-in `FaithfulnessTarget`:
