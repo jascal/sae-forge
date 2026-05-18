@@ -20,16 +20,18 @@ from saeforge.projector import SubspaceProjector
 from saeforge.utils.lazy import require_extra
 
 
-_SUPPORTED_FAMILIES = (
-    "gpt2",
-    "llama",
-    "gemma2",
-    "qwen2",
-    "qwen3",
-    "qwen3_moe",
-    "whisper_encoder",
-)
 _SUPPORTED_OUTPUT_KINDS = ("logits", "encoder_states")
+
+
+def _supported_families() -> tuple[str, ...]:
+    """Snapshot of registered architecture families, sorted for
+    deterministic error messages. Wraps
+    :func:`saeforge.adapters.registered_families` with a lazy import
+    to keep ``saeforge.model`` importable before the adapter package
+    finishes initialising."""
+    from saeforge.adapters import registered_families
+
+    return tuple(sorted(registered_families()))
 
 
 @dataclass
@@ -114,11 +116,16 @@ class NativeModelConfig:
     bridge_pre_layernorm: bool = True
 
     def __post_init__(self) -> None:
-        if self.family not in _SUPPORTED_FAMILIES:
+        from saeforge.adapters import adapter_for_family
+
+        try:
+            adapter_for_family(self.family)
+        except ValueError:
+            supported = _supported_families()
             raise ValueError(
-                f"family must be one of {_SUPPORTED_FAMILIES}; "
+                f"family must be one of {supported}; "
                 f"got {self.family!r}"
-            )
+            ) from None
         if self.output_kind not in _SUPPORTED_OUTPUT_KINDS:
             raise ValueError(
                 f"output_kind must be one of {_SUPPORTED_OUTPUT_KINDS}; "
@@ -217,26 +224,19 @@ class NativeModelConfig:
 def _build_torch_module(config: NativeModelConfig):
     """Construct the torch nn.Module skeleton. Lazy-imports torch.
 
-    Dispatches on ``config.family`` to the matching family-specific
-    factory. The factories live in ``saeforge/adapters/<family>.py``
-    so a new architecture is one file plus a ``register_adapter`` call.
+    Dispatches on ``config.family`` via
+    :func:`saeforge.adapters.adapter_for_family`; the adapter's
+    :meth:`native_module_class` returns the family-specific
+    ``nn.Module`` subclass which is then instantiated with
+    ``config``. Before the world-model-protocol refactor this was an
+    explicit ``if/elif`` family tree; the dispatch is now registry-
+    backed so a new architecture is one adapter file plus a
+    ``register_adapter`` call.
     """
-    if config.family == "gpt2":
-        from saeforge.adapters.gpt2 import build_gpt2_module
+    from saeforge.adapters import adapter_for_family
 
-        return build_gpt2_module(config)
-    if config.family in ("llama", "gemma2", "qwen2", "qwen3", "qwen3_moe"):
-        from saeforge.adapters.llama import build_llama_family_module
-
-        return build_llama_family_module(config)
-    if config.family == "whisper_encoder":
-        from saeforge.adapters.whisper import build_whisper_encoder_module
-
-        return build_whisper_encoder_module(config)
-    raise ValueError(
-        f"_build_torch_module: unknown family {config.family!r} "
-        f"(NativeModelConfig.__post_init__ should have caught this)"
-    )
+    cls = adapter_for_family(config.family).native_module_class()
+    return cls(config)
 
 
 

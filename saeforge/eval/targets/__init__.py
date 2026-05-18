@@ -31,33 +31,34 @@ __all__ = [
 ]
 
 
-# Built-in family → default-target mapping. Kept as an explicit table
-# so adding a new host family (or a new built-in target) is one entry,
-# not a code change to a dispatch tree.
-#
-#   gpt2 / llama / gemma2 / qwen2 / qwen3   →   KLTarget
-#   whisper_encoder                         →   CosineTarget
-#   anything else (including None)          →   ValueError
-_LM_FAMILIES = frozenset({"gpt2", "llama", "gemma2", "qwen2", "qwen3"})
-
-
 def _default_target_for(family: str | None) -> FaithfulnessTarget:
     """Return the default target for a forged-model family.
 
-    LM families (``gpt2`` / ``llama`` / ``gemma2`` / ``qwen2`` /
-    ``qwen3``) map to :class:`KLTarget`. ``whisper_encoder`` maps to
-    :class:`CosineTarget`. Any other family — including ``None`` —
-    raises :class:`ValueError` whose message names the offending
-    family and the supported set, mirroring the v0.4
-    ``evaluate_faithfulness`` action's behaviour on unknown families.
+    Dispatches via the architecture-adapter registry: each adapter's
+    :meth:`~saeforge.adapters.base.ArchitectureAdapter.default_faithfulness_target`
+    declares what scorer the family defaults to. LM-family adapters
+    inherit the ABC's :class:`KLTarget` default; the Whisper-encoder
+    adapter overrides to :class:`CosineTarget`. Unknown families —
+    including ``None`` — raise :class:`ValueError` whose message names
+    the offending family and the registered set.
+
+    Before the world-model-protocol refactor this dispatch lived as a
+    hardcoded ``_LM_FAMILIES`` frozenset; the new path is byte-
+    identical on the bundled families and additionally picks up any
+    family registered by third-party adapters. One intentional
+    behavioural change: ``qwen3_moe`` previously raised here (it was
+    missing from ``_LM_FAMILIES``) and now returns ``KLTarget()`` like
+    its sibling LM families.
     """
-    if family == "whisper_encoder":
-        return CosineTarget()
-    if family in _LM_FAMILIES:
-        return KLTarget()
-    supported = sorted(_LM_FAMILIES | {"whisper_encoder"})
-    raise ValueError(
-        f"_default_target_for: unsupported family {family!r}. "
-        f"Supported: {supported}. Pass an explicit "
-        "ForgePipeline(faithfulness=...) target to override."
-    )
+    from saeforge.adapters import _REGISTRY, adapter_for_family
+
+    try:
+        adapter = adapter_for_family(family)
+    except ValueError as exc:
+        registered = sorted({a.family for _, a in _REGISTRY})
+        raise ValueError(
+            f"_default_target_for: unsupported family {family!r}. "
+            f"Registered: {registered}. Pass an explicit "
+            "ForgePipeline(faithfulness=...) target to override."
+        ) from exc
+    return adapter.default_faithfulness_target()
