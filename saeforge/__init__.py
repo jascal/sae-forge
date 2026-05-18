@@ -16,7 +16,7 @@ from saeforge.projector import SubspaceProjector
 from saeforge.sweep import ParetoFrontierRow, sweep_pareto
 from saeforge.world_model import WorldModel
 
-__version__ = "0.5.0"
+__version__ = "0.5.1"
 
 __all__ = [
     "ANOMALOUS_TOKEN_IDS",
