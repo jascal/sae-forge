@@ -5,6 +5,87 @@ their corresponding OpenSpec change is archived.
 
 ## [Unreleased]
 
+## [0.5.1] — 2026-05-18
+
+The 0.5.1 release ships `world-model-protocol` — the architecture
+seam every bundled host adapter satisfies structurally. Family
+dispatch in `saeforge.model._build_torch_module` and
+`saeforge.eval.targets._default_target_for` moves off two hardcoded
+tables (`_LM_FAMILIES`, the `if family == "gpt2"` if/elif tree)
+onto a registry lookup against the new `WorldModel` Protocol.
+
+Behaviour on the seven bundled families
+(`gpt2`/`llama`/`gemma2`/`qwen2`/`qwen3`/`qwen3_moe`/`whisper_encoder`)
+is byte-identical to v0.5.0, pinned by a new per-family digest
+guard in `tests/test_world_model_byte_identity.py`. One intentional
+widening: `qwen3_moe` was a latent gap in the old `_LM_FAMILIES`
+frozenset and now inherits the `KLTarget()` default like its
+sibling LM families.
+
+The patch-version bump (vs. a minor) reflects that the public
+surface change is additive and the behaviour change on bundled
+families is byte-identical.
+
+### Added (world-model-protocol)
+
+- **`saeforge.WorldModel`** — `@runtime_checkable` `typing.Protocol`
+  defining the four-member contract every host-architecture
+  adapter satisfies. Re-exported from `saeforge.adapters` and
+  `saeforge` top-level. Third-party adapters MAY implement
+  `WorldModel` structurally without inheriting from the bundled
+  `ArchitectureAdapter` ABC.
+- **`ArchitectureAdapter.default_faithfulness_target() -> FaithfulnessTarget`**
+  — new ABC method; default returns `KLTarget()` (lazy-imported to
+  break the `saeforge.eval.targets` → `saeforge.adapters` import
+  cycle). `WhisperEncoderAdapter` overrides to `CosineTarget()`;
+  the six LM-family adapters inherit the default.
+- **`saeforge.adapters.registered_families() -> frozenset[str]`**
+  — public helper returning the live set of `adapter.family`
+  values across registered adapters. Single source of truth for
+  "which families does this build support."
+
+### Changed (world-model-protocol)
+
+- **`_default_target_for(family)`** — body is now a 4-line registry
+  lookup (`adapter_for_family(family).default_faithfulness_target()`)
+  with a same-shape `ValueError` on unknown families. The
+  `_LM_FAMILIES` frozenset is removed.
+- **`_build_torch_module(config)`** — body is now a 2-line registry
+  lookup (`adapter_for_family(config.family).native_module_class()(config)`).
+  The `if family == "gpt2" / elif family in ("llama", …)` family
+  tree is removed.
+- **`NativeModelConfig.__post_init__`** — validates `self.family`
+  against the union of bundled `_SUPPORTED_FAMILIES` and runtime
+  `registered_families()`. Bundled names are accepted
+  unconditionally so config construction works on a base install
+  without `transformers`; runtime dispatch sites still require an
+  actually-registered adapter and raise a distinct dispatch-time
+  error.
+- **`saeforge.model._SUPPORTED_FAMILIES`** retains its module-level
+  position for back-compat with any direct reader. A new
+  `_supported_families()` helper returns the sorted union with
+  `registered_families()`; the post_init check uses the helper.
+
+### Fixed
+
+- `qwen3_moe` no longer raises `ValueError` from
+  `_default_target_for("qwen3_moe")`; it was missing from the
+  v0.5.0 `_LM_FAMILIES` set and now inherits `KLTarget()` like
+  its sibling LM families. Pinned by the parametrised default-
+  target test.
+
+### Tests
+
+- `tests/test_world_model_protocol.py` (15 tests) — protocol
+  conformance, isinstance behaviour, error-message-shape pinning,
+  default-target parity per family.
+- `tests/test_world_model_byte_identity.py` (4 parametrised
+  tests, qwen3 / qwen3_moe skipping when their adapters are
+  unregistered) — pinned SHA-256 digest of
+  `(n_params, round(faithfulness, 8), faithfulness_target_name,
+  basis.W_dec.tobytes())` per family. First-run capture path
+  documented in the file's docstring.
+
 ## [0.5.0] — 2026-05-18
 
 The 0.5.0 release ships `add-gt-alignment-target` — the third
