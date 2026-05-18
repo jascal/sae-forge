@@ -41,9 +41,11 @@ The four-member contract:
 - ``default_faithfulness_target() -> FaithfulnessTarget`` — returns
   the default faithfulness scorer for this family. Consulted by
   :func:`~saeforge.eval.targets._default_target_for` when no explicit
-  ``ForgePipeline(faithfulness=...)`` is set. The ``host`` MAY be
-  ignored (same convention as
-  :meth:`~saeforge.eval.faithfulness.FaithfulnessTarget.score`).
+  ``ForgePipeline(faithfulness=...)`` is set. Takes no arguments; if
+  a future SSM-style adapter needs host-aware scorer selection (e.g.
+  per-state-step KL), that's an additive protocol change and gets
+  scoped against the first concrete non-transformer adapter rather
+  than speculatively added here.
 """
 
 from __future__ import annotations

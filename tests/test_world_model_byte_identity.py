@@ -94,6 +94,11 @@ def _run_forge_with(host_fixture, tmp_path):
     ("llama", "tiny_llama"),
     ("gemma2", "tiny_gemma2"),
     ("qwen2", "tiny_qwen2"),
+    # qwen3 / qwen3_moe adapters are gated on transformers>=4.51; the
+    # registered_families() skip below covers older envs. Digests will
+    # populate on first run wherever those adapters DO register.
+    ("qwen3", "tiny_qwen3_untied_4layer"),
+    ("qwen3_moe", "tiny_qwen3_moe_untied"),
 ])
 def test_forge_result_digest_per_family(
     family, fixture_name, request, tmp_path,
