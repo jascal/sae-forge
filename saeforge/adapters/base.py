@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 if TYPE_CHECKING:  # pragma: no cover — type-only imports
+    from saeforge.eval.faithfulness import FaithfulnessTarget
     from saeforge.model import NativeModelConfig
     from saeforge.projector import SubspaceProjector
 
@@ -80,6 +81,24 @@ class ArchitectureAdapter(ABC):
         """Return the ``nn.Module`` subclass used to instantiate forged
         models for this family. Lazy-imports torch.
         """
+
+    def default_faithfulness_target(self) -> "FaithfulnessTarget":
+        """Return the default faithfulness scorer for this family.
+
+        Consulted by
+        :func:`~saeforge.eval.targets._default_target_for` when no
+        explicit ``ForgePipeline(faithfulness=...)`` is set. Override
+        this to declare a non-KL default for a family (e.g. cosine
+        for encoder-only models, per-state-step KL for SSMs).
+
+        The default implementation returns :class:`KLTarget`, which
+        matches the historical LM-family policy. ``KLTarget`` is
+        imported lazily to break the
+        ``saeforge.eval.targets`` → ``saeforge.adapters`` import cycle.
+        """
+        from saeforge.eval.targets.kl import KLTarget
+
+        return KLTarget()
 
     def grad_checkpoint_targets(self, module):
         """Return ``(blocks, embedding_param)`` for activation checkpointing.

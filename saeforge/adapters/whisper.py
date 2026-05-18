@@ -85,6 +85,19 @@ class WhisperEncoderAdapter(ArchitectureAdapter):
 
     family = "whisper_encoder"
 
+    def default_faithfulness_target(self):
+        """Whisper-encoder default: per-frame cosine.
+
+        Overrides the LM-shape :class:`KLTarget` default with
+        :class:`CosineTarget`. Matches the policy
+        ``_default_target_for("whisper_encoder")`` enforced via the
+        ``_LM_FAMILIES`` table before the world-model-protocol
+        refactor.
+        """
+        from saeforge.eval.targets.cosine import CosineTarget
+
+        return CosineTarget()
+
     def walk(
         self,
         host: Any,
