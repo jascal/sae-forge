@@ -52,10 +52,21 @@ def test_cosinetarget_metadata():
         ("gemma2", "kl"),
         ("qwen2", "kl"),
         ("qwen3", "kl"),
+        ("qwen3_moe", "kl"),
         ("whisper_encoder", "cosine"),
     ],
 )
 def test_default_target_for_known_families(family, expected_name):
+    # After the world-model-protocol refactor, _default_target_for
+    # dispatches via the adapter registry. qwen3 / qwen3_moe adapters
+    # gate their registration on transformers>=4.51 (silent
+    # ImportError), so skip those families when their adapter isn't
+    # available in the dev env.
+    from saeforge.adapters import registered_families
+
+    if family not in registered_families():
+        pytest.skip(f"adapter for {family!r} is not registered "
+                    f"(transformers version may be too old)")
     assert _default_target_for(family).name == expected_name
 
 

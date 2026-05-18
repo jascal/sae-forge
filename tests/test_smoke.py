@@ -34,6 +34,9 @@ def test_public_surface_is_frozen() -> None:
         # RegrowController added by adaptive-regrow.
         "RegrowController",
         "SubspaceProjector",
+        # WorldModel added by world-model-protocol — Protocol that the
+        # ArchitectureAdapter ABC satisfies structurally.
+        "WorldModel",
         "__version__",
         "sweep_pareto",
         # Calibration helpers + constants added by fix-scale-boost-calibration.
