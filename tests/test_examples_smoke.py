@@ -62,9 +62,11 @@ def test_forge_synthetic_llama_main_runs_end_to_end(
 def test_forge_with_gt_alignment_runs_end_to_end(
     tmp_path: Path, add_project_root_to_path
 ):
-    """examples/forge_with_gt_alignment.py runs end-to-end with a custom
-    FaithfulnessTarget. Verifies the protocol surface: the custom
-    target's ``name`` and score reach the ``ForgeResult`` unchanged.
+    """examples/forge_with_gt_alignment.py runs end-to-end with the
+    built-in :class:`saeforge.eval.GroundTruthTarget`. Verifies that
+    the target's ``name`` and score reach the ``ForgeResult`` unchanged
+    and that the AUC saturates near 1.0 on the cluster-signature
+    extractor.
 
     Wall-clock budget: ~15s on CPU (tiny GPT-2, 3-feature basis,
     one-shot synthetic eval).
@@ -76,10 +78,12 @@ def test_forge_with_gt_alignment_runs_end_to_end(
 
     summary = main(tmp_path / "gt-alignment")
     assert summary["faithfulness_target_name"] == "gt_alignment"
-    # The basis is built directly from the GT directions, so absolute
-    # cosine alignment is exactly 1.0 in the example's setup.
-    assert summary["faithfulness"] == pytest.approx(1.0, abs=1e-9)
+    # The extractor returns the cluster signature padded with low-amp
+    # noise; per-cluster feature AUC against the matching label column
+    # is ~1.0 modulo the noise columns. The 0.99 floor is conservative.
+    assert summary["faithfulness"] >= 0.99
     assert summary["n_features"] == 3
+    assert summary["n_labels"] == 3
 
 
 def test_forge_whisper_synthetic_main_runs_end_to_end(

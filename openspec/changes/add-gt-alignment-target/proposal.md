@@ -117,9 +117,10 @@ family dispatch, which is the contract a user-supplied
   3. Calls the resolved hidden extractor on `input_ids` to get
      `(batch, seq, hidden_size)`. Pools across `seq` per
      `pool`. Result: `(batch, hidden_size)`.
-  4. Computes per-feature × per-label AUC via a numpy rank-based
-     implementation (no sklearn dependency — see Decision 2).
-     Result: `(hidden_size, M)`.
+  4. Computes per-feature × per-label AUC via a
+     `scipy.stats.rankdata`-based implementation with average-rank
+     ties handling — bit-equal to `sklearn.metrics.roc_auc_score`
+     (see Decision 2). Result: `(hidden_size, M)`.
   5. Returns `(mean(max_over_features(auc)), max(0.0, 1.0 -
      score))`. The pair convention follows the protocol's
      `better_when="higher"` rule, mirroring `CosineTarget`'s
@@ -290,9 +291,12 @@ family dispatch, which is the contract a user-supplied
   `eval/__init__.py`).
 - **Two new test files** (~200 lines combined).
 - **One new example file** (~60 lines).
-- **No dependency changes.** Numpy is already required; the
-  numpy rank-based AUC ships in the target module itself. No
-  sklearn dependency added.
+- **One new runtime dependency: `scipy>=1.10`.** Used for
+  `scipy.stats.rankdata` in the AUC helper to get average-rank
+  ties handling (bit-equal to sklearn). Added to
+  `pyproject.toml::dependencies`. No sklearn dependency added —
+  sklearn parity is verified via an `importorskip` test only.
+  See Decision 2 in `design.md` for the trade-off.
 - **No CLI changes.** No new pipeline knobs. No new metadata
   fields. `ForgeResult.faithfulness_target_name` already
   carries the active target's `name`; for GT-alignment it
@@ -301,11 +305,13 @@ family dispatch, which is the contract a user-supplied
 ## Open Questions
 
 - **Should we ship sklearn as an optional dep for AUC parity
-  testing?** Going with no for v1 — the numpy rank-based AUC
-  is ~15 lines and validated in the test suite. The
-  `roc_auc_score` parity test skips when sklearn isn't
-  installed, so contributors with sklearn locally get the
-  extra assertion for free.
+  testing?** No. The `roc_auc_score` parity test uses
+  `pytest.importorskip("sklearn")` so contributors with sklearn
+  locally get the extra assertion at no cost; CI doesn't
+  require it. The runtime AUC path uses `scipy.stats.rankdata`
+  for average-rank ties handling, which is bit-equal to
+  sklearn's default and exercised by the parity test when
+  sklearn is available.
 - **Should the default `hidden_extractor` be a per-family
   table (`gpt2` → `.transformer`, `llama`/`gemma2`/`qwen*` →
   `.model`) or the duck-typed try-`.transformer`-then-`.model`

@@ -5,6 +5,33 @@ their corresponding OpenSpec change is archived.
 
 ## [Unreleased]
 
+### Added (add-gt-alignment-target)
+
+Third built-in `FaithfulnessTarget`:
+`saeforge.eval.targets.GroundTruthTarget` (also re-exported as
+`saeforge.eval.GroundTruthTarget`). It scores forged residual-stream
+activations against an `(N, M)` binary label matrix via per-feature
+× per-label AUC — the right gate when your eval fixture carries
+known per-sample categories (synthetic mixtures, BERT-probe-derived
+datasets, concept-bottleneck suites). Supported pool strategies:
+`"mean"` / `"max"` / `"last"`. Default `hidden_extractor` covers the
+six bundled LM-shape families (gpt2 / llama / gemma2 / qwen2 /
+qwen3 / qwen3_moe) via duck typing; Whisper / exotic forges supply
+their own.
+
+Demo: `examples/forge_with_gt_alignment.py` (mixture-of-gaussians,
+~20s on CPU).
+
+The pluggable-faithfulness protocol is unchanged; KL / cosine
+family defaults are byte-identical. `GroundTruthTarget` is never a
+family default — pass it explicitly via
+`ForgePipeline(faithfulness=GroundTruthTarget(labels=L))`.
+
+New runtime dependency: `scipy>=1.10` (powers
+`scipy.stats.rankdata`-based average-rank ties handling in the AUC
+helper, matching `sklearn.metrics.roc_auc_score` bit-for-bit
+without taking on sklearn itself).
+
 ## [0.4.0] — 2026-05-17
 
 The 0.4.0 release bundles every change archived between 0.3.0

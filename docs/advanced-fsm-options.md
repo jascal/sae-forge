@@ -188,7 +188,7 @@ not an FSM change.
 | `--inner-refine-passes` | 1 | ≥1 | Compress↔regrow rounds before projecting |
 | `--protect-top-k` | 0 | ≥0 | Number of features the compressor cannot remove |
 | `--protect-score` | `mean_act` | `mean_act \| usage \| grad_importance` | How protected features are ranked |
-| `faithfulness` (Python only) | `None` (family-dispatched) | any `FaithfulnessTarget` | Loop-gating scorer. `None` picks `KLTarget` for LM hosts, `CosineTarget` for whisper_encoder. Custom targets override family dispatch. |
+| `faithfulness` (Python only) | `None` (family-dispatched) | any `FaithfulnessTarget` | Loop-gating scorer. `None` picks `KLTarget` for LM hosts, `CosineTarget` for whisper_encoder. Built-in `GroundTruthTarget` (per-feature × per-label AUC) is opt-in only — never a family default; pass it explicitly when your fixture carries per-sample labels. Custom targets override family dispatch. |
 
 `inner_refine_passes=1` (default) is single-pass: one compress, one
 optional regrow, exit to projected. `=2` adds a second compress
