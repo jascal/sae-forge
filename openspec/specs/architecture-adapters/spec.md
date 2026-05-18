@@ -17,15 +17,17 @@ four-norm-per-block layout and logit soft-capping).
 
 ### Requirement: Adapter registry dispatches by host model class
 
-`saeforge.adapters` SHALL expose a registry-based dispatcher with three public functions:
+`saeforge.adapters` SHALL expose a registry-based dispatcher with five public functions:
 
 - `register_adapter(host_class: type, adapter: ArchitectureAdapter) -> None` — registers an adapter for a transformers model class.
 - `adapter_for(host_model) -> ArchitectureAdapter` — returns the adapter whose registered class is the most-specific match for `host_model` (first-match-wins over the registration order).
+- `adapter_for_family(family: str) -> ArchitectureAdapter` — returns the adapter whose `family` attribute matches the given string. Used by code paths that have only the `NativeModelConfig.family` string in hand (e.g. inside the training loop where the host class is already gone, or in `saeforge.eval.targets._default_target_for`). Raises `ValueError` naming the registered families when none match.
 - `registered_classes() -> list[type]` — returns the list of currently-registered host classes for diagnostic use.
+- `registered_families() -> frozenset[str]` — returns the live set of `adapter.family` values across registered adapters. Used by `_default_target_for` and `saeforge.model._supported_families()`; consumers SHOULD prefer this helper over re-deriving the family set from the registry.
 
 When `adapter_for` cannot find a match, it SHALL raise `NotImplementedError` whose message names the host model's type and the list of registered class names. The error SHALL NOT fall back to a default adapter.
 
-The GPT-2, Llama, and Gemma-2 adapters SHALL register themselves at module import time (`saeforge.adapters.gpt2`, `saeforge.adapters.llama`, `saeforge.adapters.gemma2`). Importing `saeforge.adapters` SHALL be sufficient to populate the registry.
+The bundled adapters (GPT-2, Llama, Gemma-2, Qwen2, Qwen3, Qwen3MoE, Whisper-encoder) SHALL register themselves at module import time. Adapters whose host class needs a newer `transformers` than the install provides (Qwen3 and Qwen3MoE need `transformers >= 4.51`) SHALL silently skip their registration via a `try/except ImportError` guard. Importing `saeforge.adapters` SHALL be sufficient to populate the registry with whatever adapters the install can support.
 
 #### Scenario: registered adapter is returned for matching host
 
@@ -45,12 +47,13 @@ The GPT-2, Llama, and Gemma-2 adapters SHALL register themselves at module impor
 
 ### Requirement: ArchitectureAdapter contract
 
-The `saeforge.adapters.ArchitectureAdapter` ABC SHALL declare three abstract methods plus one class attribute:
+The `saeforge.adapters.ArchitectureAdapter` ABC SHALL declare three abstract methods, one concrete method with an override hook, and one class attribute:
 
-- `family: str` — class attribute; one of `"gpt2"`, `"llama"`, `"gemma2"`. Used by `NativeModelConfig.family`.
+- `family: str` — class attribute; one of the bundled family identifiers (`"gpt2"`, `"llama"`, `"gemma2"`, `"qwen2"`, `"qwen3"`, `"qwen3_moe"`, `"whisper_encoder"`) or a third-party-registered value. Used by `NativeModelConfig.family`.
 - `walk(self, host, projector, *, attention_width: str) -> dict[str, np.ndarray]` — projects every relevant host weight via `projector` and returns a flat dict keyed by `NativeModel` parameter names. Pure-numpy; no torch operations beyond reading `host`'s parameters.
 - `build_native_config(self, host, n_features: int, *, attention_width: str) -> NativeModelConfig` — pulls per-block dimensions from `host.config` into a `NativeModelConfig` whose `family` matches `self.family`.
-- `native_module_class(self) -> type` — returns the `nn.Module` subclass used to instantiate forged models for this family.
+- `native_module_class(self) -> type` — returns the `nn.Module` subclass used to instantiate forged models for this family. The returned class's `__init__` SHALL accept a `NativeModelConfig`-shaped object as its sole positional argument.
+- `default_faithfulness_target(self) -> FaithfulnessTarget` — returns the family's default loop-gating scorer. Consulted by `saeforge.eval.targets._default_target_for(family)` when no explicit `ForgePipeline(faithfulness=...)` is set. The ABC's default implementation returns `KLTarget()` (lazy-imported to avoid the `saeforge.eval.targets` → `saeforge.adapters` import cycle); subclasses MAY override. `WhisperEncoderAdapter` overrides to return `CosineTarget()`; the six LM-family adapters inherit the `KLTarget()` default.
 
 `walk` SHALL emit one entry per parameter the corresponding native module declares. The native module's `state_dict()` keys SHALL be a superset of the `walk` output, and every key in `walk` SHALL match the native module's expected shape exactly. Mismatches SHALL surface as `ValueError` from `NativeModel.from_projected_weights` with the parameter name and both shapes named.
 
@@ -59,6 +62,16 @@ The `saeforge.adapters.ArchitectureAdapter` ABC SHALL declare three abstract met
 - **GIVEN** a registered adapter and a host model whose architecture matches
 - **WHEN** `adapter.walk(host, projector, attention_width="host")` is called
 - **THEN** for every key in the returned dict, the corresponding entry exists in `adapter.native_module_class()(config).state_dict()` with the same shape, and **every** weight slot in the resulting native module corresponds to a key in the walk's dict (no randomly-initialised parameter survives `NativeModel.from_projected_weights`)
+
+#### Scenario: LM-family adapters return KLTarget by default
+
+- **WHEN** `default_faithfulness_target()` is invoked on each of `GPT2Adapter`, `LlamaAdapter`, `Gemma2Adapter`, `Qwen2Adapter`, `Qwen3Adapter`, `Qwen3MoEAdapter`
+- **THEN** the returned target is an instance of `KLTarget` whose `name == "kl"` and `better_when == "lower"`
+
+#### Scenario: Whisper-encoder adapter overrides to CosineTarget
+
+- **WHEN** `WhisperEncoderAdapter().default_faithfulness_target()` is invoked
+- **THEN** the returned target is an instance of `CosineTarget` whose `name == "cosine"` and `better_when == "higher"`
 
 ### Requirement: Llama-3 adapter handles GQA and SwiGLU
 
@@ -109,19 +122,27 @@ Gemma-2's alternating local/global attention pattern is OUT OF SCOPE for this ch
 
 ### Requirement: NativeModelConfig.family field is required
 
-`NativeModelConfig` SHALL declare a `family: str` field (no default value). Construction without `family` SHALL raise `TypeError`. Valid values are `"gpt2"`, `"llama"`, and `"gemma2"`; `__post_init__` SHALL raise `ValueError` for any other value.
+`NativeModelConfig` SHALL declare a `family: str` field (no default value). Construction without `family` SHALL raise `TypeError`. Valid values are the bundled families (`"gpt2"`, `"llama"`, `"gemma2"`, `"qwen2"`, `"qwen3"`, `"qwen3_moe"`, `"whisper_encoder"`) plus any third-party family registered via `register_adapter` before the config is constructed. `__post_init__` SHALL raise `ValueError` for any other value.
 
-`_build_torch_module(config)` SHALL dispatch on `config.family`. The GPT-2 path SHALL produce a module byte-equivalent to v0.1's `ForgedGPT2`. The Llama and Gemma-2 paths SHALL produce a module whose every parameter slot has a matching key in the corresponding adapter's `walk` output.
+`__post_init__` SHALL validate `self.family` against `saeforge.model._supported_families()`, which returns the sorted union of `saeforge.model._SUPPORTED_FAMILIES` (a static tuple of the bundled family names) and `saeforge.adapters.registered_families()`. Bundled family names SHALL be accepted unconditionally so config construction works on a base install without `transformers` (where the adapters' `try/except ImportError` registration guards short-circuit and leave `_REGISTRY` empty). Runtime dispatch sites (`_build_torch_module`, `_default_target_for`) SHALL still require an actually-registered adapter and raise a distinct dispatch-time error when one is unavailable.
+
+`_build_torch_module(config)` SHALL dispatch on `config.family` via `adapter_for_family(config.family).native_module_class()(config)` — a registry lookup, NOT an `if/elif` family tree. The dispatched module SHALL produce parameter slots that match the corresponding adapter's `walk` output one-for-one.
 
 #### Scenario: NativeModelConfig requires family
 
 - **WHEN** `NativeModelConfig(hidden_size=32, qkv_inner_size=32, num_layers=2, num_heads=4, head_dim=8, intermediate_size=64, vocab_size=100)` is constructed without `family`
 - **THEN** Python raises `TypeError` for the missing keyword argument `family`
 
+#### Scenario: bundled family accepted without adapter registration
+
+- **GIVEN** an environment where `transformers` is unavailable (base install without the `[torch]` extra) and the adapter registry is therefore empty
+- **WHEN** `NativeModelConfig(family="gpt2", ...)` is constructed
+- **THEN** construction succeeds; the static `_SUPPORTED_FAMILIES` tuple suffices for config-time validation even when runtime dispatch would fail
+
 #### Scenario: unknown family rejected
 
 - **WHEN** `NativeModelConfig(family="not-a-real-family", ...)` is constructed
-- **THEN** `__post_init__` raises `ValueError` whose message names the supported values (`gpt2`, `llama`, `gemma2`)
+- **THEN** `__post_init__` raises `ValueError` whose message names the supported values (the union of bundled families and any third-party registrations)
 
 ### Requirement: ForgePipeline.run loads the host via AutoModelForCausalLM
 
