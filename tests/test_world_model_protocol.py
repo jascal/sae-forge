@@ -97,6 +97,11 @@ def test_unknown_family_error_lists_registered_families():
     """Error message names the registered set so the user can recover
     without code-spelunking."""
     from saeforge.eval.targets import _default_target_for
+    if not _registered():
+        pytest.skip(
+            "no bundled adapters registered (base install without "
+            "transformers); the error-message-shape pin requires at "
+            "least one registered family to compare against")
     with pytest.raises(ValueError) as excinfo:
         _default_target_for("not_a_real_family")
     msg = str(excinfo.value)
@@ -107,7 +112,6 @@ def test_unknown_family_error_lists_registered_families():
                 f"error should list registered families "
                 f"(missing {family!r} in: {msg})")
             return
-    pytest.fail("no bundled adapter registered to validate against")
 
 
 def test_native_model_config_rejects_unknown_family():
