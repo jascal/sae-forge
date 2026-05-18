@@ -23,15 +23,20 @@
   The helper SHALL detach the returned tensor and move it to CPU
   before returning so `score` doesn't accumulate gradient graph
   or stay on a device.
-- [ ] 1.4 Implement the numpy rank-based AUC as a private helper
+- [ ] 1.4 Implement the rank-based AUC as a private helper
   `_pairwise_auc(scores, labels)`. `scores` is `(N, F)`,
   `labels` is `(N, M)`, both binary-castable. Return `(F, M)`
-  AUC matrix. Use `scipy.stats.rankdata`-free pure-numpy ranks
-  (`np.argsort(np.argsort(...))`) so the module has no scipy /
-  sklearn dependency. Handle the degenerate case where one class
-  is missing for some label column by setting that column's AUC
-  to `0.5` (chance) and emitting no warning — synthetic fixtures
-  hit this often enough that a warning is noise.
+  AUC matrix. Use `scipy.stats.rankdata(scores, axis=0,
+  method="average")` to get average-rank ties handling (matches
+  sklearn's `roc_auc_score` convention bit-for-bit). Then
+  `auc = (sum_pos_ranks - n_pos * (n_pos + 1) / 2) /
+  (n_pos * n_neg)` vectorised over `(F, M)`. Handle the
+  degenerate case where one class is missing for some label
+  column by setting that column's AUC to `0.5` (chance) and
+  emitting no warning — synthetic fixtures hit this often
+  enough that a warning is noise. Import scipy at module top
+  (not lazily) — it's a hard runtime dep now and lazy import
+  would mask install issues.
 - [ ] 1.5 Implement `score(*, forged, host, ctx)`:
   1. Read `ctx["_eval_input_ids"]`. Raise `KeyError` whose
      message names the key when missing or `None`, matching
@@ -61,6 +66,22 @@
   require_extra` then `torch = require_extra("torch", "torch")`
   inside `score`) so the `eval` package stays importable
   without torch.
+
+## 1a. Dependency bump
+
+- [ ] 1a.1 Add `scipy>=1.10` to `pyproject.toml::[project]
+  dependencies` (alongside the existing `numpy>=1.24` and
+  `safetensors>=0.4` entries). Floor is conservative —
+  `scipy.stats.rankdata(axis=..., method="average")` has been
+  stable since well before 1.10; the floor exists so the
+  install message is unambiguous on stale environments rather
+  than to track a recent feature.
+- [ ] 1a.2 Update the `pyproject.toml` no-extras-install
+  comment block (currently mentioning "pure-numpy basis loader
+  and projector math stay on the no-extras install") to note
+  that scipy now ships in the core install as well. Keep the
+  intent of the comment intact: torch / transformers are still
+  optional via `[torch]` / `[intel]`.
 
 ## 2. Re-exports
 
@@ -108,7 +129,17 @@
   - AUC parity (skip if sklearn unimportable): on a 32×4
     scores / 32×3 labels fixture,
     `_pairwise_auc(scores, labels)` matches
-    `sklearn.metrics.roc_auc_score` within `atol=1e-9`.
+    `sklearn.metrics.roc_auc_score` within `atol=1e-12`. (The
+    tighter atol vs the previous design reflects that we now
+    use scipy `rankdata(method="average")`, the same convention
+    sklearn uses internally — disagreement should be at
+    floating-point noise, not algorithmic.)
+  - AUC parity on ties (skip if sklearn unimportable): build a
+    32×4 scores fixture with deliberate ties (e.g. round to 2
+    decimals so multiple rows share scores), 32×3 labels.
+    Parity within `atol=1e-12`. This is the regression test
+    for Decision 2 — fails loudly if anyone reverts to
+    ordinal ranks.
   - Degenerate AUC: a label column with all-zero entries gets
     AUC `0.5` (no warning).
 - [ ] 3.2 `tests/forge/test_pipeline_with_gt_alignment.py` —
@@ -191,6 +222,13 @@
 - [ ] 6.3 Full `pytest` suite green.
 - [ ] 6.4 `python examples/forge_with_gt_alignment.py`
   completes in under 60s on the 16GB Intel Mac.
+- [ ] 6.5 Fresh-install smoke: `pip install -e .` in a clean
+  venv pulls scipy; `python -c "from saeforge.eval import
+  GroundTruthTarget; import numpy as np;
+  GroundTruthTarget(labels=np.eye(4))"` succeeds without any
+  ImportError. Verify on both the 16GB Intel Mac (Python 3.11,
+  scipy wheel availability) and the M4 box (Apple Silicon
+  scipy wheel).
 
 ## 7. What this change explicitly defers
 

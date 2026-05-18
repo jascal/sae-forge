@@ -20,8 +20,8 @@ decision worth re-litigating.
 **Goals:**
 - Strict generalisation of the sm-sae implementation: pluggable
   pooling and pluggable hidden extractor.
-- Zero new dependencies. Numpy is already required; nothing else
-  is.
+- Minimal new dependency surface. One added runtime dep
+  (`scipy>=1.10`) for `scipy.stats.rankdata`; no sklearn.
 - Default extractor that works across the six LM-shape families
   (gpt2, llama, gemma2, qwen2, qwen3, qwen3_moe) without a
   per-family table.
@@ -112,32 +112,63 @@ extractor. Both are acceptable; the cost of pre-emptive
 generality (Option A) outweighs the cost of one future
 heuristic widening.
 
-### Decision 2 — Numpy-only AUC, no sklearn dependency
-
-sklearn is not currently a sae-forge dependency. Adding it as a
-required dep for one ~15-line helper is disproportionate; adding
-it as an optional dep splits the test matrix in a way that costs
-more than it earns.
+### Decision 2 — AUC via `scipy.stats.rankdata`, no sklearn
 
 The rank-based AUC formula `auc = (sum_of_positive_ranks -
-n_pos * (n_pos + 1) / 2) / (n_pos * n_neg)` is well-known,
-implementable in numpy via `np.argsort(np.argsort(...))`, and
+n_pos * (n_pos + 1) / 2) / (n_pos * n_neg)` is well-known and
 gives bit-identical results to `sklearn.metrics.roc_auc_score`
-under the same tie-breaking convention.
+*provided the ranks use average-rank tie handling* (the
+convention sklearn uses internally). A pure-numpy implementation
+via `np.argsort(np.argsort(...))` returns ordinal ranks, which
+drift from sklearn whenever scores tie across classes.
+
+For continuous residual activations from a well-trained host,
+ties are rare. But the first motivating consumer
+(`jascal/sm-sae`'s GT-alignment on the SM physics fixture) runs
+on discrete-cluster labels and may hit ties during early training
+where many features sit near saturation. We don't want sm-sae to
+adopt the upstream target only to discover a silent drift from
+its prior local-numpy result on day one.
+
+Two options for fixing the ties:
+
+**Option A** — ship pure-numpy with ordinal ranks, document the
+caveat, swap to `rankdata` reactively when a consumer reports
+drift.
+
+**Option B** — add `scipy>=1.10` as a runtime dep and call
+`scipy.stats.rankdata(..., method="average")` in the helper.
+
+**Going with Option B.** Reasons:
+
+- The first consumer is exactly the case that hits the bug. The
+  "wait for a real report" lever has nothing left to learn — the
+  report is queued.
+- scipy is widely available and is a transitive dep of nearly
+  every scientific-Python project a sae-forge user is likely to
+  already have installed (it ships in the dev venv via
+  scikit-learn, and is on the default conda / standard
+  data-science install footprints).
+- The helper shrinks: a 6-line `_pairwise_auc` using `rankdata`
+  replaces the ~15-line pure-numpy version, and the AUC parity
+  test against sklearn moves from "skip if missing" reassurance
+  to a meaningful equivalence claim (still gated by
+  `importorskip` since sklearn itself isn't a dep).
+- `scipy>=1.10` is a soft floor; `rankdata` has been stable
+  since at least scipy 1.0. Anything plausibly installed today
+  satisfies it.
+
+Risks accepted: one new ~80MB runtime dep for a 6-line helper.
+The alternative — re-implementing average-rank ties in pure
+numpy — is doable in ~10 lines but reinvents what scipy ships,
+and any subtle disagreement with scipy's convention shows up as
+a sklearn-parity-test failure that's harder to debug than the
+dep cost is to absorb.
 
 The test suite includes a `roc_auc_score` parity check guarded
-by `pytest.importorskip("sklearn")` so contributors with
-sklearn locally get the extra assertion at no cost; CI doesn't
-require it.
-
-Risks accepted: tie-breaking in pure-numpy ranks uses
-`np.argsort(np.argsort(...))` which gives ordinal (1, 2, 3, ...)
-ranks, not average ranks. For binary AUC with ties between
-classes (rare in practice on continuous activations), this can
-drift from sklearn's default. The parity test exercises the
-common case; if a real consumer hits a ties-induced disagreement
-we widen the helper to use scipy's `rankdata` (and pay the dep
-cost then, not now).
+by `pytest.importorskip("sklearn")` so contributors with sklearn
+locally get the extra assertion at no cost; CI doesn't require
+it.
 
 ### Decision 3 — `host` is ignored, not validated
 
@@ -178,9 +209,10 @@ trivial.
   wrong tensor. Mitigation: the integration test
   (3.2 in `tasks.md`) asserts a numerical floor on a known
   fixture; a wrong-tensor regression breaks that test.
-- **AUC ties.** Pure-numpy ordinal ranks differ from sklearn on
-  ties. Mitigation: parity test plus the documented escape hatch
-  (swap in scipy `rankdata` when a real consumer needs it).
+- **AUC ties.** Resolved up-front via Decision 2 —
+  `scipy.stats.rankdata(method="average")` matches sklearn's
+  default convention. Risk now is the dep cost (one new runtime
+  dep) rather than silent drift on tie-heavy fixtures.
 - **Pooling defaults to mean.** Mean-pooling discards
   sequence-position structure; for some fixtures `last` or
   `max` would score higher. Mitigation: the constructor exposes

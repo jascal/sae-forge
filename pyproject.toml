@@ -32,6 +32,12 @@ classifiers = [
 dependencies = [
     "numpy>=1.24",
     "safetensors>=0.4",
+    # scipy.stats.rankdata powers the average-rank ties handling in
+    # GroundTruthTarget's AUC helper (saeforge/eval/targets/gt_alignment.py).
+    # Floor is conservative — rankdata has been stable since well before
+    # 1.10; the floor exists so install errors on stale envs are
+    # unambiguous, not to track a recent feature.
+    "scipy>=1.10",
 ]
 
 [project.optional-dependencies]
@@ -39,8 +45,9 @@ dev = ["pytest", "ruff"]
 plot = ["matplotlib"]
 notebook = ["jupyter", "matplotlib"]
 # Torch + transformers — needed for native model construction, weight
-# projection from a real source model, and fine-tuning. The pure-numpy
-# basis loader and projector math stay on the no-extras install.
+# projection from a real source model, and fine-tuning. The numpy /
+# scipy basis loader and projector math (plus the GT-alignment AUC
+# helper) stay on the no-extras install.
 torch = ["torch>=2.2", "transformers>=4.46"]
 # Intel Mac (x86_64 macOS) compatibility set — drop-in replacement for
 # `[torch]`. PyTorch's last x86_64 macOS wheel is 2.2.2 (CPython

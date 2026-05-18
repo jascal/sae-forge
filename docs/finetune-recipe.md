@@ -133,25 +133,57 @@ Built-in targets:
 |--------|--------|---------------|-------------|
 | `saeforge.eval.targets.KLTarget` | `"kl"` | `"lower"` | LM hosts (gpt2 / llama / gemma2 / qwen2 / qwen3) |
 | `saeforge.eval.targets.CosineTarget` | `"cosine"` | `"higher"` | `whisper_encoder` hosts |
+| `saeforge.eval.targets.GroundTruthTarget` | `"gt_alignment"` | `"higher"` | Opt-in only (fixture-specific) |
 
-A minimal custom target (full version in
-`examples/forge_with_gt_alignment.py`):
+`GroundTruthTarget` scores forged residual-stream activations against
+a binary label matrix via per-feature × per-label AUC. It's the right
+target whenever your eval fixture carries known per-sample categories
+— synthetic mixtures with cluster IDs, BERT-probe-derived datasets,
+concept-bottleneck suites:
 
 ```python
-from saeforge.eval.faithfulness import FaithfulnessTarget
+import numpy as np
+from saeforge import ForgePipeline
+from saeforge.eval import GroundTruthTarget
 
 
-class GTAlignmentTarget:
-    name = "gt_alignment"
+# labels: (N, M) binary, row-aligned with the eval set.
+labels = np.eye(3, dtype=np.float32)[cluster_ids]  # (N, 3)
+
+pipeline = ForgePipeline(
+    basis=basis,
+    projector=projector,
+    host_model_id="gpt2",
+    faithfulness=GroundTruthTarget(labels=labels, pool="mean"),
+    # …
+)
+result = pipeline.run(output_dir)
+print(result.faithfulness, result.faithfulness_target_name)
+```
+
+`pool=` selects the cross-sequence reduction (`"mean"` /
+`"max"` / `"last"`); `hidden_extractor=` is the
+host-shape-aware hook for non-default forges. See
+`examples/forge_with_gt_alignment.py` for an end-to-end demo and
+`saeforge/eval/targets/gt_alignment.py` for the full constructor
+contract.
+
+If you need a target that the built-ins don't cover (Pearson
+correlation, monosemanticity, probe accuracy), implement the
+protocol yourself:
+
+```python
+class MyTarget:
+    name = "my_score"
     better_when = "higher"
 
     def __init__(self, labels):
         self._labels = labels
 
     def score(self, *, forged, host, ctx):
-        # `host` is ignored — GT alignment doesn't need a teacher.
-        features = forged.encode(ctx["_gt_alignment_inputs"])
-        alignment = _cluster_alignment(features, self._labels)
+        # `host` MAY be ignored if you don't need a teacher.
+        features = forged.encode(ctx["_myorg_inputs"])
+        alignment = _custom_score(features, self._labels)
         return float(alignment), float(1.0 - alignment)
 
 
@@ -159,11 +191,9 @@ pipeline = ForgePipeline(
     basis=basis,
     projector=projector,
     host_model_id="gpt2",
-    faithfulness=GTAlignmentTarget(labels=cluster_ids),
+    faithfulness=MyTarget(labels=cluster_ids),
     # …
 )
-result = pipeline.run(output_dir)
-print(result.faithfulness, result.faithfulness_target_name)
 ```
 
 Third-party targets SHOULD namespace their `ctx` keys with a

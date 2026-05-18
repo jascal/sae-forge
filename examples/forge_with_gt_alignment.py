@@ -1,19 +1,19 @@
-"""Forge with a custom faithfulness target — GT-alignment on a synthetic fixture.
+"""Forge with the built-in :class:`saeforge.eval.GroundTruthTarget`.
 
-This example demonstrates :class:`saeforge.eval.faithfulness.FaithfulnessTarget`
-end-to-end. It builds a tiny synthetic setup where the ground-truth
-feature directions are known (a 3-cluster 2D-ish mixture lifted into the
-16-dim residual stream), then forges a model whose SAE basis is those
-same directions. The custom ``GTAlignmentTarget`` returns the mean
-cosine similarity between the forged model's reconstructed feature
-decoder weights and the known directions — a "did the forge recover
-the planted features" score in ``[0, 1]``.
+This example shows how to gate a forge run on per-sample ground-truth
+labels instead of LM perplexity. The setup is a 3-cluster
+mixture-of-gaussians where each eval row carries a one-hot cluster ID;
+``GroundTruthTarget`` then computes per-feature × per-label AUC, takes
+the best-matching feature per label, averages, and returns that to the
+FSM's faithfulness gate.
 
-The point of the example is the protocol surface. Replace
-``GTAlignmentTarget`` with any scorer that satisfies the
-:class:`FaithfulnessTarget` protocol (``name``, ``better_when``,
-``score(*, forged, host, ctx) -> (score, perplexity_analog)``) and the
-rest of the wiring stays the same.
+The example uses an explicit ``hidden_extractor=`` that returns a
+clean projection of the cluster IDs into residual space. In real usage
+you would omit the ``hidden_extractor=`` argument and the default
+extractor would pull the forged model's residual stream — the score is
+then a meaningful measurement of "does the forged model's residual
+distinguish my fixture's labels?" rather than the saturated 1.0 this
+demo produces by construction.
 
 Runs in under a minute on a CPU laptop; no HF download.
 """
@@ -22,55 +22,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 import numpy as np
-
-
-# ---------------------------------------------------------------------------
-# Custom target
-# ---------------------------------------------------------------------------
-
-
-class GTAlignmentTarget:
-    """Mean per-feature absolute cosine similarity between the SAE basis
-    the forge was built with and a known set of "ground-truth" feature
-    directions.
-
-    Constructor takes the GT directions and the basis decoder matrix
-    (``W_dec``); ``score`` compares the two row-wise. Both arguments
-    are stashed on the target at construction time — the protocol
-    accepts ``ctx`` for cases where the inputs change per call, but the
-    GT directions and the basis are static in this example.
-
-    ``better_when="higher"`` — perfect alignment gives 1.0; orthogonal
-    or zero-norm gives 0.0. Absolute cosine handles SAE feature signs
-    being arbitrary (a sign-flipped feature decodes the same direction).
-    """
-
-    name = "gt_alignment"
-    better_when = "higher"
-
-    def __init__(self, gt_directions: np.ndarray, basis_W_dec: np.ndarray) -> None:
-        self._gt_unit = _unit_rows(gt_directions)
-        self._basis_unit = _unit_rows(basis_W_dec)
-
-    def score(
-        self,
-        *,
-        forged: Any,  # noqa: ARG002 — ignored; example compares basis directions
-        host: Any,  # noqa: ARG002 — ignored; GT alignment doesn't need a teacher
-        ctx: Mapping[str, Any],  # noqa: ARG002 — ignored; inputs stashed on self
-    ) -> tuple[float, float]:
-        n = min(self._gt_unit.shape[0], self._basis_unit.shape[0])
-        cosines = (self._gt_unit[:n] * self._basis_unit[:n]).sum(axis=1)
-        score = float(np.mean(np.abs(cosines)))
-        return score, max(0.0, 1.0 - score)
-
-
-def _unit_rows(matrix: np.ndarray) -> np.ndarray:
-    norms = np.linalg.norm(matrix, axis=1, keepdims=True)
-    return matrix / np.where(norms > 0, norms, 1.0)
 
 
 # ---------------------------------------------------------------------------
@@ -93,10 +47,12 @@ def _build_tiny_gpt2():
     return GPT2LMHeadModel(config).eval()
 
 
-def _build_gt_basis(d_model: int = 16, n_clusters: int = 3, seed: int = 0):
-    """Three "cluster centres" in residual space, treated as the
-    planted feature directions. Returns the directions (n_clusters,
-    d_model) and a FeatureBasis built directly from them.
+def _build_cluster_basis(d_model: int = 16, n_clusters: int = 3, seed: int = 0):
+    """A synthetic SAE basis with one feature per cluster centroid.
+
+    Returns ``(directions, basis)`` where ``directions`` is the
+    ``(n_clusters, d_model)`` cluster-centroid matrix and ``basis`` is a
+    :class:`saeforge.FeatureBasis` built directly from those rows.
     """
     from saeforge import FeatureBasis
 
@@ -113,6 +69,28 @@ def _build_gt_basis(d_model: int = 16, n_clusters: int = 3, seed: int = 0):
     return directions, basis
 
 
+def _build_mixture_fixture(
+    n_per_cluster: int = 32, n_clusters: int = 3, hidden_size: int = 16
+):
+    """Build labels + a hidden-state signal that AUCs near 1.0.
+
+    Returns ``(labels, signal_tensor)`` where ``labels`` is ``(N, M)``
+    one-hot cluster IDs and ``signal_tensor`` is ``(N, hidden_size)`` —
+    the first ``M`` columns are the labels (perfect cluster signature),
+    the remaining columns are gaussian noise. Per-feature AUC against
+    the matching label column is then ~1.0.
+    """
+    import torch
+
+    rng = np.random.default_rng(0)
+    n = n_per_cluster * n_clusters
+    cluster_ids = np.repeat(np.arange(n_clusters), n_per_cluster)
+    labels = np.eye(n_clusters, dtype=np.float32)[cluster_ids]
+    noise = rng.standard_normal((n, hidden_size - n_clusters)).astype(np.float32) * 0.01
+    signal = np.concatenate([labels, noise], axis=1)
+    return labels, torch.tensor(signal, dtype=torch.float32)
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -122,6 +100,7 @@ def main(output_dir: Path | str | None = None) -> dict:
     import torch
 
     from saeforge import ForgePipeline, SubspaceProjector
+    from saeforge.eval import GroundTruthTarget
 
     if output_dir is None:
         output_dir = Path("/tmp/sae-forge-gt-alignment")
@@ -129,27 +108,57 @@ def main(output_dir: Path | str | None = None) -> dict:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     host = _build_tiny_gpt2()
-    gt_directions, basis = _build_gt_basis(d_model=host.config.n_embd, n_clusters=3)
+    _directions, basis = _build_cluster_basis(
+        d_model=host.config.n_embd, n_clusters=3
+    )
+
+    labels, signal_tensor = _build_mixture_fixture(
+        n_per_cluster=32, n_clusters=3, hidden_size=host.config.n_embd
+    )
+    n_eval = labels.shape[0]
+
+    # Custom extractor: return the cluster-signature signal directly.
+    # This saturates AUC at 1.0 so the example is deterministic and
+    # fast. In real usage you would omit `hidden_extractor=` entirely:
+    #
+    #     target = GroundTruthTarget(labels=labels, pool="mean")
+    #
+    # The default extractor duck-types `forged.torch_module.transformer`
+    # (GPT-2 lineage) then `.model` (Llama / Gemma / Qwen lineage) and
+    # returns the residual stream `(batch, seq, hidden_size)`. The
+    # `pool="mean"` step then reduces across `seq`, and the reported
+    # score is a meaningful measurement of how well the forged model's
+    # residual distinguishes your fixture's labels — not the saturated
+    # 1.0 the cluster-signature extractor produces here by construction.
+    def _extractor(forged: Any, input_ids: Any) -> "torch.Tensor":
+        return signal_tensor
+
+    target = GroundTruthTarget(
+        labels=labels,
+        pool="mean",
+        hidden_extractor=_extractor,
+    )
 
     projector = SubspaceProjector(basis)
-    target = GTAlignmentTarget(gt_directions=gt_directions, basis_W_dec=basis.W_dec)
     pipeline = ForgePipeline(
         basis=basis,
         projector=projector,
         faithfulness=target,
+        orchestrator="fsm",
     )
 
-    # A few random eval input_ids — the GT-alignment target ignores
-    # them, but the pipeline machinery still wants something to feed
-    # the model on the eval pass.
-    eval_input_ids = torch.randint(0, host.config.vocab_size, (2, 8))
-    result = pipeline.run_synthetic(host, output_dir, eval_input_ids=eval_input_ids)
+    eval_input_ids = torch.randint(0, host.config.vocab_size, (n_eval, 4))
+    result = pipeline.run_synthetic(
+        host, output_dir, eval_input_ids=eval_input_ids
+    )
 
     summary = {
         "n_params": result.n_params,
         "faithfulness": result.faithfulness,
         "faithfulness_target_name": result.faithfulness_target_name,
         "n_features": basis.n_features,
+        "n_eval": n_eval,
+        "n_labels": int(labels.shape[1]),
         "output_dir": str(result.output_dir),
     }
     print(json.dumps(summary, indent=2))

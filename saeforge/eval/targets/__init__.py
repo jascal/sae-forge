@@ -3,10 +3,13 @@
 The :class:`~saeforge.eval.faithfulness.FaithfulnessTarget` protocol
 lives in :mod:`saeforge.eval.faithfulness` alongside the existing
 ``faithfulness_kl`` function it generalises. This sub-package houses
-the two built-in implementations:
+the three built-in implementations:
 
 - :class:`KLTarget` — LM-family default; per-token KL.
 - :class:`CosineTarget` — Whisper-encoder default; per-frame cosine.
+- :class:`GroundTruthTarget` — fixture-specific opt-in; per-feature
+  × per-label AUC against a binary label matrix. Never a family
+  default; passed via ``ForgePipeline(faithfulness=...)``.
 
 :func:`_default_target_for` is the family-dispatch policy the
 ``evaluate_faithfulness`` action falls back to when the user has not
@@ -17,10 +20,12 @@ from __future__ import annotations
 
 from saeforge.eval.faithfulness import FaithfulnessTarget
 from saeforge.eval.targets.cosine import CosineTarget
+from saeforge.eval.targets.gt_alignment import GroundTruthTarget
 from saeforge.eval.targets.kl import KLTarget
 
 __all__ = [
     "CosineTarget",
+    "GroundTruthTarget",
     "KLTarget",
     "_default_target_for",
 ]
