@@ -20,6 +20,15 @@ from saeforge.projector import SubspaceProjector
 from saeforge.utils.lazy import require_extra
 
 
+_SUPPORTED_OUTPUT_KINDS = ("logits", "encoder_states")
+
+# Canonical bundled architecture families. Static so that
+# ``NativeModelConfig.__post_init__`` accepts any of these names even
+# when the corresponding adapter failed to register (e.g.
+# ``transformers`` is not installed, or the installed version is too
+# old for ``qwen3``/``qwen3_moe``). Runtime dispatch
+# (``_build_torch_module``, ``_default_target_for``) still requires an
+# actually-registered adapter and surfaces a clear error otherwise.
 _SUPPORTED_FAMILIES = (
     "gpt2",
     "llama",
@@ -29,7 +38,18 @@ _SUPPORTED_FAMILIES = (
     "qwen3_moe",
     "whisper_encoder",
 )
-_SUPPORTED_OUTPUT_KINDS = ("logits", "encoder_states")
+
+
+def _supported_families() -> tuple[str, ...]:
+    """Sorted union of bundled families and any third-party
+    registrations. Third-party adapters that register before config
+    construction (the usual pattern: register at module import) widen
+    the accepted set; bundled families are accepted unconditionally so
+    config construction works on a base install without
+    ``transformers``."""
+    from saeforge.adapters import registered_families
+
+    return tuple(sorted(set(_SUPPORTED_FAMILIES) | registered_families()))
 
 
 @dataclass
@@ -114,9 +134,20 @@ class NativeModelConfig:
     bridge_pre_layernorm: bool = True
 
     def __post_init__(self) -> None:
-        if self.family not in _SUPPORTED_FAMILIES:
+        # Validate against the union of bundled families and runtime-
+        # registered third-party adapters. Bundled family names are
+        # static facts about sae-forge — accepted even when their
+        # adapter failed to register (e.g. base install without the
+        # ``[torch]`` extra, where ``transformers`` is unavailable and
+        # every adapter's ``register_adapter`` call is short-circuited
+        # by the ImportError guard). Runtime dispatch
+        # (``_build_torch_module``, ``_default_target_for``) still
+        # requires an actually-registered adapter and surfaces a
+        # different error.
+        supported = _supported_families()
+        if self.family not in supported:
             raise ValueError(
-                f"family must be one of {_SUPPORTED_FAMILIES}; "
+                f"family must be one of {supported}; "
                 f"got {self.family!r}"
             )
         if self.output_kind not in _SUPPORTED_OUTPUT_KINDS:
@@ -217,26 +248,19 @@ class NativeModelConfig:
 def _build_torch_module(config: NativeModelConfig):
     """Construct the torch nn.Module skeleton. Lazy-imports torch.
 
-    Dispatches on ``config.family`` to the matching family-specific
-    factory. The factories live in ``saeforge/adapters/<family>.py``
-    so a new architecture is one file plus a ``register_adapter`` call.
+    Dispatches on ``config.family`` via
+    :func:`saeforge.adapters.adapter_for_family`; the adapter's
+    :meth:`native_module_class` returns the family-specific
+    ``nn.Module`` subclass which is then instantiated with
+    ``config``. Before the world-model-protocol refactor this was an
+    explicit ``if/elif`` family tree; the dispatch is now registry-
+    backed so a new architecture is one adapter file plus a
+    ``register_adapter`` call.
     """
-    if config.family == "gpt2":
-        from saeforge.adapters.gpt2 import build_gpt2_module
+    from saeforge.adapters import adapter_for_family
 
-        return build_gpt2_module(config)
-    if config.family in ("llama", "gemma2", "qwen2", "qwen3", "qwen3_moe"):
-        from saeforge.adapters.llama import build_llama_family_module
-
-        return build_llama_family_module(config)
-    if config.family == "whisper_encoder":
-        from saeforge.adapters.whisper import build_whisper_encoder_module
-
-        return build_whisper_encoder_module(config)
-    raise ValueError(
-        f"_build_torch_module: unknown family {config.family!r} "
-        f"(NativeModelConfig.__post_init__ should have caught this)"
-    )
+    cls = adapter_for_family(config.family).native_module_class()
+    return cls(config)
 
 
 

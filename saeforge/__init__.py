@@ -14,6 +14,7 @@ from saeforge.forge_quality import QualityThresholds, QualityTier
 from saeforge.model import NativeModel
 from saeforge.projector import SubspaceProjector
 from saeforge.sweep import ParetoFrontierRow, sweep_pareto
+from saeforge.world_model import WorldModel
 
 __version__ = "0.5.0"
 
@@ -29,6 +30,7 @@ __all__ = [
     "QualityTier",
     "RegrowController",
     "SubspaceProjector",
+    "WorldModel",
     "__version__",
     "compute_forged_logit_std",
     "compute_host_logit_std",
