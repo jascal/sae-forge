@@ -24,6 +24,7 @@ from __future__ import annotations
 from typing import Any
 
 from saeforge.adapters.base import ArchitectureAdapter, to_numpy
+from saeforge.world_model import WorldModel
 
 # Registry as a list of (host_class, adapter) tuples — order matters
 # only for first-match-wins semantics when subclass relationships exist.
@@ -63,6 +64,17 @@ def adapter_for(host_model: Any) -> ArchitectureAdapter:
 def registered_classes() -> list[type]:
     """Return the list of host classes with a registered adapter."""
     return [cls for cls, _ in _REGISTRY]
+
+
+def registered_families() -> frozenset[str]:
+    """Return the set of architecture families with a registered adapter.
+
+    The world-model-protocol refactor replaces the hardcoded
+    ``saeforge.model._SUPPORTED_FAMILIES`` tuple with this registry
+    lookup. Useful for diagnostics and for any code that needs to
+    enumerate families without going through host-class dispatch.
+    """
+    return frozenset(adapter.family for _, adapter in _REGISTRY)
 
 
 def adapter_for_family(family: str) -> ArchitectureAdapter:
@@ -105,9 +117,11 @@ from saeforge.adapters import whisper as _whisper  # noqa: E402,F401
 
 __all__ = [
     "ArchitectureAdapter",
+    "WorldModel",
     "adapter_for",
     "adapter_for_family",
     "register_adapter",
     "registered_classes",
+    "registered_families",
     "to_numpy",
 ]
