@@ -157,6 +157,26 @@ def main(args) -> dict:
     print(f"      basis: n_features={basis.n_features}, d_model={basis.d_model}")
 
     projector = SubspaceProjector(basis, scale_boost=_coerce_scale_boost(args.scale_boost))
+
+    # Surface forward_mode resolution BEFORE building the pipeline so the
+    # user sees which path will run. The basis quality tier drives the
+    # auto-dispatch: good/saturated → native_in_basis (the existing path);
+    # undersized/degenerate → host_wrapped (the under-complete fallback
+    # from add-host-wrapped-forge-fallback).
+    from saeforge.forward_mode import resolve_forward_mode
+
+    resolved_mode = resolve_forward_mode(basis, args.forward_mode)
+    print(f"      forward_mode: requested={args.forward_mode!r}, "
+          f"resolved={resolved_mode!r}")
+    if resolved_mode == "host_wrapped" and args.steps > 0:
+        # host_wrapped is inference-only in v1 — surface the incompatibility
+        # before the pipeline raises. Auto-fall back to imperative orchestrator
+        # with steps=0 so the demo at least produces a forge result.
+        print(
+            "      WARNING: host_wrapped is inference-only in v1; "
+            "ignoring --steps and skipping fine-tune."
+        )
+        args.steps = 0
     # orchestrator="fsm" routes through the recipe action; the imperative
     # path (default) silently skips fine-tune. ``args.steps == 0`` is a
     # forge-only smoke run, so leave orchestrator at the imperative
@@ -172,6 +192,7 @@ def main(args) -> dict:
         device=args.device,
         attention_width=args.attention_width,
         orchestrator=orchestrator,
+        forward_mode=args.forward_mode,
         finetune_corpus=args.corpus or "HuggingFaceFW/fineweb-edu",
         finetune_total_steps=args.steps,
         finetune_warmup_steps=max(1, args.steps // 10),
@@ -195,6 +216,21 @@ def main(args) -> dict:
           f"final KL={result.faithfulness}, wall={forge_wall/60:.1f}min")
 
     # ---- Stage 5: summary ----------------------------------------
+    # Surface polygram cluster diagnostics when the compression report
+    # supplies them. Older polygram outputs may lack these fields; we
+    # tolerate by reading them as Optional and skipping when absent.
+    cluster_diag = {}
+    for field in ("n_clusters", "n_zeroed"):
+        value = basis.metadata.get(field) if hasattr(basis, "metadata") else None
+        if value is not None:
+            cluster_diag[field] = int(value)
+    if "n_clusters" in cluster_diag and "n_zeroed" in cluster_diag:
+        denom = cluster_diag["n_clusters"] + cluster_diag["n_zeroed"]
+        if denom > 0:
+            cluster_diag["redundancy_ratio"] = round(
+                cluster_diag["n_zeroed"] / denom, 4
+            )
+
     summary = {
         "host_model": HOST_MODEL,
         "sae_repo": SAE_REPO,
@@ -206,9 +242,12 @@ def main(args) -> dict:
             "zeroed": epoch_result.report.n_features_zeroed_total,
             "panels": epoch_result.report.n_panels_total,
             "wall_minutes": round(epoch_wall / 60, 2),
+            **({"polygram_diagnostics": cluster_diag} if cluster_diag else {}),
         },
         "forge": {
             "attention_width": args.attention_width,
+            "forward_mode_requested": args.forward_mode,
+            "forward_mode_resolved": resolved_mode,
             "n_params": result.n_params,
             "faithfulness_kl": result.faithfulness,
             "wall_minutes": round(forge_wall / 60, 2),
@@ -313,6 +352,28 @@ def _build_parser() -> argparse.ArgumentParser:
             "over-complete bases. Empirical anchor: GPT-2 (d=768) with "
             "1024 features needed ~0.25; if your run produces NaNs / "
             "saturated softmax / astronomical KL, hand-pick a value < 1.0."
+        ),
+    )
+    parser.add_argument(
+        "--forward-mode",
+        default="auto",
+        choices=("auto", "native_in_basis", "host_wrapped"),
+        help=(
+            "Forge forward implementation. 'auto' (default) picks "
+            "native_in_basis for good/saturated basis quality and "
+            "host_wrapped for undersized/degenerate. host_wrapped is "
+            "GPT-2 only in v1 and inference-only — Gemma-2 + host_wrapped "
+            "will raise from the adapter."
+        ),
+    )
+    parser.add_argument(
+        "--llm-scale",
+        action="store_true",
+        help=(
+            "sm-sae provisional LLM-scale knob preset. Currently only "
+            "informational on this example since the example builds the "
+            "EpochCompressionConfig directly; the CLI surface "
+            "(`sae-forge forge --llm-scale`) wires the actual knob bumps."
         ),
     )
     return parser

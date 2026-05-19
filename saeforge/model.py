@@ -132,6 +132,13 @@ class NativeModelConfig:
     bridge_init: str = "orthogonal"
     bridge_nonlin: str = "none"
     bridge_pre_layernorm: bool = True
+    # Forward-mode dispatch. ``"auto"`` (default) selects
+    # ``"native_in_basis"`` for good/saturated quality tiers and
+    # ``"host_wrapped"`` for undersized/degenerate. The latter wraps
+    # host's exact transformer blocks with decode/encode at every block
+    # boundary — avoids the rank-dependent amplification documented in
+    # add-host-wrapped-forge-fallback at the cost of host-equal compute.
+    forward_mode: str = "auto"
 
     def __post_init__(self) -> None:
         # Validate against the union of bundled families and runtime-
@@ -183,6 +190,12 @@ class NativeModelConfig:
         if self.attention_width not in ("host", "feature_native"):
             raise ValueError(
                 f"attention_width must be 'host' or 'feature_native'; got {self.attention_width!r}"
+            )
+        if self.forward_mode not in ("auto", "native_in_basis", "host_wrapped"):
+            raise ValueError(
+                f"forward_mode must be one of "
+                f"('auto', 'native_in_basis', 'host_wrapped'); "
+                f"got {self.forward_mode!r}"
             )
         if self.num_heads * self.head_dim != self.qkv_inner_size:
             raise ValueError(
@@ -242,6 +255,16 @@ class NativeModelConfig:
 
     @classmethod
     def from_dict(cls, payload: dict) -> NativeModelConfig:
+        # Tolerate older serialised configs that pre-date fields added
+        # in later versions. New optional fields land with explicit
+        # defaults; unknown keys raise as before.
+        known = {f.name for f in cls.__dataclass_fields__.values()}  # type: ignore[attr-defined]
+        unknown = set(payload) - known
+        if unknown:
+            raise ValueError(
+                f"NativeModelConfig.from_dict: unknown fields {sorted(unknown)}; "
+                f"known fields: {sorted(known)}"
+            )
         return cls(**payload)
 
 
@@ -270,6 +293,11 @@ class NativeModel:
     def __init__(self, config: NativeModelConfig):
         self.config = config
         self._module = _build_torch_module(config)
+        # Set by from_host when constructing via adapter dispatch;
+        # remains None for direct construction (from_projected_weights
+        # path, or test fixtures). Consumers that care SHOULD set this
+        # explicitly via the from_host kwarg.
+        self.resolved_forward_mode: str | None = None
 
     @property
     def torch_module(self):
@@ -292,6 +320,7 @@ class NativeModel:
         *,
         dtype: str = "float32",
         device: str = "cpu",
+        forward_mode: str = "auto",
     ) -> NativeModel:
         """Construct a native model by projecting ``host_model_id``'s weights through ``projector``.
 
@@ -300,16 +329,49 @@ class NativeModel:
         Loading a non-GPT-2 host as ``GPT2LMHeadModel`` (the v0.1
         behaviour) silently produced randomly-initialised weights —
         that footgun is gone after multi-architecture-support.
+
+        ``forward_mode`` accepts ``"auto"`` (the default, dispatches by
+        basis quality tier), ``"native_in_basis"`` (the existing forward
+        path), or ``"host_wrapped"`` (the under-complete-basis fallback
+        that wraps host's exact transformer with decode/encode at every
+        block boundary). See ``saeforge.forward_mode.resolve_forward_mode``
+        for the dispatch contract and
+        ``openspec/changes/add-host-wrapped-forge-fallback`` for the
+        falsifiable acceptance gate.
         """
         transformers = require_extra("transformers", "torch")
 
         from saeforge.adapters import adapter_for
+        from saeforge.forward_mode import resolve_forward_mode
 
         host = transformers.AutoModelForCausalLM.from_pretrained(host_model_id).eval()
         adapter = adapter_for(host)
+        resolved = resolve_forward_mode(projector.basis, forward_mode)
+
+        if resolved == "host_wrapped":
+            # Bypass project_module — host weights stay unprojected; the
+            # adapter constructs a wrapper module that holds a frozen
+            # reference to the host and the basis matrices.
+            torch_module = adapter.host_wrapped_module(
+                host, projector.basis, scale_boost=projector.scale_boost
+            )
+            model = cls.__new__(cls)
+            # Build a config so .config inspection works downstream; we
+            # do NOT use it to build the module (host_wrapped_module
+            # returned the live module already).
+            config = adapter.build_native_config(host, projector.basis.n_features)
+            config.forward_mode = "host_wrapped"
+            model.config = config
+            model._module = torch_module
+            model.resolved_forward_mode = "host_wrapped"
+            model._move(dtype=dtype, device=device)
+            return model
+
         weights = projector.project_module(host)
         config = adapter.build_native_config(host, projector.basis.n_features)
+        config.forward_mode = forward_mode if forward_mode != "auto" else "auto"
         model = cls.from_projected_weights(config, weights)
+        model.resolved_forward_mode = "native_in_basis"
         model._move(dtype=dtype, device=device)
         return model
 
@@ -351,6 +413,20 @@ class NativeModel:
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         (output_dir / "config.json").write_text(json.dumps(self.config.to_dict(), indent=2))
+        # host_wrapped: the forged module holds an unprojected host model
+        # plus W_dec/pinv buffers. Saving the full host duplicates state
+        # already on disk in HF caches. Persist only what's *new* —
+        # the basis matrices — so reloading rebuilds via from_host. Note
+        # the basis itself is on disk at the polygram checkpoint passed
+        # to the pipeline; we save buffers here for self-contained reload
+        # by tools that only see the forge output directory.
+        if self.resolved_forward_mode == "host_wrapped":
+            buffers = {
+                "W_dec": self._module.W_dec.contiguous(),
+                "pinv": self._module.pinv.contiguous(),
+            }
+            save_file(buffers, str(output_dir / "host_wrapped_buffers.safetensors"))
+            return
         state = {k: v.contiguous() for k, v in self._module.state_dict().items()}
         if self.config.tied_embeddings:
             # ``lm_head.weight`` aliases ``model.embed_tokens.weight`` post-

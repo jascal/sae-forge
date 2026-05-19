@@ -56,14 +56,16 @@ with `openspec validate <change-name>` before working on it; archive via
 
 ## Polygram dependency contract
 
-- Pinned at `polygram>=0.0.1`, the published distribution under the
-  `orcalang` user on PyPI. Bump the floor whenever a Polygram release
-  adds a field sae-forge depends on (the scale-aware compression work
-  from PR #34 is already in 0.0.1: `rep_selection="scale_aware"`,
-  `strategy="merge"`, per-cluster `merged_norm`, roll-up
-  `scale_compression_ratio`). Older outputs without merged-norm
-  fields fall back to row-norm — handled by `FeatureBasis`'s loader
-  but not encouraged in v0.
+- Pinned at `polygram>=0.9.0`, the published distribution under the
+  `orcalang` user on PyPI. 0.9.0 promotes `cluster_experts` /
+  `ExpertDictionary` to the public surface (PR #87), unlocking the
+  planned MoE-from-SAE forging path. Bump the floor whenever a
+  Polygram release adds a field sae-forge depends on (the scale-aware
+  compression work from PR #34 has been in since 0.0.1:
+  `rep_selection="scale_aware"`, `strategy="merge"`, per-cluster
+  `merged_norm`, roll-up `scale_compression_ratio`). Older outputs
+  without merged-norm fields fall back to row-norm — handled by
+  `FeatureBasis`'s loader but not encouraged in v0.
 - The stable input contract is the `.safetensors` checkpoint + companion
   `compression_report.json` produced by `polygram compress` /
   `polygram compress-epoch`. `FeatureBasis.from_polygram_checkpoint` is

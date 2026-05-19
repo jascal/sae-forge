@@ -1,0 +1,206 @@
+{
+  "K": 163,
+  "n_features": 287,
+  "kl_baseline": 29.234790802001953,
+  "kl_host_native_ln": 50.75590896606445,
+  "layers_baseline": [
+    {
+      "layer": 0,
+      "host_norm": 4.716088771820068,
+      "forged_norm": 4.642691612243652,
+      "norm_ratio": 0.9844368579287599,
+      "decoded_rel_err": 0.7947288155555725
+    },
+    {
+      "layer": 1,
+      "host_norm": 53.183753967285156,
+      "forged_norm": 446.0080261230469,
+      "norm_ratio": 8.38617045343206,
+      "decoded_rel_err": 5.825842380523682
+    },
+    {
+      "layer": 2,
+      "host_norm": 61.528839111328125,
+      "forged_norm": 491.34423828125,
+      "norm_ratio": 7.985592534782413,
+      "decoded_rel_err": 6.213779449462891
+    },
+    {
+      "layer": 3,
+      "host_norm": 73.94725036621094,
+      "forged_norm": 704.3338623046875,
+      "norm_ratio": 9.524814767507868,
+      "decoded_rel_err": 9.30061149597168
+    },
+    {
+      "layer": 4,
+      "host_norm": 79.68624877929688,
+      "forged_norm": 817.4927978515625,
+      "norm_ratio": 10.258894230493048,
+      "decoded_rel_err": 10.339435577392578
+    },
+    {
+      "layer": 5,
+      "host_norm": 84.9709243774414,
+      "forged_norm": 914.4052734375,
+      "norm_ratio": 10.761390206557078,
+      "decoded_rel_err": 10.949897766113281
+    },
+    {
+      "layer": 6,
+      "host_norm": 91.89250946044922,
+      "forged_norm": 964.9317626953125,
+      "norm_ratio": 10.500657435094007,
+      "decoded_rel_err": 10.465927124023438
+    },
+    {
+      "layer": 7,
+      "host_norm": 101.00829315185547,
+      "forged_norm": 994.94384765625,
+      "norm_ratio": 9.850120387248355,
+      "decoded_rel_err": 9.669717788696289
+    },
+    {
+      "layer": 8,
+      "host_norm": 115.00942993164062,
+      "forged_norm": 1018.9609375,
+      "norm_ratio": 8.859803392692674,
+      "decoded_rel_err": 8.48717212677002
+    },
+    {
+      "layer": 9,
+      "host_norm": 135.61497497558594,
+      "forged_norm": 1040.026611328125,
+      "norm_ratio": 7.668965846252271,
+      "decoded_rel_err": 7.163794994354248
+    },
+    {
+      "layer": 10,
+      "host_norm": 164.9721221923828,
+      "forged_norm": 1079.697998046875,
+      "norm_ratio": 6.544730004671829,
+      "decoded_rel_err": 5.7793049812316895
+    },
+    {
+      "layer": 11,
+      "host_norm": 233.67503356933594,
+      "forged_norm": 1141.8541259765625,
+      "norm_ratio": 4.886504598009407,
+      "decoded_rel_err": 4.539634704589844
+    },
+    {
+      "layer": 12,
+      "host_norm": 234.53164672851562,
+      "forged_norm": 1476.258056640625,
+      "norm_ratio": 6.29449405755242,
+      "decoded_rel_err": 7.869460582733154
+    },
+    {
+      "layer": 13,
+      "host_norm": 473.5535583496094,
+      "forged_norm": 55.26152801513672,
+      "norm_ratio": 0.11669541288577734,
+      "decoded_rel_err": 1.0050748586654663
+    }
+  ],
+  "layers_host_native_ln": [
+    {
+      "layer": 0,
+      "host_norm": 4.716088771820068,
+      "forged_norm": 4.642691612243652,
+      "norm_ratio": 0.9844368579287599,
+      "decoded_rel_err": 0.7947288155555725
+    },
+    {
+      "layer": 1,
+      "host_norm": 53.183753967285156,
+      "forged_norm": 275.072509765625,
+      "norm_ratio": 5.1721153406137885,
+      "decoded_rel_err": 3.1863303184509277
+    },
+    {
+      "layer": 2,
+      "host_norm": 61.528839111328125,
+      "forged_norm": 215.7958221435547,
+      "norm_ratio": 3.507230515971564,
+      "decoded_rel_err": 2.3704938888549805
+    },
+    {
+      "layer": 3,
+      "host_norm": 73.94725036621094,
+      "forged_norm": 383.2345886230469,
+      "norm_ratio": 5.182540077219153,
+      "decoded_rel_err": 5.175009727478027
+    },
+    {
+      "layer": 4,
+      "host_norm": 79.68624877929688,
+      "forged_norm": 346.55389404296875,
+      "norm_ratio": 4.348979897432519,
+      "decoded_rel_err": 4.297300338745117
+    },
+    {
+      "layer": 5,
+      "host_norm": 84.9709243774414,
+      "forged_norm": 300.9569091796875,
+      "norm_ratio": 3.54188107737695,
+      "decoded_rel_err": 3.4203686714172363
+    },
+    {
+      "layer": 6,
+      "host_norm": 91.89250946044922,
+      "forged_norm": 278.26654052734375,
+      "norm_ratio": 3.0281743545931827,
+      "decoded_rel_err": 2.8228418827056885
+    },
+    {
+      "layer": 7,
+      "host_norm": 101.00829315185547,
+      "forged_norm": 260.4039611816406,
+      "norm_ratio": 2.5780453570297475,
+      "decoded_rel_err": 2.3303489685058594
+    },
+    {
+      "layer": 8,
+      "host_norm": 115.00942993164062,
+      "forged_norm": 260.5259704589844,
+      "norm_ratio": 2.265257471616336,
+      "decoded_rel_err": 1.986908197402954
+    },
+    {
+      "layer": 9,
+      "host_norm": 135.61497497558594,
+      "forged_norm": 263.15875244140625,
+      "norm_ratio": 1.940484467064064,
+      "decoded_rel_err": 1.6770026683807373
+    },
+    {
+      "layer": 10,
+      "host_norm": 164.9721221923828,
+      "forged_norm": 282.7723693847656,
+      "norm_ratio": 1.7140615373487749,
+      "decoded_rel_err": 1.4455955028533936
+    },
+    {
+      "layer": 11,
+      "host_norm": 233.67503356933594,
+      "forged_norm": 352.68060302734375,
+      "norm_ratio": 1.5092780672381783,
+      "decoded_rel_err": 1.1643911600112915
+    },
+    {
+      "layer": 12,
+      "host_norm": 234.53164672851562,
+      "forged_norm": 766.224609375,
+      "norm_ratio": 3.2670414422235763,
+      "decoded_rel_err": 2.237401247024536
+    },
+    {
+      "layer": 13,
+      "host_norm": 473.5535583496094,
+      "forged_norm": 262.95404052734375,
+      "norm_ratio": 0.5552783542452303,
+      "decoded_rel_err": 0.7968828678131104
+    }
+  ]
+}

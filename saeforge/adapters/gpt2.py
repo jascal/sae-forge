@@ -173,6 +173,11 @@ class GPT2Adapter(ArchitectureAdapter):
     def native_module_class(self) -> type:
         return _get_forged_gpt2_class()
 
+    def host_wrapped_module(self, host, basis, scale_boost: float = 1.0):
+        from saeforge.adapters._host_wrapped.gpt2 import build_host_wrapped_gpt2
+
+        return build_host_wrapped_gpt2(host, basis, scale_boost=scale_boost)
+
     def grad_checkpoint_targets(self, module):
         # ForgedGPT2: every transformer block lives at
         # ``module.transformer.h.{i}``; the input embedding is

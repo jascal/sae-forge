@@ -5,6 +5,42 @@ their corresponding OpenSpec change is archived.
 
 ## [Unreleased]
 
+### Added
+
+- **`forward_mode` dispatch** — `NativeModelConfig.forward_mode` and
+  `ForgePipeline.forward_mode` accept `"auto"` (default),
+  `"native_in_basis"`, or `"host_wrapped"`. Auto dispatches by basis
+  quality tier: good/saturated → existing native_in_basis path;
+  undersized/degenerate → new host_wrapped path that wraps host's
+  exact transformer with decode/encode at every block boundary.
+  Removes the rank-dependent KL amplification documented in
+  `fix-scale-boost-calibration` (K=211 KL 89.9 → 15.4 on the
+  GPT-2 layer-8 smoke; full diagnosis and acceptance gate in
+  `openspec/changes/add-host-wrapped-forge-fallback`).
+  v1 host_wrapped is GPT-2 only and inference-only.
+- **`sae-forge forge --forward-mode {auto,native_in_basis,host_wrapped}`** —
+  CLI flag threading `forward_mode` through `ForgePipeline`.
+- **`sae-forge forge --llm-scale`** — preset bumping
+  `cosine_threshold` to 0.85 and `regrow.n_init` to 8 per the
+  sm-sae LLM-scale provisional recommendations. Explicit flag
+  values still win. `save_intermediate_reports=True` (the third
+  sm-sae recommendation) isn't plumbed through ForgePipeline yet —
+  noted in `--help`.
+- **`sae-forge forge --regrow-n-init`** — direct CLI control over
+  `RegrowConfig.n_init` (polygram default 4; sm-sae recommends 8+
+  at LLM scale).
+- **`examples/forge_gemma2_2b.py`** surfaces the resolved
+  `forward_mode` and (when present) polygram cluster diagnostics
+  (`n_clusters`, `n_zeroed`, `redundancy_ratio`) in the run summary.
+
+### Changed
+
+- **`polygram>=0.9.0`** floor (was `>=0.8.1`). 0.9.0 promotes
+  `cluster_experts` / `ExpertDictionary` to the public surface
+  (PR #87) — the foundation for the planned MoE-from-SAE forging
+  path. No breaking API shift for existing pipelines; 609 tests
+  green against 0.9.0.
+
 ## [0.5.1] — 2026-05-18
 
 The 0.5.1 release ships `world-model-protocol` — the architecture

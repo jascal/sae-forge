@@ -93,6 +93,31 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="RegrowConfig.strategy (default: residual_kmeans).",
     )
+    forge.add_argument(
+        "--regrow-n-init",
+        type=int,
+        default=None,
+        help=(
+            "RegrowConfig.n_init (polygram default: 4). sm-sae recommends "
+            "8+ for LLM-scale SAEs. Implicitly set by --llm-scale unless "
+            "explicitly passed."
+        ),
+    )
+    # sm-sae LLM-scale preset. Bumps a small set of provisional defaults
+    # that the sm-sae fixture page recommends for LLM-scale (thousands of
+    # features) SAEs. Each individual flag still wins if explicitly set.
+    forge.add_argument(
+        "--llm-scale",
+        action="store_true",
+        help=(
+            "Apply sm-sae provisional LLM-scale defaults: cosine_threshold=0.85, "
+            "regrow.n_init=8. Explicit flag values still win. The sm-sae "
+            "page also recommends save_intermediate_reports=True, but that "
+            "knob isn't plumbed through ForgePipeline yet — out of scope "
+            "for this flag. See https://jascal.github.io/sm-sae/ for the "
+            "full recommendation table."
+        ),
+    )
     # Hybrid-bridge-forge knobs. See openspec/specs/hybrid-bridge-forge.
     forge.add_argument(
         "--hybrid-bridge",
@@ -153,6 +178,25 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         default=0,
         help="Required with --moe-strategy=top_n. Number of most-used experts to keep per layer.",
+    )
+    # add-host-wrapped-forge-fallback. Default 'auto' dispatches by basis
+    # quality tier: good/saturated → native_in_basis (existing path);
+    # undersized/degenerate → host_wrapped (wraps host's exact transformer
+    # with decode/encode at every block boundary). Forces with explicit
+    # values for regression / debug. See
+    # openspec/changes/add-host-wrapped-forge-fallback/proposal.md.
+    forge.add_argument(
+        "--forward-mode",
+        type=str,
+        default="auto",
+        choices=("auto", "native_in_basis", "host_wrapped"),
+        help=(
+            "Forward implementation for the forged model. 'auto' (default) "
+            "picks 'native_in_basis' for good/saturated basis quality and "
+            "'host_wrapped' for undersized/degenerate. 'host_wrapped' is "
+            "GPT-2 only in v1 and inference-only (finetune raises). See "
+            "openspec/changes/add-host-wrapped-forge-fallback."
+        ),
     )
 
     sweep = sub.add_parser(
@@ -608,6 +652,15 @@ def _cmd_forge(args: argparse.Namespace) -> int:
         )
         return 2
 
+    # sm-sae --llm-scale preset: apply provisional LLM-scale defaults that
+    # individual flags can still override. Mutates args in place before
+    # the polygram tuning bundles get built below.
+    if args.llm_scale:
+        if args.cosine_threshold is None:
+            args.cosine_threshold = 0.85
+        if args.regrow_n_init is None:
+            args.regrow_n_init = 8
+
     # Build the polygram tuning bundles from the high-frequency CLI flags.
     # Long-tail tuning (jaccard_threshold, min_both_fire, …) lives behind
     # ForgePipeline.from_dict — feed it a YAML/JSON config there.
@@ -638,6 +691,8 @@ def _cmd_forge(args: argparse.Namespace) -> int:
         regrow_kwargs = {"model_name": args.host_model, "layer": args.regrow_layer}
         if args.regrow_strategy is not None:
             regrow_kwargs["strategy"] = args.regrow_strategy
+        if args.regrow_n_init is not None:
+            regrow_kwargs["n_init"] = args.regrow_n_init
         regrow = RegrowConfig(**regrow_kwargs)
 
     basis = FeatureBasis.from_polygram_checkpoint(args.checkpoint)
@@ -708,6 +763,7 @@ def _cmd_forge(args: argparse.Namespace) -> int:
         regrow_count=args.regrow_count,
         moe_strategy=args.moe_strategy,
         moe_keep_n=args.moe_keep_n,
+        forward_mode=args.forward_mode,
         adaptive_regrow=args.adaptive_regrow,
         regrow_max=args.regrow_max,
         n_features_target=args.n_features_target,
@@ -718,6 +774,13 @@ def _cmd_forge(args: argparse.Namespace) -> int:
     )
     result = pipeline.run(args.output_dir)
     print(f"forged: {result.output_dir} ({result.n_params} params)")
+    resolved = getattr(result, "resolved_forward_mode", None)
+    if resolved is None:
+        # Pipeline-result schema may not surface this directly; pull from
+        # the in-memory model if available.
+        resolved = getattr(pipeline, "_last_resolved_forward_mode", None)
+    if resolved is not None:
+        print(f"forward_mode: {resolved}")
     if result.faithfulness is not None:
         target = result.faithfulness_target_name or "faithfulness"
         print(f"{target}: {result.faithfulness:.4f}")
