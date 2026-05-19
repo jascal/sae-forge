@@ -80,7 +80,12 @@ def _get_host_wrapped_gpt2_class():
                 x_host = z @ self.W_dec
                 block_out = block(x_host)
                 # HF GPT2Block returns a tuple (hidden_states, ...);
-                # other shapes (bare tensor) tolerated for forward-compat.
+                # bare-tensor case tolerated for forward-compat. Other
+                # families (Llama/Gemma2/Qwen) need their own host-wrapped
+                # module that knows the family's block-output shape — see
+                # openspec/changes/add-host-wrapped-forge-fallback/tasks.md
+                # for the per-family rollout plan; this isinstance branch
+                # is GPT-2 specific and SHOULD NOT be generalised here.
                 x_host = block_out[0] if isinstance(block_out, tuple) else block_out
                 z = x_host @ self.pinv * self.scale_boost
             x_host = z @ self.W_dec

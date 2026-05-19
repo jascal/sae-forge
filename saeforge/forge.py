@@ -443,12 +443,12 @@ class ForgePipeline:
         # recipe. Queued as add-host-wrapped-finetune-recipe.
         if self.forward_mode == "host_wrapped" and self.finetune_steps > 0:
             raise ValueError(
-                "ForgePipeline: forward_mode='host_wrapped' is inference-only "
-                "in v1; got finetune_steps={self.finetune_steps}. Either set "
-                "finetune_steps=0 or use forward_mode='auto'/'native_in_basis' "
-                "for fine-tune. See "
-                "openspec/changes/add-host-wrapped-forge-fallback for the "
-                "queued add-host-wrapped-finetune-recipe follow-up."
+                f"ForgePipeline: forward_mode='host_wrapped' is inference-only "
+                f"in v1; got finetune_steps={self.finetune_steps}. Either set "
+                f"finetune_steps=0 or use forward_mode='auto'/'native_in_basis' "
+                f"for fine-tune. See "
+                f"openspec/changes/add-host-wrapped-forge-fallback/proposal.md "
+                f"for the queued add-host-wrapped-finetune-recipe follow-up."
             )
         # host_wrapped has no projected blocks for hybrid bridges to attach to.
         if self.forward_mode == "host_wrapped" and self.hybrid_bridge:

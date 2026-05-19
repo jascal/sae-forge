@@ -118,7 +118,9 @@ class ArchitectureAdapter(ABC):
         raise NotImplementedError(
             f"{type(self).__name__} does not implement host_wrapped_module yet. "
             f"v1 ships GPT-2 only; see openspec/changes/"
-            f"add-host-wrapped-forge-fallback for the rollout plan."
+            f"add-host-wrapped-forge-fallback/proposal.md (the per-family "
+            f"rollout section) and specs/forge-forward-mode/spec.md "
+            f"(the family-rollout requirement) for the plan."
         )
 
     def grad_checkpoint_targets(self, module):
