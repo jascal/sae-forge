@@ -1,5 +1,12 @@
 # forge-forward-mode Specification
 
+> The empirical numbers in the *acceptance gate* requirements below
+> (K=211 KL 89.9 → 15.4, monotonicity behaviour, orthonormal-basis
+> sanity) come from the 2026-05-19 prototype. The full per-layer
+> diagnostic, the falsified alternative (decode-LN_host-encode), and
+> the audit trail live in the archived smoke-results.md:
+> `openspec/changes/archive/2026-05-19-add-host-wrapped-forge-fallback/smoke-results.md`.
+
 ## Purpose
 
 The `forge-forward-mode` capability defines two implementations of
