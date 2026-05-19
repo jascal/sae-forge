@@ -358,6 +358,15 @@ def _get_forged_llama_class():
             # capture handles the per-step build cheaply. cfg.rope_mode
             # gates: "standard" applies rotation (default); "none"
             # skips, reproducing the pre-fix buggy behaviour.
+            #
+            # HF reference for the exact insertion point: in
+            # transformers 4.49 the equivalent ordering lives at
+            # transformers/models/llama/modeling_llama.py inside
+            # ``LlamaAttention.forward`` — Q/K get apply_rotary_pos_emb
+            # immediately after projection-and-reshape, before the
+            # GQA repeat_interleave and the scaled-dot-product.
+            # (Llama 4.x reorganised the module hierarchy but the
+            # rotation-before-attention invariant is unchanged.)
             if self.rope_mode == "standard":
                 from saeforge._positional.rope import (
                     apply_rotary_pos_emb,

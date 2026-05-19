@@ -227,7 +227,12 @@ class NativeModelConfig:
                 f"reproduces the pre-fix Llama-family no-RoPE behaviour from "
                 f"before add-llama-family-rope. This is a regression-diff "
                 f"knob — Llama-family forges should use rope_mode='standard' "
-                f"(the default) in production.",
+                f"(the default) in production. See "
+                f"openspec/specs/architecture-adapters/spec.md for the "
+                f"per-family positional-encoding contract; the smoke gate "
+                f"and proposal context live under openspec/changes/"
+                f"add-llama-family-rope/ until archived, then under "
+                f"openspec/changes/archive/<date>-add-llama-family-rope/.",
                 UserWarning,
                 stacklevel=2,
             )

@@ -1,16 +1,27 @@
 """Rotary positional embedding helpers for Llama-family forged attention.
 
-Mirrors HuggingFace's reference implementation. Validated against a
-running HF ``LlamaForCausalLM`` by the
+**Pure re-implementation** of HuggingFace's RoPE for self-contained
+forged modules — matches ``transformers.models.llama.modeling_llama``
+as of 2026-05 (transformers 4.49.x). The forge deliberately doesn't
+import HF's helpers at forward time so the forged ``nn.Module`` hot
+path stays free of ``transformers`` lookups; this module re-derives
+the same math.
+
+Validated against a running HF ``LlamaForCausalLM`` by the
 ``scripts/prototype_llama_rope.py`` smoke gate (forge-vs-host
 distance 7.5e-7 on identity basis — at float precision, confirming
 the math is exactly right).
 
-See ``openspec/changes/add-llama-family-rope/`` for the proposal,
-design, smoke results, and per-family rollout contract.
+See ``openspec/changes/archive/<date>-add-llama-family-rope/`` for
+the proposal, design, smoke results, and per-family rollout
+contract once archived (currently under
+``openspec/changes/add-llama-family-rope/``).
 
 Pure torch; lazy-imported so the no-``[torch]`` install path stays
-clean.
+clean. Module-level functions only — torch.compile / torch.jit.script
+friendly: no Python control flow inside ``apply_rotary_pos_emb``
+once the cache is built; ``compute_rope_cache`` builds the cache
+with standard tensor ops and is also script-eligible.
 """
 
 from __future__ import annotations
