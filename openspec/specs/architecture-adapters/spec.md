@@ -47,13 +47,14 @@ The bundled adapters (GPT-2, Llama, Gemma-2, Qwen2, Qwen3, Qwen3MoE, Whisper-enc
 
 ### Requirement: ArchitectureAdapter contract
 
-The `saeforge.adapters.ArchitectureAdapter` ABC SHALL declare three abstract methods, one concrete method with an override hook, and one class attribute:
+The `saeforge.adapters.ArchitectureAdapter` ABC SHALL declare three abstract methods, two concrete methods with override hooks, and one class attribute:
 
 - `family: str` — class attribute; one of the bundled family identifiers (`"gpt2"`, `"llama"`, `"gemma2"`, `"qwen2"`, `"qwen3"`, `"qwen3_moe"`, `"whisper_encoder"`) or a third-party-registered value. Used by `NativeModelConfig.family`.
 - `walk(self, host, projector, *, attention_width: str) -> dict[str, np.ndarray]` — projects every relevant host weight via `projector` and returns a flat dict keyed by `NativeModel` parameter names. Pure-numpy; no torch operations beyond reading `host`'s parameters.
 - `build_native_config(self, host, n_features: int, *, attention_width: str) -> NativeModelConfig` — pulls per-block dimensions from `host.config` into a `NativeModelConfig` whose `family` matches `self.family`.
 - `native_module_class(self) -> type` — returns the `nn.Module` subclass used to instantiate forged models for this family. The returned class's `__init__` SHALL accept a `NativeModelConfig`-shaped object as its sole positional argument.
 - `default_faithfulness_target(self) -> FaithfulnessTarget` — returns the family's default loop-gating scorer. Consulted by `saeforge.eval.targets._default_target_for(family)` when no explicit `ForgePipeline(faithfulness=...)` is set. The ABC's default implementation returns `KLTarget()` (lazy-imported to avoid the `saeforge.eval.targets` → `saeforge.adapters` import cycle); subclasses MAY override. `WhisperEncoderAdapter` overrides to return `CosineTarget()`; the six LM-family adapters inherit the `KLTarget()` default.
+- `host_wrapped_module(self, host, basis, scale_boost: float = 1.0) -> nn.Module` — constructs a host-wrapped forged `nn.Module` for this family, used by the `forward_mode="host_wrapped"` dispatch on under-complete bases (see [`forge-forward-mode`](../forge-forward-mode/spec.md)). The ABC's default implementation raises `NotImplementedError` whose message names `add-host-wrapped-forge-fallback`'s per-family rollout plan; subclasses MAY override. `GPT2Adapter` ships the v1 override (delegates to `saeforge.adapters._host_wrapped.gpt2.build_host_wrapped_gpt2`); the six other bundled adapters (`LlamaAdapter`, `Gemma2Adapter`, `Qwen2Adapter`, `Qwen3Adapter`, `Qwen3MoEAdapter`, `WhisperEncoderAdapter`) inherit the `NotImplementedError` default.
 
 `walk` SHALL emit one entry per parameter the corresponding native module declares. The native module's `state_dict()` keys SHALL be a superset of the `walk` output, and every key in `walk` SHALL match the native module's expected shape exactly. Mismatches SHALL surface as `ValueError` from `NativeModel.from_projected_weights` with the parameter name and both shapes named.
 
@@ -72,6 +73,15 @@ The `saeforge.adapters.ArchitectureAdapter` ABC SHALL declare three abstract met
 
 - **WHEN** `WhisperEncoderAdapter().default_faithfulness_target()` is invoked
 - **THEN** the returned target is an instance of `CosineTarget` whose `name == "cosine"` and `better_when == "higher"`
+
+#### Scenario: GPT-2 adapter ships host_wrapped_module; other adapters raise
+
+- **GIVEN** a loaded GPT-2 host and a `FeatureBasis`
+- **WHEN** `GPT2Adapter().host_wrapped_module(host, basis)` is invoked
+- **THEN** the returned object is an `nn.Module` whose forward consumes input ids and returns logits of shape `(B, T, vocab_size)`, with the host's exact transformer weights wrapped by decode/encode at every block boundary
+- **GIVEN** any other bundled adapter (`LlamaAdapter`, `Gemma2Adapter`, `Qwen2Adapter`, `Qwen3Adapter`, `Qwen3MoEAdapter`, `WhisperEncoderAdapter`)
+- **WHEN** `host_wrapped_module(host, basis)` is invoked
+- **THEN** the call SHALL raise `NotImplementedError` whose message names `add-host-wrapped-forge-fallback` and the family-rollout follow-up plan
 
 ### Requirement: Llama-3 adapter handles GQA and SwiGLU
 
