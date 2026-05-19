@@ -18,6 +18,109 @@ their corresponding OpenSpec change is archived.
   near-isotropic — the spec's Band C splits strict / advisory along
   this axis).
 
+## [0.7.0] — 2026-05-19
+
+The 0.7.0 release ships `add-llama-family-rope` — the fix for the
+Llama-family forged attention's missing rotary positional embedding.
+The Llama-family adapter `LlamaSelfAttention.forward` (used by
+Llama-3, Gemma-2, Qwen2, Qwen3, Qwen3-MoE) had been shipping without
+the rotation step since the family was added; three adapter
+docstrings claimed "GQA, RoPE" support and `docs/algorithm.md`
+claimed positional handling was "identical to the host," but the
+actual forward path went from Q/K projection straight to
+`scores = q @ k.T` with no rotation.
+
+Empirical impact pre-fix: a 2026-05-19 at-scale Gemma-2-2B M4 run
+measured `faithfulness_kl = 13.19` on the example's four short
+`EVAL_PROMPTS` — only 0.74 nats above `ln(V_gemma) ≈ 12.45`, an
+essentially uninformative result. The short eval suite under-detected
+the gap; the structural cause was Llama-family attention computing
+as a pure bag-of-tokens.
+
+Validated on Intel via the smoke gate at
+`openspec/changes/archive/2026-05-19-add-llama-family-rope/smoke-results.md`:
+on a tiny synthetic LlamaForCausalLM with identity basis
+(`W_dec = I_d`), the patched forge matches host within `7.5e-7` L2;
+the no-RoPE forge differs from host by `1.7e-2`. Improvement factor:
+**22,671×**. The math matches HF's reference exactly.
+
+The minor-version bump (vs. patch) reflects the new public surface
+(`NativeModelConfig.rope_mode` / `rope_theta` / `rope_scaling` /
+`partial_rotary_factor` and `ForgeResult.positional_encoding`) plus
+the observable behaviour change at the default `rope_mode="standard"` —
+Llama-family forges now produce different outputs than pre-fix.
+
+### Added (add-llama-family-rope)
+
+- **`saeforge._positional.rope`** — `compute_rope_cache`,
+  `apply_rotary_pos_emb`, `_rotate_half`. Pure-torch, lazy-imported,
+  matches `transformers.models.llama.modeling_llama` as of 2026-05.
+  Validated by 7 unit tests in `tests/test_rope.py`.
+- **`NativeModelConfig` gains four RoPE fields**: `rope_mode`
+  (`"standard"` default, `"none"` regression-diff arm — emits
+  `UserWarning` on Llama-family), `rope_theta` (10000.0),
+  `rope_scaling` (None), `partial_rotary_factor` (1.0). Populated
+  from `host.config` by `LlamaAdapter.build_native_config`.
+- **`LlamaSelfAttention.forward`** applies `apply_rotary_pos_emb`
+  after Q/K projection-and-reshape, before optional Q/K-norm
+  (Qwen3) and the SDPA. Raises `NotImplementedError` pointing at
+  `add-rope-scaling-types` for unsupported `rope_scaling.type`.
+- **`ForgeResult.positional_encoding`** — new diagnostic field
+  surfacing the resolved positional mode per family:
+  `"absolute_projected"` (GPT-2's `wpe`), `"rotary"` (Llama-family
+  default), `"none_skipped"` (Llama-family with `rope_mode="none"`),
+  `"sinusoidal"` (Whisper-encoder conv-stem). Populated at all four
+  `ForgeResult` construction sites; surfaced in `forge_result.json`.
+  The pre-fix forges would have reported `"none_skipped"` had this
+  field existed — making the bug a 60-second discovery instead of a
+  faithfulness post-mortem.
+- **`tests/test_positional_encoding_assertion.py`** — 9 end-to-end
+  tests pinning the bug-fix invariants (identity-basis recovery,
+  divergence without RoPE, ≥100× improvement factor, config round-
+  trip, UserWarning surface, ForgeResult field validation).
+
+### Changed
+
+- **Llama-family forges now apply RoPE by default**. Forge outputs
+  for `llama`, `gemma2`, `qwen2`, `qwen3`, `qwen3_moe` differ from
+  pre-fix no-RoPE forges. Users who genuinely need the pre-fix
+  behaviour can set `rope_mode="none"` and accept the `UserWarning`.
+- **`tests/test_world_model_byte_identity.py`** pinned digests for
+  `llama` and `qwen2` refreshed (`gemma2` / `qwen3*` digests happened
+  to be invariant at fixture scale — LN-pinv drift + small synthetic
+  basis dominate the faithfulness scalar).
+- **`docs/algorithm.md` §5** rewritten to distinguish GPT-2 (absolute
+  via `wpe`), Llama-family (RoPE), and Whisper-encoder (sinusoidal).
+  Adds `ε_rope` to the documented forge error budget alongside
+  `ε_attn`.
+
+### Fixed
+
+- **Llama-family attention is no longer order-equivariant**. The
+  pre-fix forge computed attention as a bag of tokens — the last
+  token's output depended on the prefix multiset but not its
+  ordering. The shipped fix restores the position-dependence the
+  host applies.
+
+### Tests
+
+- Test count 609 → **625** (+16: 7 RoPE math + 9 positional-
+  encoding assertion).
+
+### Out of scope, queued
+
+- `rope_scaling.type` beyond `"default"` (linear / dynamic / yarn /
+  longrope) raises `NotImplementedError` → `add-rope-scaling-types`.
+  Required for long-context variants (Llama 3.1+, Qwen3-128K).
+- `partial_rotary_factor != 1.0` cases beyond the default are
+  plumbed but only validated against `1.0` in v1.
+- At-scale Gemma-2-2B re-measurement is M4-only; post-fix KL
+  acceptance band (< 6.0) lives in
+  `docs/flagship-gemma2-2b-demo.md` and is filled in by the M4
+  owner.
+- `ParetoFrontierRow.positional_encoding` propagation lands with the
+  queued `--forward-mode on sweep-pareto` follow-up.
+
 ## [0.6.0] — 2026-05-19
 
 The 0.6.0 release ships `forge-forward-mode` — the structural fix
