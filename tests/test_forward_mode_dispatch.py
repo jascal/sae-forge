@@ -18,9 +18,9 @@ import pytest
 torch = pytest.importorskip("torch")
 transformers = pytest.importorskip("transformers")
 
-from saeforge.basis import FeatureBasis
-from saeforge.forward_mode import resolve_forward_mode
-from saeforge.model import NativeModelConfig
+from saeforge.basis import FeatureBasis  # noqa: E402
+from saeforge.forward_mode import resolve_forward_mode  # noqa: E402
+from saeforge.model import NativeModelConfig  # noqa: E402
 
 
 def _make_basis(n_features: int, d_model: int, *, orthonormal: bool = False):
