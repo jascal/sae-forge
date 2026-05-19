@@ -188,25 +188,37 @@ updated to:
 
 ### Mechanical (universal, Intel-runnable)
 
-1. **`rope_mode="none"` regression arm**: forge a tiny synthetic
-   Llama config (2 layers, hidden_size=64, 4 heads, vocab=512) with
-   `rope_mode="none"`. Logits SHALL match the pre-change main
-   commit byte-identically on the same input. This is the
-   "rotation is the *only* source of behaviour change" gate.
+**Gate framing was revised after the 2026-05-19 prototype run; see
+`smoke-results.md` for the audit trail.** The original framing
+("no-RoPE forge is position-invariant on permuted prefix") was
+wrong — causal-masked attention makes a no-RoPE forge order-
+*sensitive* on intermediate hidden states, just sensitive in the
+wrong way. The corrected gates measure **forge-vs-host distance**
+on an identity-basis fixture (`W_dec = I_d`) so the only
+mathematical deviation from host is the missing RoPE step.
 
-2. **`rope_mode="standard"` position sensitivity**: same fixture
-   with `rope_mode="standard"`. For input tokens `[1, 2, 3]` vs
-   `[3, 2, 1]` at positions `[0, 1, 2]`, the last-token logits
-   SHALL differ by at least `1e-3` in L2. (At `rope_mode="none"`
-   they would be identical — attention is order-equivariant
-   without positional info.)
+1. **Bug exists above float noise**: ‖no-RoPE forge − host‖₂ on
+   an identity-basis fixture SHALL be > `1e-4`. Prototype measured
+   `1.71e-02`. Confirms the bug isn't float precision.
 
-3. **Adapter assertion test passes** on every registered adapter
-   that has `rope_theta` in host config.
+2. **Fix recovers host exactly**: ‖RoPE-patched forge − host‖₂
+   on the same identity-basis fixture SHALL be < `1e-4`. Prototype
+   measured `7.52e-07` — at float precision. With identity basis,
+   projection is exact identity; if the proposed `apply_rotary_pos_emb`
+   math is correct, the patched forge reproduces host byte-identically.
 
-4. **Round-trip stability**: `NativeModelConfig.to_dict() →
-   from_dict()` preserves the new fields (`rope_mode`,
-   `rope_theta`, `rope_scaling`, `partial_rotary_factor`).
+3. **Improvement factor**: the ratio
+   `‖no-RoPE forge − host‖₂ / ‖RoPE forge − host‖₂` SHALL be ≥
+   100×. Prototype measured **22,671×**.
+
+4. **`NativeModelConfig` round-trip stability**: existing fields
+   round-trip through `to_dict()` → `from_dict()` byte-identically
+   (prototype confirmed). Post-impl, the four new fields
+   (`rope_mode`, `rope_theta`, `rope_scaling`, `partial_rotary_factor`)
+   SHALL also round-trip.
+
+5. **Adapter assertion test passes** on every registered adapter
+   with `rope_theta` in its host config (added by the impl PR).
 
 ### At-scale (M4, M4-runnable only)
 

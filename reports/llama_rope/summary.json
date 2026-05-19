@@ -1,0 +1,29 @@
+{
+  "fixture": {
+    "vocab_size": 512,
+    "hidden_size": 64,
+    "n_heads": 4,
+    "n_layers": 2,
+    "rope_theta": 10000.0,
+    "input_ids": [
+      1,
+      2,
+      3,
+      7
+    ],
+    "basis": "identity (W_dec=I)"
+  },
+  "measurements": {
+    "host_logits_norm": 3.5841901302337646,
+    "no_rope_forge_minus_host_L2": 0.01705256663262844,
+    "rope_patched_forge_minus_host_L2": 7.52164226014429e-07,
+    "improvement_factor": 22671.334321477443
+  },
+  "gates": {
+    "gate_1_no_rope_gap_meaningful": true,
+    "gate_2_rope_recovers_host_exactly": true,
+    "gate_3_fix_improves_at_least_100x": true,
+    "gate_4_config_round_trip": true
+  },
+  "overall_pass": true
+}
