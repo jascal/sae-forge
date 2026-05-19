@@ -51,7 +51,7 @@ The `saeforge.adapters.ArchitectureAdapter` ABC SHALL declare three abstract met
 
 - `family: str` — class attribute; one of the bundled family identifiers (`"gpt2"`, `"llama"`, `"gemma2"`, `"qwen2"`, `"qwen3"`, `"qwen3_moe"`, `"whisper_encoder"`) or a third-party-registered value. Used by `NativeModelConfig.family`.
 - `walk(self, host, projector, *, attention_width: str) -> dict[str, np.ndarray]` — projects every relevant host weight via `projector` and returns a flat dict keyed by `NativeModel` parameter names. Pure-numpy; no torch operations beyond reading `host`'s parameters.
-- `build_native_config(self, host, n_features: int, *, attention_width: str) -> NativeModelConfig` — pulls per-block dimensions from `host.config` into a `NativeModelConfig` whose `family` matches `self.family`.
+- `build_native_config(self, host, n_features: int, *, attention_width: str) -> NativeModelConfig` — pulls per-block dimensions from `host.config` into a `NativeModelConfig` whose `family` matches `self.family`. For Llama-family adapters, SHALL also populate `rope_theta`, `rope_scaling`, and `partial_rotary_factor` from the host config (with defaults `10000.0` / `None` / `1.0` when the host doesn't expose the attribute); see the "Llama-family attention applies RoPE" requirement below.
 - `native_module_class(self) -> type` — returns the `nn.Module` subclass used to instantiate forged models for this family. The returned class's `__init__` SHALL accept a `NativeModelConfig`-shaped object as its sole positional argument.
 - `default_faithfulness_target(self) -> FaithfulnessTarget` — returns the family's default loop-gating scorer. Consulted by `saeforge.eval.targets._default_target_for(family)` when no explicit `ForgePipeline(faithfulness=...)` is set. The ABC's default implementation returns `KLTarget()` (lazy-imported to avoid the `saeforge.eval.targets` → `saeforge.adapters` import cycle); subclasses MAY override. `WhisperEncoderAdapter` overrides to return `CosineTarget()`; the six LM-family adapters inherit the `KLTarget()` default.
 - `host_wrapped_module(self, host, basis, scale_boost: float = 1.0) -> nn.Module` — constructs a host-wrapped forged `nn.Module` for this family, used by the `forward_mode="host_wrapped"` dispatch on under-complete bases (see [`forge-forward-mode`](../forge-forward-mode/spec.md)). The ABC's default implementation raises `NotImplementedError` whose message names `add-host-wrapped-forge-fallback`'s per-family rollout plan; subclasses MAY override. `GPT2Adapter` ships the v1 override (delegates to `saeforge.adapters._host_wrapped.gpt2.build_host_wrapped_gpt2`); the six other bundled adapters (`LlamaAdapter`, `Gemma2Adapter`, `Qwen2Adapter`, `Qwen3Adapter`, `Qwen3MoEAdapter`, `WhisperEncoderAdapter`) inherit the `NotImplementedError` default.
@@ -129,6 +129,88 @@ Gemma-2's alternating local/global attention pattern is OUT OF SCOPE for this ch
 - **GIVEN** a `transformers.Gemma2ForCausalLM` constructed from a `Gemma2Config(hidden_size=128, num_hidden_layers=2, num_attention_heads=4, num_key_value_heads=2, intermediate_size=256, vocab_size=1024, final_logit_softcapping=30.0)`
 - **WHEN** `Gemma2Adapter().walk(host, projector, attention_width="host")` is called
 - **THEN** the returned dict contains `model.layers.0.{input_layernorm, post_attention_layernorm, pre_feedforward_layernorm, post_feedforward_layernorm}.weight` (four norms per layer) and `Gemma2Adapter().build_native_config(host, 32, attention_width="host").final_logit_softcap == 30.0`
+
+### Requirement: Llama-family attention applies RoPE
+
+Every Llama-family forged module's attention block SHALL apply rotary positional embedding to Q and K after the projection-and-reshape, before the optional Q/K norm (Qwen3) and the scaled dot-product. The rotation SHALL be parameterised by the host's `rope_theta` and `partial_rotary_factor` per the `NativeModelConfig` plumbing described under "Requirement: ArchitectureAdapter contract".
+
+When `cfg.rope_mode == "none"`, the rotation step SHALL be skipped entirely; the attention forward path returns to the pre-fix behaviour byte-identically. `cfg.rope_mode == "standard"` (the default) applies rotation. Configuring `rope_mode == "none"` on any Llama-family `family` SHALL emit a `UserWarning` at `NativeModelConfig.__post_init__` time naming the regression-diff use case and pointing at `openspec/specs/architecture-adapters/spec.md` (this requirement) plus the archived smoke gate.
+
+When `cfg.rope_scaling is not None and rope_scaling.get("type") not in (None, "default")`, the attention forward SHALL raise `NotImplementedError` naming `add-rope-scaling-types` as the queued follow-up that adds support for `"linear"` / `"dynamic"` / `"yarn"` / `"longrope"` types. v1 ships only the no-scaling regime (Llama-3-base, Gemma-2-2B, Qwen3-base).
+
+GPT-2 forges (which use absolute positional embeddings via `wpe` projected through the basis) and Whisper-encoder forges (which use sinusoidal positional embeddings via the frozen-copied conv stem) are NOT affected by this requirement.
+
+#### Scenario: Llama-family forge is position-sensitive at default
+
+- **GIVEN** a tiny synthetic Llama host (2 layers, `hidden_size=64`, `n_heads=4`, `vocab=512`, `rope_theta=10000.0`) and a `FeatureBasis` with `W_dec = I_d` (identity)
+- **WHEN** the forged module is built with default `rope_mode="standard"` and forwarded on token IDs `[1, 2, 3, 7]`
+- **THEN** the last-token logits SHALL match the host's last-token logits within L2 norm `< 1e-4`. (The forge-vs-host distance at this fixture was 7.5e-7 in the smoke gate; the production assertion uses `< 1e-4` as the conservative band.)
+
+#### Scenario: Llama-family forge regresses to host gap without RoPE
+
+- **GIVEN** the same fixture as above
+- **WHEN** the forged module is built with `rope_mode="none"` (the regression-diff arm) and the same forward pass is run
+- **THEN** the last-token logits SHALL differ from the host's last-token logits in L2 norm `> 1e-4`. (The smoke gate measured 1.7e-2 on this fixture; the assertion pins existence of the no-RoPE gap.)
+- **AND** the gap reduction factor (`no-RoPE-gap / RoPE-gap`) SHALL be `>= 100x`.
+
+#### Scenario: rope_mode="none" on Llama-family emits UserWarning
+
+- **GIVEN** `NativeModelConfig(family="llama", rope_mode="none", ...)` constructed
+- **WHEN** `__post_init__` runs
+- **THEN** a `UserWarning` SHALL be emitted whose message contains `"rope_mode='none'"` and references `openspec/specs/architecture-adapters/spec.md`.
+
+#### Scenario: rope_mode="none" is silent on GPT-2
+
+- **GIVEN** `NativeModelConfig(family="gpt2", rope_mode="none", ...)` constructed
+- **WHEN** `__post_init__` runs
+- **THEN** no `UserWarning` mentioning `rope_mode` SHALL be emitted (GPT-2's positional encoding is via `wpe`, not RoPE; the field is silent on this family).
+
+#### Scenario: invalid rope_mode raises ValueError
+
+- **WHEN** `NativeModelConfig(rope_mode="garbage", ...)` is constructed
+- **THEN** `__post_init__` SHALL raise `ValueError` naming the legal values `{"standard", "none"}`.
+
+#### Scenario: unsupported rope_scaling type raises from forward
+
+- **GIVEN** a forged Llama-family module built with `cfg.rope_scaling = {"type": "linear", "factor": 2.0}` (or any non-default scaling type)
+- **WHEN** `forward(input_ids)` is called
+- **THEN** the call SHALL raise `NotImplementedError`
+- **AND** the message SHALL name `add-rope-scaling-types` as the queued follow-up.
+
+### Requirement: ForgeResult.positional_encoding diagnostic
+
+`ForgeResult` SHALL declare a `positional_encoding: str | None = None` field. The `ForgePipeline.run` implementation SHALL populate it after model construction. Legal values:
+
+- `"absolute_projected"` — GPT-2 family forge (`wpe` positional embedding projected through `pinv` and added to the residual at entry).
+- `"rotary"` — Llama-family forge with `rope_mode="standard"` (the default after `add-llama-family-rope`).
+- `"none_skipped"` — Llama-family forge with `rope_mode="none"` (the regression-diff arm; signals known-buggy regime).
+- `"sinusoidal"` — Whisper-encoder forge (conv-stem positional embedding wired by `forge-whisper-encoder`).
+- `None` — for `ForgeResult` instances constructed without populating this field (legacy run summaries; from-disk loads).
+
+The field SHALL be present in `forge_result.json` written by `ForgePipeline.run` and SHOULD be surfaced in any consumer's run summary. Construction with any value outside the legal set SHALL raise `ValueError` naming the four legal values.
+
+The field's *purpose* is to surface silent positional-encoding skips. The pre-`add-llama-family-rope` Llama-family forges would have reported `"none_skipped"` in a production run summary had this field existed, making the missing-RoPE bug observable on the first run instead of via a faithfulness post-mortem.
+
+#### Scenario: GPT-2 forge reports absolute_projected
+
+- **WHEN** a GPT-2 forge completes via `ForgePipeline.run`
+- **THEN** the returned `ForgeResult.positional_encoding` SHALL equal `"absolute_projected"`
+- **AND** the same value SHALL appear under `positional_encoding` in `forge_result.json`.
+
+#### Scenario: Llama-family forge at default reports rotary
+
+- **WHEN** a Llama-family forge completes via `ForgePipeline.run` with default `rope_mode`
+- **THEN** the returned `ForgeResult.positional_encoding` SHALL equal `"rotary"`.
+
+#### Scenario: Llama-family forge with rope_mode="none" reports none_skipped
+
+- **WHEN** a Llama-family forge completes via `ForgePipeline.run` with `rope_mode="none"` on the underlying `NativeModelConfig`
+- **THEN** the returned `ForgeResult.positional_encoding` SHALL equal `"none_skipped"`.
+
+#### Scenario: invalid value raises ValueError
+
+- **WHEN** `ForgeResult(model=..., output_dir=..., positional_encoding="garbage")` is constructed
+- **THEN** the constructor SHALL raise `ValueError` naming the legal set.
 
 ### Requirement: NativeModelConfig.family field is required
 
