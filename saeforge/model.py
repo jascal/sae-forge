@@ -139,6 +139,18 @@ class NativeModelConfig:
     # boundary — avoids the rank-dependent amplification documented in
     # add-host-wrapped-forge-fallback at the cost of host-equal compute.
     forward_mode: str = "auto"
+    # Llama-family rotary positional embedding. ``rope_mode="standard"``
+    # (default) applies RoPE to Q and K after the projection-and-reshape
+    # in every Llama-family forged attention block; ``rope_mode="none"``
+    # skips the rotation entirely and reproduces the pre-fix (buggy)
+    # behaviour byte-identically. The "none" arm exists as a regression-
+    # diff knob and emits a UserWarning when set on Llama-family configs.
+    # GPT-2 / Whisper-encoder ignore these fields. See
+    # openspec/changes/add-llama-family-rope/proposal.md.
+    rope_mode: str = "standard"
+    rope_theta: float = 10000.0
+    rope_scaling: dict | None = None
+    partial_rotary_factor: float = 1.0
 
     def __post_init__(self) -> None:
         # Validate against the union of bundled families and runtime-
@@ -196,6 +208,28 @@ class NativeModelConfig:
                 f"forward_mode must be one of "
                 f"('auto', 'native_in_basis', 'host_wrapped'); "
                 f"got {self.forward_mode!r}"
+            )
+        if self.rope_mode not in ("standard", "none"):
+            raise ValueError(
+                f"rope_mode must be one of ('standard', 'none'); "
+                f"got {self.rope_mode!r}"
+            )
+        # Llama-family + rope_mode="none" reproduces the pre-fix buggy
+        # behaviour byte-identically. Surface a warning so nobody ships
+        # it accidentally. add-llama-family-rope/proposal.md documents
+        # this as the regression-diff knob.
+        _llama_family = ("llama", "gemma2", "qwen2", "qwen3", "qwen3_moe")
+        if self.rope_mode == "none" and self.family in _llama_family:
+            import warnings
+
+            warnings.warn(
+                f"NativeModelConfig: rope_mode='none' on family={self.family!r} "
+                f"reproduces the pre-fix Llama-family no-RoPE behaviour from "
+                f"before add-llama-family-rope. This is a regression-diff "
+                f"knob — Llama-family forges should use rope_mode='standard' "
+                f"(the default) in production.",
+                UserWarning,
+                stacklevel=2,
             )
         if self.num_heads * self.head_dim != self.qkv_inner_size:
             raise ValueError(
