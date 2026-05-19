@@ -36,9 +36,16 @@ _PINNED_DIGESTS: dict[str, str] = {
     # torch.manual_seed(0). Update only when the change is intentional
     # and documented in the PR description.
     "gpt2":   "16ef3051e219dd6f4af4ace0306e43ed31b2976c3326932e3475129feb3aeae8",
-    "llama":  "4b12e644e1b2642a61dd4e844b69f96400215fc77df8ec013620cae812444b86",
+    # llama / qwen2 digests refreshed by add-llama-family-rope: the
+    # forge now applies RoPE in Llama-family attention by default
+    # (rope_mode="standard"), which is an intentional behaviour change
+    # vs. the pre-fix no-RoPE forge. gemma2 / qwen3* digests below
+    # happened to be invariant to the RoPE addition at this fixture
+    # size (likely because LN-pinv drift + small synthetic basis
+    # already dominate the faithfulness scalar to ~noise floor).
+    "llama":  "aea996d999cca3321c800d0bd180a77ea459fffd0f4280d4c61e69f2ec632564",
     "gemma2": "8a763784cb28cff20026827078646ab2c13aab72b7cd2001a0e01c2802dd770b",
-    "qwen2":  "35f6b80b673cfe83c03c9ce9f3597323c116dfc0bf7d6bd1673aec7b50d8f0f0",
+    "qwen2":  "a5ccb3a746423fdc05fbe6bc3a4163f54533f895140f8211a6d28c2263304c7b",
 }
 
 

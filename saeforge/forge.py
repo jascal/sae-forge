@@ -128,6 +128,14 @@ class ForgeResult:
     n_params: int = 0
     faithfulness: float | None = None
     faithfulness_target_name: str | None = None
+    # add-llama-family-rope. Surfaces the positional-encoding mode the
+    # forged module actually used. Lets silent skips fail loudly in
+    # run summaries — the pre-fix Llama-family forges would have
+    # reported "none_skipped" had this field existed, making the bug
+    # observable on the first run instead of via a 6-hour KL post-
+    # mortem. None for results constructed before the field landed
+    # (legacy run summaries; from-disk loads).
+    positional_encoding: str | None = None
     extras: dict = field(default_factory=dict)
 
     def __init__(
@@ -140,6 +148,7 @@ class ForgeResult:
         extras: dict | None = None,
         *,
         faithfulness_kl: float | None = None,
+        positional_encoding: str | None = None,
     ) -> None:
         if faithfulness_kl is not None:
             warnings.warn(
@@ -151,11 +160,20 @@ class ForgeResult:
                 faithfulness = faithfulness_kl
             if faithfulness_target_name is None:
                 faithfulness_target_name = "kl"
+        if positional_encoding is not None and positional_encoding not in (
+            "absolute_projected", "rotary", "none_skipped", "sinusoidal",
+        ):
+            raise ValueError(
+                f"positional_encoding must be one of "
+                f"('absolute_projected', 'rotary', 'none_skipped', 'sinusoidal') "
+                f"or None; got {positional_encoding!r}"
+            )
         self.model = model
         self.output_dir = output_dir
         self.n_params = n_params
         self.faithfulness = faithfulness
         self.faithfulness_target_name = faithfulness_target_name
+        self.positional_encoding = positional_encoding
         self.extras = extras if extras is not None else {}
 
     @property
@@ -795,6 +813,28 @@ class ForgePipeline:
 
         return resolve_forward_mode(self.basis, self.forward_mode)
 
+    def _resolve_positional_encoding(self, model: NativeModel) -> str:
+        """Derive ForgeResult.positional_encoding from the forged model's config.
+
+        - GPT-2 family: ``absolute_projected`` (wpe through pinv).
+        - Llama-family at ``rope_mode="standard"``: ``rotary``.
+        - Llama-family at ``rope_mode="none"``: ``none_skipped`` (the
+          pre-fix regression-diff arm).
+        - Whisper-encoder: ``sinusoidal`` (conv-stem positional embedding).
+
+        Added by add-llama-family-rope. Surfaces silent skips in
+        ``forge_result.json`` / run summaries.
+        """
+        family = model.config.family
+        if family == "gpt2":
+            return "absolute_projected"
+        if family == "whisper_encoder":
+            return "sinusoidal"
+        # Llama-family.
+        if getattr(model.config, "rope_mode", "standard") == "none":
+            return "none_skipped"
+        return "rotary"
+
     def _build_host_wrapped_model(self, host):
         """Construct a host-wrapped NativeModel for the current basis.
 
@@ -1015,12 +1055,14 @@ class ForgePipeline:
         model.save_pretrained(forged_dir)
 
         n_params = model.num_parameters()
+        positional_encoding = self._resolve_positional_encoding(model)
         result_meta = {
             "host_model_id": self.host_model_id,
             "n_params": n_params,
             "faithfulness": faithfulness,
             "faithfulness_target_name": target_name,
             "faithfulness_kl": faithfulness if target_name == "kl" else None,
+            "positional_encoding": positional_encoding,
             "n_features": self.basis.n_features,
             "scale_compression_ratio": self.basis.scale_compression_ratio,
         }
@@ -1032,6 +1074,7 @@ class ForgePipeline:
             n_params=n_params,
             faithfulness=faithfulness,
             faithfulness_target_name=target_name,
+            positional_encoding=positional_encoding,
             extras=result_meta,
         )
 
@@ -1099,6 +1142,9 @@ class ForgePipeline:
             "faithfulness": faithfulness,
             "faithfulness_target_name": target_name,
             "faithfulness_kl": faithfulness if target_name == "kl" else None,
+            "positional_encoding": (
+                self._resolve_positional_encoding(model) if model is not None else None
+            ),
             "n_features": final.get("current_feature_count"),
             "scale_compression_ratio": self.basis.scale_compression_ratio,
             "transitions_log": final.get("transitions_log", []),
@@ -1112,6 +1158,7 @@ class ForgePipeline:
             n_params=final.get("n_params", 0),
             faithfulness=faithfulness,
             faithfulness_target_name=target_name,
+            positional_encoding=result_meta["positional_encoding"],
             extras=result_meta,
         )
 
@@ -1175,12 +1222,14 @@ class ForgePipeline:
         forged_dir = output_dir / "forged"
         model.save_pretrained(forged_dir)
         n_params = model.num_parameters()
+        positional_encoding = self._resolve_positional_encoding(model)
         result_meta = {
             "host_model_id": "<in-memory>",
             "n_params": n_params,
             "faithfulness": faithfulness,
             "faithfulness_target_name": target_name,
             "faithfulness_kl": faithfulness if target_name == "kl" else None,
+            "positional_encoding": positional_encoding,
             "n_features": self.basis.n_features,
             "scale_compression_ratio": self.basis.scale_compression_ratio,
             "attention_width": self.attention_width,
@@ -1192,6 +1241,7 @@ class ForgePipeline:
             n_params=n_params,
             faithfulness=faithfulness,
             faithfulness_target_name=target_name,
+            positional_encoding=positional_encoding,
             extras=result_meta,
         )
 
@@ -1235,18 +1285,23 @@ class ForgePipeline:
             final.get("faithfulness") if eval_input_ids is not None else None
         )
         target_name = self._resolve_target_name(model)
+        positional_encoding = (
+            self._resolve_positional_encoding(model) if model is not None else None
+        )
         return ForgeResult(
             model=model,
             output_dir=output_dir,
             n_params=final.get("n_params", 0),
             faithfulness=faithfulness,
             faithfulness_target_name=target_name,
+            positional_encoding=positional_encoding,
             extras={
                 "host_model_id": "<in-memory>",
                 "n_params": final.get("n_params", 0),
                 "faithfulness": faithfulness,
                 "faithfulness_target_name": target_name,
                 "faithfulness_kl": faithfulness if target_name == "kl" else None,
+                "positional_encoding": positional_encoding,
                 "n_features": final.get("current_feature_count"),
                 "transitions_log": final.get("transitions_log", []),
                 "final_state": _final_state_for_log(final),

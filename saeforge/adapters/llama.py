@@ -222,6 +222,15 @@ class LlamaAdapter(ArchitectureAdapter):
             len(host.model.layers) > 0
             and host.model.layers[0].self_attn.q_proj.bias is not None
         )
+        # add-llama-family-rope: pull RoPE knobs from host.config. The
+        # forged attention's __init__ reads them; the forward applies
+        # the rotation when rope_mode == "standard" (default).
+        rope_scaling = getattr(cfg, "rope_scaling", None)
+        if rope_scaling is not None and not isinstance(rope_scaling, dict):
+            # Some HF configs store rope_scaling as a dataclass-like
+            # object. Normalise to plain dict for the
+            # NativeModelConfig.from_dict round-trip.
+            rope_scaling = dict(rope_scaling)
         return NativeModelConfig(
             family=self.family,
             hidden_size=n_features,
@@ -238,6 +247,11 @@ class LlamaAdapter(ArchitectureAdapter):
             tied_embeddings=getattr(cfg, "tie_word_embeddings", False),
             rms_norm_eps=getattr(cfg, "rms_norm_eps", 1e-6),
             qkv_bias=qkv_bias,
+            rope_theta=float(getattr(cfg, "rope_theta", 10000.0)),
+            rope_scaling=rope_scaling,
+            partial_rotary_factor=float(
+                getattr(cfg, "partial_rotary_factor", 1.0)
+            ),
         )
 
     def native_module_class(self) -> type:
@@ -297,6 +311,28 @@ def _get_forged_llama_class():
             self.v_proj = nn.Linear(cfg.hidden_size, cfg.n_kv_heads * cfg.head_dim, bias=qkv_bias)
             self.o_proj = nn.Linear(cfg.num_heads * cfg.head_dim, cfg.hidden_size, bias=False)
             self.attn_logit_softcap = cfg.attn_logit_softcap
+            # add-llama-family-rope: pull RoPE knobs from the config. The
+            # rope_mode="none" arm preserves the pre-fix buggy behaviour
+            # byte-identically (validated by impl PR's regression-arm
+            # test); rope_mode="standard" (default) applies rotation.
+            # rope_scaling.type beyond default raises at first forward.
+            self.rope_mode = getattr(cfg, "rope_mode", "standard")
+            self.rope_theta = float(getattr(cfg, "rope_theta", 10000.0))
+            scaling = getattr(cfg, "rope_scaling", None)
+            if scaling is not None:
+                scale_type = scaling.get("type", scaling.get("rope_type"))
+                if scale_type not in (None, "default"):
+                    self._rope_scaling_error = (
+                        f"rope_scaling.type={scale_type!r} is not supported in "
+                        f"v1 — only 'default' (no scaling) ships. Linear / "
+                        f"dynamic / yarn / longrope land via the queued "
+                        f"add-rope-scaling-types follow-up. See "
+                        f"openspec/changes/add-llama-family-rope/proposal.md."
+                    )
+                else:
+                    self._rope_scaling_error = None
+            else:
+                self._rope_scaling_error = None
             # Qwen3 applies RMSNorm(head_dim) on Q and K per head after the
             # reshape and before SDPA. Llama / Gemma-2 / Qwen2 set qk_norm=False
             # and these stay None — forward path falls through unchanged.
@@ -309,10 +345,43 @@ def _get_forged_llama_class():
                 self.k_norm = None
 
         def forward(self, x):
+            if self._rope_scaling_error is not None:
+                raise NotImplementedError(self._rope_scaling_error)
             shape_prefix = x.shape[:-1]
             q = self.q_proj(x).view(*shape_prefix, self.num_heads, self.head_dim).transpose(-3, -2)
             k = self.k_proj(x).view(*shape_prefix, self.n_kv_heads, self.head_dim).transpose(-3, -2)
             v = self.v_proj(x).view(*shape_prefix, self.n_kv_heads, self.head_dim).transpose(-3, -2)
+            # add-llama-family-rope: apply RoPE to Q and K BEFORE the
+            # optional Q/K norm (Qwen3) and the SDPA. The cache is
+            # computed per-forward since it's tiny (~head_dim*seq_len
+            # float32 = ~MB at production scale) and torch's graph
+            # capture handles the per-step build cheaply. cfg.rope_mode
+            # gates: "standard" applies rotation (default); "none"
+            # skips, reproducing the pre-fix buggy behaviour.
+            #
+            # HF reference for the exact insertion point: in
+            # transformers 4.49 the equivalent ordering lives at
+            # transformers/models/llama/modeling_llama.py inside
+            # ``LlamaAttention.forward`` — Q/K get apply_rotary_pos_emb
+            # immediately after projection-and-reshape, before the
+            # GQA repeat_interleave and the scaled-dot-product.
+            # (Llama 4.x reorganised the module hierarchy but the
+            # rotation-before-attention invariant is unchanged.)
+            if self.rope_mode == "standard":
+                from saeforge._positional.rope import (
+                    apply_rotary_pos_emb,
+                    compute_rope_cache,
+                )
+
+                seq_len = q.shape[-2]
+                cos, sin = compute_rope_cache(
+                    seq_len,
+                    self.head_dim,
+                    theta=self.rope_theta,
+                    device=q.device,
+                    dtype=q.dtype,
+                )
+                q, k = apply_rotary_pos_emb(q, k, cos, sin)
             # Qwen3 per-head Q/K norm; no-op for other Llama-family hosts.
             if self.q_norm is not None:
                 q = self.q_norm(q)

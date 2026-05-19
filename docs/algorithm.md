@@ -202,9 +202,28 @@ W_Q_host = D @ W_Q          # shape (k, host_qkv_inner)
 W_O_host = W_O @ E_v0       # shape (host_qkv_inner, k)
 ```
 
-Keeps attention mechanics (softmax, head splitting, positional
-handling) identical to the host. Attention faithfulness preserved
-exactly when the basis spans the full residual.
+Keeps attention mechanics (softmax, head splitting) identical to
+the host. Positional handling is family-specific:
+
+- **GPT-2 family** — absolute positional embeddings via `wpe` are
+  projected through `pinv` and added to the residual at entry; the
+  forge reproduces the host's position-conditioning end-to-end.
+- **Llama family** (Llama-3, Gemma-2, Qwen2, Qwen3, Qwen3-MoE) —
+  RoPE applied to Q and K after projection-and-reshape, before the
+  optional Q/K-norm and the scaled dot-product. Added by
+  `add-llama-family-rope`; gated by `cfg.rope_mode in {"standard",
+  "none"}` with `"standard"` default. The `"none"` arm reproduces
+  the pre-fix no-RoPE behaviour byte-identically (regression-diff
+  knob). See
+  `openspec/specs/architecture-adapters/spec.md` for the per-family
+  rollout contract.
+- **Whisper-encoder** — sinusoidal positional embedding wired via
+  the frozen-copied conv stem; unchanged by either projection mode.
+
+Attention faithfulness preserved exactly when the basis spans the
+full residual AND the family's positional encoding is honored. The
+documented forge error budget gains `ε_rope` for the Llama-family
+RoPE step alongside the existing `ε_attn` (Gemma sliding-window).
 
 **`attention_width="feature_native"` (v0.2 opt-in)** — every dimension
 becomes k-wide; both sides of c_attn / c_proj project per §4:
