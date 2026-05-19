@@ -56,15 +56,26 @@ def compute_rope_cache(
     torch = require_extra("torch", "torch")
     if dtype is None:
         dtype = torch.float32
+    # HF convention: build inv_freq, the position grid, and cos/sin in
+    # fp32 unconditionally, then cast the cache to `dtype` at the end.
+    # Honoring `dtype=q.dtype` (the previous behavior) breaks badly at
+    # bf16: `torch.arange(seq_len, dtype=bf16)` aliases integer
+    # positions above 256 (bf16's 7-bit mantissa), and at Gemma-2's
+    # head_dim=256 the smallest inv_freq (~1e-4) loses ~half its
+    # precision. Measured cos drift up to 2.0 (full range) at
+    # seq_len>=512 with q.dtype=bf16 — i.e. attention pattern noise,
+    # not a small numerical error. fp32 here costs ~head_dim*seq_len*4
+    # bytes per forward (a few MB at production scale).
     inv_freq = 1.0 / (
         theta ** (
-            torch.arange(0, head_dim, 2, device=device, dtype=dtype) / head_dim
+            torch.arange(0, head_dim, 2, device=device, dtype=torch.float32)
+            / head_dim
         )
     )
-    t = torch.arange(seq_len, device=device, dtype=dtype)
+    t = torch.arange(seq_len, device=device, dtype=torch.float32)
     freqs = torch.outer(t, inv_freq)  # (seq_len, head_dim/2)
     emb = torch.cat((freqs, freqs), dim=-1)  # (seq_len, head_dim)
-    return emb.cos(), emb.sin()
+    return emb.cos().to(dtype), emb.sin().to(dtype)
 
 
 def _rotate_half(x):
