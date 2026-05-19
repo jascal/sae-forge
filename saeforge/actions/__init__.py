@@ -60,10 +60,10 @@ def load_and_scan(ctx: dict, payload: dict | None = None) -> dict:
 
 
 _POLYGRAM_VERSION_HINT = (
-    "sae-forge requires polygram>=0.1.0 (the polygram-tuning-config "
-    "release that ships CompressionConfig / EpochCompressionConfig / "
-    "RegrowConfig and the matching `config=` kwargs). Upgrade with "
-    "`pip install -U 'polygram>=0.1.0'`."
+    "sae-forge requires polygram>=0.9.0 (which adds cluster_experts / "
+    "ExpertDictionary to the public surface; tuning-config dataclasses "
+    "have been required since 0.1.0). Upgrade with "
+    "`pip install -U 'polygram>=0.9.0'`."
 )
 
 

@@ -100,6 +100,27 @@ class ArchitectureAdapter(ABC):
 
         return KLTarget()
 
+    def host_wrapped_module(self, host, basis, scale_boost: float = 1.0):
+        """Construct a host-wrapped forged ``nn.Module`` for this family.
+
+        Host-wrapped mode keeps the residual stream in basis coordinates
+        at every block boundary but runs every transformer block with
+        the host's exact (unprojected) weights, decoding the residual to
+        ``d_model`` at block entry and re-encoding the result at block
+        exit. Used by the ``forward_mode="host_wrapped"`` dispatch on
+        under-complete bases where ``native_in_basis`` math is invalid.
+
+        v1 ships GPT-2 only. Other bundled adapters raise
+        ``NotImplementedError`` via this default implementation. See
+        ``openspec/changes/add-host-wrapped-forge-fallback`` for the
+        per-family rollout plan.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement host_wrapped_module yet. "
+            f"v1 ships GPT-2 only; see openspec/changes/"
+            f"add-host-wrapped-forge-fallback for the rollout plan."
+        )
+
     def grad_checkpoint_targets(self, module):
         """Return ``(blocks, embedding_param)`` for activation checkpointing.
 

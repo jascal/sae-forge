@@ -1,0 +1,160 @@
+{
+  "K": 211,
+  "n_features": 523,
+  "layers": [
+    {
+      "layer": 0,
+      "host_norm": 4.716088771820068,
+      "forged_norm": 10.219292640686035,
+      "norm_ratio": 2.166899974773403,
+      "decoded_rel_err": 0.5898938775062561,
+      "decoded_cosine": 0.8070197105407715,
+      "via_host_kl": 1.2595887184143066,
+      "K": 211,
+      "n_features": 523
+    },
+    {
+      "layer": 1,
+      "host_norm": 53.183753967285156,
+      "forged_norm": 2783.88232421875,
+      "norm_ratio": 52.344599930482445,
+      "decoded_rel_err": 20.191177368164062,
+      "decoded_cosine": 0.18326565623283386,
+      "via_host_kl": 15.077291488647461,
+      "K": 211,
+      "n_features": 523
+    },
+    {
+      "layer": 2,
+      "host_norm": 61.528839111328125,
+      "forged_norm": 2989.78857421875,
+      "norm_ratio": 48.59166233916962,
+      "decoded_rel_err": 19.60771942138672,
+      "decoded_cosine": 0.23976299166679382,
+      "via_host_kl": 14.138972282409668,
+      "K": 211,
+      "n_features": 523
+    },
+    {
+      "layer": 3,
+      "host_norm": 73.94725036621094,
+      "forged_norm": 3270.906982421875,
+      "norm_ratio": 44.232976428782344,
+      "decoded_rel_err": 21.16668701171875,
+      "decoded_cosine": 0.31763747334480286,
+      "via_host_kl": 12.444586753845215,
+      "K": 211,
+      "n_features": 523
+    },
+    {
+      "layer": 4,
+      "host_norm": 79.68624877929688,
+      "forged_norm": 3649.434326171875,
+      "norm_ratio": 45.79754201103801,
+      "decoded_rel_err": 23.449951171875,
+      "decoded_cosine": 0.36394163966178894,
+      "via_host_kl": 11.434599876403809,
+      "K": 211,
+      "n_features": 523
+    },
+    {
+      "layer": 5,
+      "host_norm": 84.9709243774414,
+      "forged_norm": 3876.2939453125,
+      "norm_ratio": 45.61906291726305,
+      "decoded_rel_err": 24.5416316986084,
+      "decoded_cosine": 0.3769379258155823,
+      "via_host_kl": 10.959539413452148,
+      "K": 211,
+      "n_features": 523
+    },
+    {
+      "layer": 6,
+      "host_norm": 91.89250946044922,
+      "forged_norm": 4096.44482421875,
+      "norm_ratio": 44.57865878591411,
+      "decoded_rel_err": 24.15547752380371,
+      "decoded_cosine": 0.38838523626327515,
+      "via_host_kl": 10.768513679504395,
+      "K": 211,
+      "n_features": 523
+    },
+    {
+      "layer": 7,
+      "host_norm": 101.00829315185547,
+      "forged_norm": 4266.927734375,
+      "norm_ratio": 42.243340633032155,
+      "decoded_rel_err": 22.751291275024414,
+      "decoded_cosine": 0.3955504298210144,
+      "via_host_kl": 10.914092063903809,
+      "K": 211,
+      "n_features": 523
+    },
+    {
+      "layer": 8,
+      "host_norm": 115.00942993164062,
+      "forged_norm": 4467.0048828125,
+      "norm_ratio": 38.84033583565801,
+      "decoded_rel_err": 20.660066604614258,
+      "decoded_cosine": 0.4035295844078064,
+      "via_host_kl": 10.978607177734375,
+      "K": 211,
+      "n_features": 523
+    },
+    {
+      "layer": 9,
+      "host_norm": 135.61497497558594,
+      "forged_norm": 4686.55712890625,
+      "norm_ratio": 34.55781435457217,
+      "decoded_rel_err": 18.317642211914062,
+      "decoded_cosine": 0.4178590178489685,
+      "via_host_kl": 10.775546073913574,
+      "K": 211,
+      "n_features": 523
+    },
+    {
+      "layer": 10,
+      "host_norm": 164.9721221923828,
+      "forged_norm": 4962.392578125,
+      "norm_ratio": 30.08018877479244,
+      "decoded_rel_err": 15.675247192382812,
+      "decoded_cosine": 0.4251171350479126,
+      "via_host_kl": 10.911027908325195,
+      "K": 211,
+      "n_features": 523
+    },
+    {
+      "layer": 11,
+      "host_norm": 233.67503356933594,
+      "forged_norm": 5606.9033203125,
+      "norm_ratio": 23.99444747976819,
+      "decoded_rel_err": 12.591592788696289,
+      "decoded_cosine": 0.48950761556625366,
+      "via_host_kl": 9.875175476074219,
+      "K": 211,
+      "n_features": 523
+    },
+    {
+      "layer": 12,
+      "host_norm": 234.53164672851562,
+      "forged_norm": 7762.21484375,
+      "norm_ratio": 33.096662868424005,
+      "decoded_rel_err": 21.49420928955078,
+      "decoded_cosine": 0.0292088333517313,
+      "via_host_kl": 2.094480276107788,
+      "K": 211,
+      "n_features": 523
+    },
+    {
+      "layer": 13,
+      "host_norm": 473.5535583496094,
+      "forged_norm": 113.48509979248047,
+      "norm_ratio": 0.23964575451188577,
+      "decoded_rel_err": 1.0310083627700806,
+      "decoded_cosine": 0.004807247314602137,
+      "via_host_kl": 16.69265365600586,
+      "K": 211,
+      "n_features": 523
+    }
+  ]
+}

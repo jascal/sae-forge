@@ -323,6 +323,15 @@ class ForgePipeline:
     # path and the FSM ctx (as ``_faithfulness_target``) identically.
     faithfulness: FaithfulnessTarget | None = None
 
+    # add-host-wrapped-forge-fallback. ``"auto"`` (default) dispatches by
+    # basis quality tier — good/saturated → ``native_in_basis`` (existing
+    # path, byte-identical to pre-change); undersized/degenerate →
+    # ``host_wrapped`` (wraps host's exact transformer with decode/encode
+    # at every block boundary). Force a specific mode with
+    # ``"native_in_basis"`` or ``"host_wrapped"``. v1 host_wrapped is
+    # GPT-2 only and inference-only (finetune raises).
+    forward_mode: str = "auto"
+
     # ----------------------------------------------------------------
     # Construction-time validation + dict round-trip
     # ----------------------------------------------------------------
@@ -422,6 +431,32 @@ class ForgePipeline:
             raise ValueError(
                 f"ForgePipeline: moe_strategy={self.moe_strategy!r} must be one of "
                 "'preserve' | 'collapse' | 'top_n'"
+            )
+        if self.forward_mode not in ("auto", "native_in_basis", "host_wrapped"):
+            raise ValueError(
+                f"ForgePipeline: forward_mode={self.forward_mode!r} must be one of "
+                "'auto' | 'native_in_basis' | 'host_wrapped'"
+            )
+        # host_wrapped is inference-only in v1 — fine-tune would train host
+        # weights (the only trainable parameters in this mode), which is a
+        # different objective than the current "fine-tune-to-match-host"
+        # recipe. Queued as add-host-wrapped-finetune-recipe.
+        if self.forward_mode == "host_wrapped" and self.finetune_steps > 0:
+            raise ValueError(
+                "ForgePipeline: forward_mode='host_wrapped' is inference-only "
+                "in v1; got finetune_steps={self.finetune_steps}. Either set "
+                "finetune_steps=0 or use forward_mode='auto'/'native_in_basis' "
+                "for fine-tune. See "
+                "openspec/changes/add-host-wrapped-forge-fallback for the "
+                "queued add-host-wrapped-finetune-recipe follow-up."
+            )
+        # host_wrapped has no projected blocks for hybrid bridges to attach to.
+        if self.forward_mode == "host_wrapped" and self.hybrid_bridge:
+            raise ValueError(
+                "ForgePipeline: forward_mode='host_wrapped' is incompatible "
+                "with hybrid_bridge=True — host-wrapped runs host's exact "
+                "transformer blocks unprojected, so there are no projected "
+                "block boundaries for bridges to insert between."
             )
         if self.moe_strategy == "top_n" and self.moe_keep_n <= 0:
             raise ValueError(
@@ -748,6 +783,47 @@ class ForgePipeline:
             n_layer=int(n_layer),
         )
 
+    def _resolve_forward_mode(self) -> str:
+        """Resolve this pipeline's forward_mode against its basis.
+
+        Pure function of ``self.basis`` and ``self.forward_mode``. Used
+        at construction time to decide whether to build a host-wrapped
+        module (host weights unprojected) or to run the existing
+        project-module path.
+        """
+        from saeforge.forward_mode import resolve_forward_mode
+
+        return resolve_forward_mode(self.basis, self.forward_mode)
+
+    def _build_host_wrapped_model(self, host):
+        """Construct a host-wrapped NativeModel for the current basis.
+
+        Bypasses ``project_module`` / ``from_projected_weights``. Stores
+        the host modules unprojected; residual stream is encoded/decoded
+        at every block boundary inside the forged forward.
+        """
+        from saeforge.adapters import adapter_for
+        from saeforge.model import NativeModel
+
+        adapter = adapter_for(host)
+        torch_module = adapter.host_wrapped_module(
+            host, self.basis, scale_boost=self.projector.scale_boost
+        )
+        config = adapter.build_native_config(
+            host, self.basis.n_features, attention_width=self.attention_width
+        )
+        config.forward_mode = "host_wrapped"
+        # Mirror NativeModel.from_host's host_wrapped construction: avoid
+        # running NativeModel.__init__ (which would build the projected
+        # native module via the adapter's native_module_class), instead
+        # attach the wrapped module directly.
+        model = NativeModel.__new__(NativeModel)
+        model.config = config
+        model._module = torch_module
+        model.resolved_forward_mode = "host_wrapped"
+        model._move(dtype=self.dtype, device=self.device)
+        return model
+
     def _score_faithfulness_imperative(
         self, model: NativeModel, host: Any, *, transformers: Any
     ) -> tuple[float | None, str | None]:
@@ -885,33 +961,51 @@ class ForgePipeline:
         host = transformers.AutoModelForCausalLM.from_pretrained(
             self.host_model_id, torch_dtype=_torch_dtype(self.dtype)
         ).eval()
-        bundle = self._build_hybrid_bundle(host)
-        weights = self.projector.project_module(
-            host, attention_width=self.attention_width, hybrid=bundle
-        )
-        config = _config_from_host(
-            host, self.basis.n_features, attention_width=self.attention_width
-        )
-        if bundle is not None:
-            config.bridges = True
-            config.bridge_init = self.bridge_config.init
-            config.bridge_nonlin = self.bridge_config.nonlin
-            config.bridge_pre_layernorm = self.bridge_config.pre_layernorm
-        # MoE strategy dispatch (only relevant when host is qwen3_moe; for
-        # every other family config.num_experts is 0 and these branches no-op).
-        if self.moe_strategy == "top_n":
-            raise NotImplementedError(
-                "ForgePipeline: moe_strategy='top_n' is a v1 placeholder. "
-                "It requires a per-expert activation-frequency calibration "
-                "utility tracked as the moe-expert-calibration follow-up. "
-                "Use moe_strategy='preserve' (default, full fidelity) or "
-                "moe_strategy='collapse' (averages experts into a dense MLP) "
-                "in v1."
+        # Dispatch on forward_mode. Host-wrapped skips project_module and
+        # constructs the wrapped module directly; native_in_basis (the
+        # existing path) projects every weight through the basis. See
+        # openspec/changes/add-host-wrapped-forge-fallback.
+        resolved_mode = self._resolve_forward_mode()
+        # Record the resolved mode so CLI / examples can surface it without
+        # poking through the model. Stored on the pipeline instance — read
+        # via `pipeline._last_resolved_forward_mode`.
+        self._last_resolved_forward_mode = resolved_mode
+        if resolved_mode == "host_wrapped":
+            # Host weights stay unprojected; _build_host_wrapped_model
+            # already calls _move. Hybrid bridges and MoE-collapse are
+            # incompatible with host_wrapped (validated in __post_init__
+            # and at the adapter for MoE families that don't override
+            # host_wrapped_module).
+            model = self._build_host_wrapped_model(host)
+        else:
+            bundle = self._build_hybrid_bundle(host)
+            weights = self.projector.project_module(
+                host, attention_width=self.attention_width, hybrid=bundle
             )
-        if self.moe_strategy == "collapse" and config.num_experts > 0:
-            weights, config = self._apply_moe_collapse(weights, config)
-        model = NativeModel.from_projected_weights(config, weights)
-        model._move(dtype=self.dtype, device=self.device)
+            config = _config_from_host(
+                host, self.basis.n_features, attention_width=self.attention_width
+            )
+            if bundle is not None:
+                config.bridges = True
+                config.bridge_init = self.bridge_config.init
+                config.bridge_nonlin = self.bridge_config.nonlin
+                config.bridge_pre_layernorm = self.bridge_config.pre_layernorm
+            # MoE strategy dispatch (only relevant when host is qwen3_moe; for
+            # every other family config.num_experts is 0 and these branches no-op).
+            if self.moe_strategy == "top_n":
+                raise NotImplementedError(
+                    "ForgePipeline: moe_strategy='top_n' is a v1 placeholder. "
+                    "It requires a per-expert activation-frequency calibration "
+                    "utility tracked as the moe-expert-calibration follow-up. "
+                    "Use moe_strategy='preserve' (default, full fidelity) or "
+                    "moe_strategy='collapse' (averages experts into a dense MLP) "
+                    "in v1."
+                )
+            if self.moe_strategy == "collapse" and config.num_experts > 0:
+                weights, config = self._apply_moe_collapse(weights, config)
+            model = NativeModel.from_projected_weights(config, weights)
+            model._move(dtype=self.dtype, device=self.device)
+            model.resolved_forward_mode = "native_in_basis"
 
         faithfulness, target_name = self._score_faithfulness_imperative(
             model, host, transformers=transformers
@@ -1059,12 +1153,20 @@ class ForgePipeline:
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        weights = self.projector.project_module(host_model, attention_width=self.attention_width)
-        config = _config_from_host(
-            host_model, self.basis.n_features, attention_width=self.attention_width
-        )
-        model = NativeModel.from_projected_weights(config, weights)
-        model._move(dtype=self.dtype, device=self.device)
+        resolved_mode = self._resolve_forward_mode()
+        if resolved_mode == "host_wrapped":
+            model = self._build_host_wrapped_model(host_model)
+        else:
+            weights = self.projector.project_module(
+                host_model, attention_width=self.attention_width
+            )
+            config = _config_from_host(
+                host_model, self.basis.n_features,
+                attention_width=self.attention_width,
+            )
+            model = NativeModel.from_projected_weights(config, weights)
+            model._move(dtype=self.dtype, device=self.device)
+            model.resolved_forward_mode = "native_in_basis"
 
         faithfulness, target_name = self._score_faithfulness_synthetic(
             model, host_model, eval_input_ids
