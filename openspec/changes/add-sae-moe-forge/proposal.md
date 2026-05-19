@@ -1,5 +1,13 @@
 # Forge a clustered SAE into a routed mixture-of-experts
 
+> **When to use this**: best on coherence-trained SAEs or
+> polygram-clustered-during-compression outputs (where decoder rows
+> form natural cosine clusters). Still functional with an advisory
+> degradation diagnostic on typical isotropic SAEs — the forge
+> mechanics work universally, but routing's faithfulness is
+> bounded by basis cluster structure (see *Falsifiable acceptance
+> gate* below for the empirical split).
+
 ## Why
 
 Polygram 0.9.0 (PR #87) promotes `cluster_experts` and

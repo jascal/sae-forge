@@ -67,6 +67,22 @@ the precedent.
       (`scripts/probe_polygram_clustering.py`) to demonstrate the
       basis-quality dependency and inform the `coherence_threshold=0.0`
       default chosen in 2.2.
+- [ ] 2.4 **Priority: high.** Add a real clustered-SAE fixture to
+      the smoke gate before production code lands. Candidates:
+      - econ-sae's supervised SAE (per [[project_fix_scale_boost_smoke]]
+        polygram's cluster count saturates at the supervised concept
+        count; cosine cluster structure is real).
+      - Any polygram-compressed SAE produced with
+        `BlockFormation(strategy="cosine", cosine_threshold>=0.3)`
+        during compression.
+      Why this is high-priority: the synthetic clusterable fixture
+      proves the design works under contrived conditions; a real
+      clustered SAE proves Band C-strict passes in production-
+      relevant regimes. Without it, Band C-strict is only validated
+      against a fixture I built, and reviewers can reasonably ask
+      "but does this hold on a real one?" Plumbing the fixture
+      through requires either an external download path or an
+      on-box artifact this PR doesn't bundle today.
 
 ## 3. `FeatureBasis.polygram_checkpoint_path`
 

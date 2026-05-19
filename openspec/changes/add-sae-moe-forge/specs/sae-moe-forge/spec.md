@@ -1,5 +1,12 @@
 # sae-moe-forge Specification
 
+> **When to use**: best on coherence-trained SAEs or
+> polygram-clustered-during-compression outputs; functional with an
+> advisory degradation diagnostic on isotropic SAEs. The mechanical
+> contract holds universally; faithfulness is basis-dependent. See
+> the *acceptance gate* requirements below for the strict/advisory
+> split.
+
 ## Purpose
 
 The `sae-moe-forge` capability defines the public surface for

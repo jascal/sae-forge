@@ -79,13 +79,30 @@ splits cleanly by basis quality:
 | K=211 isotropic, E=9 | 11.27 | 51.58 | 4.58× | PASS (by hair) |
 | Synthetic clusterable, E=4 | 53.10 | 6.39 | **0.12×** | PASS (40× under bound) |
 
-The K=211 jbloom basis is near-isotropic in decoder geometry — only
-5,257 of 78,729 row pairs are above cos > 0.15, and only 476 above
-cos > 0.30 (see `scripts/probe_polygram_clustering.py`). The
-polygram cosine clustering at threshold=0.0 produces nearly-
-uniform-sized buckets because the cosine pair graph is too thin to
-form real coherent clusters. In that regime, top-2 routing among
-~9 buckets keeps ~25% of the basis information per token — close
+The K=211 jbloom basis is near-isotropic in decoder geometry. The
+pairwise-cosine survey from `scripts/probe_polygram_clustering.py`
+(positive side only — feature row vectors are L2-normalised, so the
+diagonal sits at cos = 1.0 and the off-diagonal distribution is
+centred near zero):
+
+```
+  cos bucket          # pairs (of 78,729 above 0.0)         share
+  ─────────────────────────────────────────────────────────────────
+  [0.00, 0.05)        ████████████████████████████  45,960  58.4%
+  [0.05, 0.10)        ████████████                  19,815  25.2%
+  [0.10, 0.15)        ████                           7,697   9.8%
+  [0.15, 0.20)        █                              2,978   3.8%
+  [0.20, 0.30)        █                              1,803   2.3%
+  [0.30, 0.50)                                         436   0.6%
+  [0.50,  ∞ )                                           40   0.05%
+```
+
+Most row pairs are at low cosine (< 0.10). Only 476 pairs are above
+0.30 (polygram's stated default threshold). The polygram cosine
+clustering at threshold = 0.0 produces nearly-uniform-sized buckets
+because the cosine pair graph is too thin at higher thresholds to
+form real coherent clusters. In that regime, top-2 routing among ~9
+buckets keeps ~25% of the basis information per token — close
 enough to the flat projection loss to land near the 5× edge.
 
 The synthetic clusterable basis tells the inverse story. With 4

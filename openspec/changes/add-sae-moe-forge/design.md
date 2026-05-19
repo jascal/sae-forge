@@ -37,6 +37,16 @@ them would force every Qwen3-MoE host through the new SAE-side
 routing or vice versa. Independent in v1; the composition is a
 queued follow-up (`add-moe-as-residual-stream-layer`).
 
+Concretely: this proposal does NOT import from, modify, or
+sub-class anything under `saeforge/adapters/qwen3_moe.py`,
+`saeforge/_moe/` (the new namespace this proposal carves) does
+NOT live under `saeforge/adapters/`, and `NativeModelConfig.num_experts`
+remains exclusively a host-side MoE field unrelated to
+`ForgedMoEConfig.n_experts`. A future composition proposal that
+wants to forge a Qwen3-MoE host AND wrap its SAE in a routed MoE
+would compose both layers explicitly; v1 supports neither side of
+that composition.
+
 ## Why "sub_dictionary" experts first
 
 Three expert implementations were considered (and the prompt that

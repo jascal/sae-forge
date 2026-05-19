@@ -50,6 +50,16 @@ SAE_PATH = SMOKE / "baseline" / "_materialised" / "hea" / "pareto" / "k_211.safe
 # ---------------------------------------------------------------------------
 # Minimal sub-dictionary expert set + heuristic router. Not productionised —
 # the production class shapes live in tasks.md sections 4 and 5.
+#
+# TODO (production handoff, see openspec/changes/add-sae-moe-forge/tasks.md):
+#   The classes below become:
+#     SubDictionaryExpertSet  -> saeforge/_moe/sub_dictionary.py (tasks §4)
+#     PolygramHeuristicRouter -> saeforge/_moe/routers.py        (tasks §5)
+#     ForgedMoEConfig         -> saeforge/moe.py                 (tasks §6.1)
+#   Differences from this prototype: production classes are nn.Modules
+#   with proper buffer registration; support .save_pretrained() /
+#   .load_pretrained(); expose track_load=True instrumentation per
+#   spec.md's ForgedMoE requirement.
 # ---------------------------------------------------------------------------
 
 
