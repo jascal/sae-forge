@@ -15,8 +15,10 @@ their corresponding OpenSpec change is archived.
   exact transformer with decode/encode at every block boundary.
   Removes the rank-dependent KL amplification documented in
   `fix-scale-boost-calibration` (K=211 KL 89.9 → 15.4 on the
-  GPT-2 layer-8 smoke; full diagnosis and acceptance gate in
-  `openspec/changes/add-host-wrapped-forge-fallback`).
+  GPT-2 layer-8 smoke). Canonical spec lives at
+  `openspec/specs/forge-forward-mode/spec.md`; the full diagnosis
+  and audit trail is archived at
+  `openspec/changes/archive/2026-05-19-add-host-wrapped-forge-fallback/`.
   v1 host_wrapped is GPT-2 only and inference-only.
 - **`sae-forge forge --forward-mode {auto,native_in_basis,host_wrapped}`** —
   CLI flag threading `forward_mode` through `ForgePipeline`.
