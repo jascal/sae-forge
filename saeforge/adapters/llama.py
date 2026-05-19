@@ -333,6 +333,25 @@ def _get_forged_llama_class():
                     self._rope_scaling_error = None
             else:
                 self._rope_scaling_error = None
+            # partial_rotary_factor: v1 supports only full rotation (1.0).
+            # Llama / Gemma-2 / Qwen2-3 all use 1.0; Gemma-3, GPT-J, and
+            # NeoX-style hosts with <1.0 would silently mis-rotate
+            # (rotation applied to ALL head_dim instead of the partial
+            # slice). Raise at first forward, parallel to the
+            # rope_scaling.type guard.
+            self.partial_rotary_factor = float(
+                getattr(cfg, "partial_rotary_factor", 1.0)
+            )
+            if self.partial_rotary_factor != 1.0:
+                self._partial_rotary_error = (
+                    f"partial_rotary_factor={self.partial_rotary_factor!r} "
+                    f"is not supported in v1 — only full rotation "
+                    f"(factor=1.0) ships. Partial rotation lands via the "
+                    f"queued add-rope-scaling-types follow-up. See "
+                    f"openspec/changes/add-llama-family-rope/proposal.md."
+                )
+            else:
+                self._partial_rotary_error = None
             # Qwen3 applies RMSNorm(head_dim) on Q and K per head after the
             # reshape and before SDPA. Llama / Gemma-2 / Qwen2 set qk_norm=False
             # and these stay None — forward path falls through unchanged.
@@ -347,6 +366,8 @@ def _get_forged_llama_class():
         def forward(self, x):
             if self._rope_scaling_error is not None:
                 raise NotImplementedError(self._rope_scaling_error)
+            if self._partial_rotary_error is not None:
+                raise NotImplementedError(self._partial_rotary_error)
             shape_prefix = x.shape[:-1]
             q = self.q_proj(x).view(*shape_prefix, self.num_heads, self.head_dim).transpose(-3, -2)
             k = self.k_proj(x).view(*shape_prefix, self.n_kv_heads, self.head_dim).transpose(-3, -2)

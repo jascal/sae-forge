@@ -216,6 +216,34 @@ def test_native_model_config_rope_mode_invalid_raises():
         )
 
 
+def test_partial_rotary_factor_non_unity_raises_at_forward():
+    """v1 only ships full rotation (partial_rotary_factor=1.0). Hosts
+    with <1.0 (Gemma-3, GPT-J, NeoX-style) would silently rotate all
+    head_dim instead of the partial slice — the adapter must raise at
+    first forward rather than mis-rotate. Pinned alongside the
+    rope_scaling.type guard.
+    """
+    from saeforge.adapters.llama import build_llama_family_module
+
+    config = NativeModelConfig(
+        family="llama",
+        hidden_size=32,
+        qkv_inner_size=32,
+        num_layers=1,
+        num_heads=4,
+        head_dim=8,
+        intermediate_size=64,
+        vocab_size=128,
+        rope_mode="standard",
+        partial_rotary_factor=0.5,
+    )
+    module = build_llama_family_module(config)
+    torch.manual_seed(0)
+    input_ids = torch.randint(0, 128, (1, 4))
+    with pytest.raises(NotImplementedError, match="partial_rotary_factor=0.5"):
+        module(input_ids)
+
+
 def test_native_model_config_rope_fields_round_trip():
     """NativeModelConfig round-trips through to_dict / from_dict with
     the new RoPE fields populated.
