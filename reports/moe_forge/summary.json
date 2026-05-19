@@ -1,0 +1,73 @@
+{
+  "fixture": {
+    "host": "gpt2",
+    "layer": 8,
+    "n_tokens": 256,
+    "basis_checkpoint": "/Users/allans/code/sae-forge/smoke_fix_scale_boost/baseline/_materialised/hea/pareto/k_211.safetensors",
+    "n_features": 523,
+    "d_model": 768
+  },
+  "baseline": {
+    "flat_vs_host_mse_per_coord": 11.274826049804688
+  },
+  "bands_isotropic_basis": [
+    {
+      "n_experts_target": 4,
+      "n_experts_actual": 5,
+      "cluster_size_min": 3,
+      "cluster_size_median": 130,
+      "cluster_size_max": 130,
+      "band_a_mse": 9.320802810131035e-12,
+      "band_a_pass": true,
+      "band_b_ratio": 0.38520255736137665,
+      "band_b_expected_band": [
+        0.35000000000000003,
+        0.45
+      ],
+      "band_b_pass": true,
+      "band_c_mse": 59.295135498046875,
+      "band_c_bound": 56.37413024902344,
+      "band_c_pass": false
+    },
+    {
+      "n_experts_target": 8,
+      "n_experts_actual": 9,
+      "cluster_size_min": 3,
+      "cluster_size_median": 65,
+      "cluster_size_max": 65,
+      "band_a_mse": 7.65482555814545e-12,
+      "band_a_pass": true,
+      "band_b_ratio": 0.2425460086042065,
+      "band_b_expected_band": [
+        0.17222222222222222,
+        0.2722222222222222
+      ],
+      "band_b_pass": true,
+      "band_c_mse": 51.58000564575195,
+      "band_c_bound": 56.37413024902344,
+      "band_c_pass": true
+    }
+  ],
+  "synthetic_clusterable_basis": {
+    "n_features": 128,
+    "n_clusters_target": 4,
+    "n_clusters_actual": 4,
+    "cluster_sizes": [
+      32,
+      32,
+      32,
+      32
+    ],
+    "flat_vs_host_mse": 53.10050582885742,
+    "band_a_mse": 1.120004371364669e-12,
+    "band_a_pass": true,
+    "band_c_mse": 6.392235279083252,
+    "band_c_bound": 265.5025291442871,
+    "band_c_pass": true,
+    "degradation_ratio": 0.12037993196685139
+  },
+  "band_d_round_trip": true,
+  "overall_pass_mechanical": true,
+  "overall_pass_faithfulness_on_clusterable": true,
+  "band_c_isotropic_passes": false
+}

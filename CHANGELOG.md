@@ -41,6 +41,19 @@ their corresponding OpenSpec change is archived.
   path. No breaking API shift for existing pipelines; 609 tests
   green against 0.9.0.
 
+### Proposed (not yet implemented)
+
+- **`add-sae-moe-forge`** — turn a polygram-clustered SAE into a
+  routed mixture-of-experts via `forge_to_moe(basis, …)`. Proposal +
+  prototype + smoke-gate landed in
+  `openspec/changes/add-sae-moe-forge/`; production code follows in
+  a separate PR (will introduce `saeforge/moe.py` + `saeforge/_moe/`).
+  Mechanical bands (k=E collapse, k=2 sparsity gain, config
+  round-trip) hold universally on the prototype; faithfulness is
+  basis-dependent (0.12× flat-vs-host on clusterable bases, ~4.6× on
+  near-isotropic — the spec's Band C splits strict / advisory along
+  this axis).
+
 ## [0.5.1] — 2026-05-18
 
 The 0.5.1 release ships `world-model-protocol` — the architecture
