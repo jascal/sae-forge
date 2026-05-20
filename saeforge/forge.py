@@ -293,6 +293,19 @@ class ForgePipeline:
     finetune_distill_alpha: float = 1.0
     finetune_distill_temperature: float = 2.0
 
+    # add-concept-anchored-finetune. concept_alpha=0.0 default skips the
+    # entire branch (no label-source instantiation, no head construction,
+    # no extra forward) — byte-identical to the pre-change loop. With
+    # concept_alpha > 0, the pipeline auto-injects the polygram basis
+    # into `concept_label_source_kwargs` so the `polygram-clusters`
+    # backend has everything it needs at construction time.
+    finetune_concept_alpha: float = 0.0
+    finetune_concept_pool_weight: float = 1.0
+    finetune_concept_channel_weight: float = 1.0
+    finetune_concept_focal_gamma: float = 2.0
+    finetune_concept_label_source: str = "polygram-clusters"
+    finetune_concept_label_source_kwargs: dict | None = None
+
     # v0.4 forge-continual-learning-loop knobs. All default to values that
     # recover v0.1 single-shard byte-identical behavior.
     n_tasks: int = 1
@@ -1397,6 +1410,14 @@ class ForgePipeline:
             "finetune_log_every": self.finetune_log_every,
             "finetune_distill_alpha": self.finetune_distill_alpha,
             "finetune_distill_temperature": self.finetune_distill_temperature,
+            "finetune_concept_alpha": self.finetune_concept_alpha,
+            "finetune_concept_pool_weight": self.finetune_concept_pool_weight,
+            "finetune_concept_channel_weight": self.finetune_concept_channel_weight,
+            "finetune_concept_focal_gamma": self.finetune_concept_focal_gamma,
+            "finetune_concept_label_source": self.finetune_concept_label_source,
+            "finetune_concept_label_source_kwargs": (
+                self.finetune_concept_label_source_kwargs
+            ),
             # Adaptive-regrow knobs. Always written so the action layer
             # can read them with ``ctx.get(...)``; ``adaptive_regrow=False``
             # makes the other three inert.

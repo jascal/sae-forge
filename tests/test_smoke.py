@@ -51,6 +51,12 @@ def test_public_surface_is_frozen() -> None:
         "compute_redundancy_ratio",
         "load_polygram_report",
         "resolve_encoding_capacity",
+        # Concept-anchoring label-source surface added by
+        # add-concept-anchored-finetune.
+        "LABEL_SOURCE_REGISTRY",
+        "LabelSource",
+        "focal_bce_loss",
+        "register_label_source",
     }
     assert set(saeforge.__all__) == expected
 

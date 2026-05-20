@@ -643,6 +643,22 @@ def _run_recipe_fine_tune(ctx: dict, model, corpus, iterator) -> dict:
     # Wrap the iterator with replay mixing + token counting + buffer add.
     iterator = _wrap_iterator_for_continual(ctx, iterator)
 
+    # Concept-anchoring kwargs. When concept_alpha > 0 and the user
+    # didn't supply explicit `concept_label_source_kwargs`, the pipeline
+    # auto-injects the polygram basis so the `polygram-clusters` backend
+    # works out of the box. Other backends (future) that need different
+    # kwargs are responsible for documenting them.
+    concept_alpha = ctx.get("finetune_concept_alpha", 0.0)
+    concept_label_source = ctx.get(
+        "finetune_concept_label_source", "polygram-clusters"
+    )
+    user_concept_kwargs = ctx.get("finetune_concept_label_source_kwargs") or {}
+    concept_label_source_kwargs = dict(user_concept_kwargs)
+    if concept_alpha > 0 and concept_label_source == "polygram-clusters":
+        basis = ctx.get("_basis")
+        if basis is not None and "polygram_basis" not in concept_label_source_kwargs:
+            concept_label_source_kwargs["polygram_basis"] = basis
+
     config = TrainingConfig(
         total_steps=ctx.get("finetune_total_steps", ctx.get("finetune_steps", 1000)),
         warmup_steps=ctx.get("finetune_warmup_steps", 100),
@@ -659,6 +675,12 @@ def _run_recipe_fine_tune(ctx: dict, model, corpus, iterator) -> dict:
         log_every_steps=ctx.get("finetune_log_every", 10),
         distill_alpha=ctx.get("finetune_distill_alpha", 1.0),
         distill_temperature=ctx.get("finetune_distill_temperature", 2.0),
+        concept_alpha=concept_alpha,
+        concept_pool_weight=ctx.get("finetune_concept_pool_weight", 1.0),
+        concept_channel_weight=ctx.get("finetune_concept_channel_weight", 1.0),
+        concept_focal_gamma=ctx.get("finetune_concept_focal_gamma", 2.0),
+        concept_label_source=concept_label_source,
+        concept_label_source_kwargs=concept_label_source_kwargs,
     )
 
     host = ctx.get("_host_model")

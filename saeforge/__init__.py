@@ -19,6 +19,12 @@ from saeforge.polygram_diagnostics import (
 )
 from saeforge.projector import SubspaceProjector
 from saeforge.sweep import ParetoFrontierRow, sweep_pareto
+from saeforge.training.concept_anchor import (
+    LABEL_SOURCE_REGISTRY,
+    LabelSource,
+    register_label_source,
+)
+from saeforge.training.heads import focal_bce_loss
 from saeforge.world_model import WorldModel
 
 __version__ = "0.7.0"
@@ -29,6 +35,8 @@ __all__ = [
     "ForgeFailed",
     "ForgePipeline",
     "ForgeResult",
+    "LABEL_SOURCE_REGISTRY",
+    "LabelSource",
     "NativeModel",
     "ParetoFrontierRow",
     "QualityThresholds",
@@ -40,9 +48,11 @@ __all__ = [
     "compute_forged_logit_std",
     "compute_host_logit_std",
     "compute_redundancy_ratio",
+    "focal_bce_loss",
     "load_calibration_corpus",
     "load_host_unembed",
     "load_polygram_report",
+    "register_label_source",
     "resolve_encoding_capacity",
     "sweep_pareto",
     "top1_is_anomalous",
