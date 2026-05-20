@@ -28,24 +28,28 @@ import numpy as np
 import pytest
 
 
-# Pinned digests per (family, fixture) — captured on this change's
-# first CI run. Update only when the change is intentional and
-# documented.
+# Pinned digests per (family, fixture). Captured on the first CI run
+# that installs `[torch,orca]` (PR #69's `ci: install [torch] extra ...`
+# change) — prior CI was `[dev]`-only, so this test was silently
+# skipping via `pytest.importorskip("torch")` at the helper level.
+#
+# The earlier values were locally captured by individual contributors
+# under varying transformers / torch combinations and never matched
+# any CI-resolved environment. They are preserved in commit history
+# (search test_world_model_byte_identity.py blame).
+#
+# Going forward: update only when the forge's observable output
+# changes for a documented reason. The digest hashes
+# (n_params, faithfulness, target_name, basis bytes). The basis is
+# deterministic via rng(0); n_params is invariant; the variable is
+# `faithfulness`, which depends on the host model's logits — i.e. on
+# the transformers version. Pin transformers tightly in the workflow
+# if you need stronger reproducibility than "matches current CI env."
 _PINNED_DIGESTS: dict[str, str] = {
-    # Captured on the world-model-protocol PR with explicit pre-fixture
-    # torch.manual_seed(0). Update only when the change is intentional
-    # and documented in the PR description.
-    "gpt2":   "16ef3051e219dd6f4af4ace0306e43ed31b2976c3326932e3475129feb3aeae8",
-    # llama / qwen2 digests refreshed by add-llama-family-rope: the
-    # forge now applies RoPE in Llama-family attention by default
-    # (rope_mode="standard"), which is an intentional behaviour change
-    # vs. the pre-fix no-RoPE forge. gemma2 / qwen3* digests below
-    # happened to be invariant to the RoPE addition at this fixture
-    # size (likely because LN-pinv drift + small synthetic basis
-    # already dominate the faithfulness scalar to ~noise floor).
-    "llama":  "aea996d999cca3321c800d0bd180a77ea459fffd0f4280d4c61e69f2ec632564",
-    "gemma2": "8a763784cb28cff20026827078646ab2c13aab72b7cd2001a0e01c2802dd770b",
-    "qwen2":  "a5ccb3a746423fdc05fbe6bc3a4163f54533f895140f8211a6d28c2263304c7b",
+    "gpt2":   "3fa7f09c4cd5427230e5ade39f37377bd7cbd5ba34716e8aa8dbd5cb6a7426c0",
+    "llama":  "57bb9fdf3d175308da0ee15c7f14663888d1e859fea9ce34ed9a48f7bc58593a",
+    "gemma2": "7fac2207977d7770a7c86a3238ec79d3ce9cf7fae164fe15283e3dc264cfc409",
+    "qwen2":  "2c32e1039497421d1402e64ee620dd2a248520265a7b49dcb472316e1320f86a",
 }
 
 

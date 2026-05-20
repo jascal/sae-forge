@@ -23,16 +23,16 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install
-        # `[torch]` is required because the test suite now includes the
-        # add-concept-anchored-finetune training-side tests, whose
-        # modules (saeforge/training/heads.py, the in-loop hook on
-        # lm_head, etc.) import torch at module load. Without it, the
-        # whole tests/training/ collection fails with a
-        # ModuleNotFoundError on `import torch`. Existing torch-using
-        # tests already gate behind `pytest.importorskip("torch")` and
-        # would still skip cleanly, but the new ones legitimately need
-        # torch to exercise the supervised-concept loss path.
-        run: pip install -e ".[dev,torch]"
+        # `[torch]` is required because the add-concept-anchored-finetune
+        # training-side tests import torch at module load — without it
+        # the whole tests/training/ collection fails with
+        # ModuleNotFoundError. `[orca]` is required because three
+        # FSM-path tests (test_examples_smoke,
+        # test_pipeline_with_custom_target, test_pipeline_with_gt_alignment)
+        # exercise saeforge.orchestrator.run_machine which lazy-imports
+        # orca_runtime_python. Before this change the CI used `[dev]`
+        # alone, so torch- and orca-gated tests silently skipped.
+        run: pip install -e ".[dev,torch,orca]"
 
       - name: Lint with ruff
         run: ruff check saeforge tests examples
