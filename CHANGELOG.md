@@ -5,6 +5,33 @@ their corresponding OpenSpec change is archived.
 
 ## [Unreleased]
 
+### Added (add-concept-anchored-finetune)
+
+- **Opt-in supervised concept-anchoring loss term in `run_finetune`.**
+  Transposes econ-sae's Phase 6.2 dual-head + focal-loss recipe (which
+  lifted regime-tier mAUC from 0.595 to 0.991) to the forge fine-tune.
+  Six new `TrainingConfig` fields (`concept_alpha`,
+  `concept_pool_weight`, `concept_channel_weight`, `concept_focal_gamma`,
+  `concept_label_source`, `concept_label_source_kwargs`); six matching
+  `ForgePipeline` kwargs (`finetune_concept_*`). Default
+  `concept_alpha=0.0` skips the entire branch (no label-source
+  instantiation, no head construction, no extra forward) — byte-identical
+  to the v0.3 LM-CE path and the distillation extension.
+- **`saeforge/training/heads.py`** — `PooledConceptHead` (mean-pool
+  + linear), `PerChannelConceptHead` (per-concept affine readout of the
+  last N residual dims), and `focal_bce_loss(logits, labels, gamma=...)`.
+- **`saeforge/training/concept_anchor.py`** — `LabelSource` protocol,
+  `LABEL_SOURCE_REGISTRY`, `register_label_source(...)` decorator, and
+  the v1 backend `PolygramClusterLabelSource` (self-supervised,
+  pseudo-labels from per-cluster firings of the pre-fine-tune student).
+- **Three new public exports:** `LabelSource`, `LABEL_SOURCE_REGISTRY`,
+  `register_label_source` — the seam for follow-up backends
+  (`corpus-tags`, `host-probe`) to register without touching the loss
+  code.
+- **Residual-stream capture via forward pre-hook on `module.lm_head`.**
+  Avoids broadening every architecture adapter's `forward` signature
+  with an `output_hidden_states` flag.
+
 ### Added (add-polygram-cluster-diagnostics)
 
 - **`ParetoFrontierRow` polygram concept-structure fields.** Four

@@ -49,6 +49,23 @@ class TrainingConfig:
     distill_alpha: float = 1.0
     distill_temperature: float = 2.0
 
+    # Concept-anchoring knobs (add-concept-anchored-finetune).
+    # With concept_alpha=0.0 (default), the entire concept-anchoring
+    # branch is skipped — no label source is instantiated, no heads
+    # constructed, no extra forward. Byte-identical to the pre-change
+    # loop (and to distill_alpha alone). With concept_alpha > 0,
+    # the total loss is composed as
+    #   total = (1-concept_alpha)*L_existing + concept_alpha*L_concept
+    # where L_existing is whatever the existing CE / CE+KL loss is.
+    # L_concept is the dual-head focal-BCE sum from
+    # saeforge/training/heads.py + concept_anchor.py.
+    concept_alpha: float = 0.0
+    concept_pool_weight: float = 1.0
+    concept_channel_weight: float = 1.0
+    concept_focal_gamma: float = 2.0
+    concept_label_source: str = "polygram-clusters"
+    concept_label_source_kwargs: dict[str, Any] = field(default_factory=dict)
+
     def __post_init__(self) -> None:
         if self.precision not in ("fp32", "bf16", "fp16"):
             raise ValueError(
@@ -64,6 +81,42 @@ class TrainingConfig:
             raise ValueError(
                 f"distill_temperature must be > 0; got {self.distill_temperature}"
             )
+        # Concept-anchoring validation. Defer the registry-key check until
+        # concept_alpha > 0 so the default config doesn't pull in the
+        # registry module at construction time (keeps imports cheap for
+        # callers who never touch concept anchoring).
+        if not (0.0 <= self.concept_alpha <= 1.0):
+            raise ValueError(
+                f"concept_alpha must lie in [0.0, 1.0]; got {self.concept_alpha}"
+            )
+        if self.concept_pool_weight < 0:
+            raise ValueError(
+                f"concept_pool_weight must be >= 0; got {self.concept_pool_weight}"
+            )
+        if self.concept_channel_weight < 0:
+            raise ValueError(
+                f"concept_channel_weight must be >= 0; got {self.concept_channel_weight}"
+            )
+        if self.concept_focal_gamma < 0:
+            raise ValueError(
+                f"concept_focal_gamma must be >= 0; got {self.concept_focal_gamma}"
+            )
+        if self.concept_alpha > 0:
+            if self.concept_pool_weight == 0 and self.concept_channel_weight == 0:
+                raise ValueError(
+                    "concept_alpha > 0 requires at least one of "
+                    "concept_pool_weight or concept_channel_weight to be > 0; "
+                    f"got pool={self.concept_pool_weight}, "
+                    f"channel={self.concept_channel_weight}"
+                )
+            from saeforge.training.concept_anchor import LABEL_SOURCE_REGISTRY
+
+            if self.concept_label_source not in LABEL_SOURCE_REGISTRY:
+                raise ValueError(
+                    f"concept_label_source={self.concept_label_source!r} is "
+                    f"not registered. Registered backends: "
+                    f"{sorted(LABEL_SOURCE_REGISTRY)}"
+                )
 
 
 @dataclass
