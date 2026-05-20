@@ -76,6 +76,15 @@ class ParetoFrontierRow:
     # ``fix-scale-boost-calibration`` capability for the row contract.
     logit_std_ratio: float | None = None
     top1_anomalous: bool | None = None
+    # Polygram concept-structure diagnostics. Populated when the per-row
+    # basis comes from a polygram-compressed checkpoint and the
+    # compression report is loadable. See
+    # ``saeforge.polygram_diagnostics`` and the
+    # ``add-polygram-cluster-diagnostics`` capability for the contract.
+    polygram_n_clusters: int | None = None
+    polygram_n_zeroed: int | None = None
+    polygram_redundancy_ratio: float | None = None
+    polygram_encoding_capacity: int | None = None
 
     def __post_init__(self) -> None:
         if int(self.target_n_features_kept) < 1:
@@ -127,6 +136,37 @@ class ParetoFrontierRow:
                 f"ParetoFrontierRow: logit_std_ratio must be >= 0 or None; "
                 f"got {self.logit_std_ratio}"
             )
+        if (
+            self.polygram_n_clusters is not None
+            and int(self.polygram_n_clusters) < 0
+        ):
+            raise ValueError(
+                f"ParetoFrontierRow: polygram_n_clusters must be >= 0 or None; "
+                f"got {self.polygram_n_clusters}"
+            )
+        if (
+            self.polygram_n_zeroed is not None
+            and int(self.polygram_n_zeroed) < 0
+        ):
+            raise ValueError(
+                f"ParetoFrontierRow: polygram_n_zeroed must be >= 0 or None; "
+                f"got {self.polygram_n_zeroed}"
+            )
+        if self.polygram_redundancy_ratio is not None:
+            ratio = float(self.polygram_redundancy_ratio)
+            if ratio < 0.0 or ratio > 1.0:
+                raise ValueError(
+                    f"ParetoFrontierRow: polygram_redundancy_ratio must be in "
+                    f"[0.0, 1.0] or None; got {self.polygram_redundancy_ratio}"
+                )
+        if (
+            self.polygram_encoding_capacity is not None
+            and int(self.polygram_encoding_capacity) < 1
+        ):
+            raise ValueError(
+                f"ParetoFrontierRow: polygram_encoding_capacity must be >= 1 "
+                f"or None; got {self.polygram_encoding_capacity}"
+            )
 
     def to_json_dict(self) -> dict[str, Any]:
         return {
@@ -162,6 +202,24 @@ class ParetoFrontierRow:
             "validation_eval_overlap": self.validation_eval_overlap,
             "logit_std_ratio": _finite_or_none(self.logit_std_ratio),
             "top1_anomalous": self.top1_anomalous,
+            "polygram_n_clusters": (
+                int(self.polygram_n_clusters)
+                if self.polygram_n_clusters is not None
+                else None
+            ),
+            "polygram_n_zeroed": (
+                int(self.polygram_n_zeroed)
+                if self.polygram_n_zeroed is not None
+                else None
+            ),
+            "polygram_redundancy_ratio": _finite_or_none(
+                self.polygram_redundancy_ratio
+            ),
+            "polygram_encoding_capacity": (
+                int(self.polygram_encoding_capacity)
+                if self.polygram_encoding_capacity is not None
+                else None
+            ),
         }
 
     @classmethod
@@ -245,6 +303,26 @@ class ParetoFrontierRow:
             validation_eval_overlap=(
                 bool(data["validation_eval_overlap"])
                 if data.get("validation_eval_overlap") is not None
+                else None
+            ),
+            polygram_n_clusters=(
+                int(data["polygram_n_clusters"])
+                if data.get("polygram_n_clusters") is not None
+                else None
+            ),
+            polygram_n_zeroed=(
+                int(data["polygram_n_zeroed"])
+                if data.get("polygram_n_zeroed") is not None
+                else None
+            ),
+            polygram_redundancy_ratio=(
+                float(data["polygram_redundancy_ratio"])
+                if data.get("polygram_redundancy_ratio") is not None
+                else None
+            ),
+            polygram_encoding_capacity=(
+                int(data["polygram_encoding_capacity"])
+                if data.get("polygram_encoding_capacity") is not None
                 else None
             ),
         )
@@ -515,6 +593,47 @@ def _compute_row_diagnostics(
     return basis_rank, ratio, tier.value
 
 
+def _compute_polygram_row_diagnostics(
+    ckpt_path: Path,
+    encoding_label: str,
+) -> tuple[int | None, int | None, float | None, int | None]:
+    """Return ``(n_clusters, n_zeroed, redundancy_ratio, encoding_capacity)``.
+
+    All four values are best-effort: the report read goes through
+    ``load_polygram_report`` which returns ``None`` on any failure, and
+    the encoding-capacity parse falls back to ``None`` for unknown
+    encoding labels. The sweep proceeds in either case.
+
+    Computed pre-forge so failure rows still carry the diagnostic.
+    """
+    from saeforge.polygram_diagnostics import (
+        compute_redundancy_ratio,
+        load_polygram_report,
+        resolve_encoding_capacity,
+    )
+
+    report = load_polygram_report(ckpt_path)
+    n_clusters: int | None = None
+    n_zeroed: int | None = None
+    if report is not None:
+        raw_clusters = report.get("n_clusters")
+        if isinstance(raw_clusters, (int, float)) and not isinstance(
+            raw_clusters, bool
+        ):
+            n_clusters = int(raw_clusters)
+        raw_zeroed = report.get("n_zeroed")
+        if raw_zeroed is None:
+            # Fallback: older polygram outputs may use ``n_features_zeroed``.
+            raw_zeroed = report.get("n_features_zeroed")
+        if isinstance(raw_zeroed, (int, float)) and not isinstance(
+            raw_zeroed, bool
+        ):
+            n_zeroed = int(raw_zeroed)
+    redundancy = compute_redundancy_ratio(n_clusters, n_zeroed)
+    capacity = resolve_encoding_capacity(encoding_label)
+    return n_clusters, n_zeroed, redundancy, capacity
+
+
 # ---------------------------------------------------------------------------
 # Driver
 # ---------------------------------------------------------------------------
@@ -538,6 +657,7 @@ def sweep_pareto(
     score_field: str = "polygram_overlap",
     rep_selection: str = "scale_aware",
     assign_phase_knobs: bool = False,
+    assign_amp_knobs: bool = False,
     learn_axis_assignment: bool = False,
     validation_eval_overlap: bool = False,
     force_rematerialise: bool = False,
@@ -676,6 +796,7 @@ def sweep_pareto(
                 output_root=output_dir,
                 force_rematerialise=force_rematerialise,
                 assign_phase_knobs=assign_phase_knobs,
+                assign_amp_knobs=assign_amp_knobs,
                 learn_axis_assignment=learn_axis_assignment,
             )
             remapped_encodings.append((spec.label, materialised_dir))
@@ -802,6 +923,12 @@ def sweep_pareto(
                 basis_rank, quality_ratio, quality_tier = _compute_row_diagnostics(
                     ckpt_path, host_d_model, thresholds
                 )
+                (
+                    polygram_n_clusters,
+                    polygram_n_zeroed,
+                    polygram_redundancy_ratio,
+                    polygram_encoding_capacity,
+                ) = _compute_polygram_row_diagnostics(ckpt_path, label)
                 provenance = per_label_provenance.get(label, {})
                 row = _process_row(
                     pipeline=pipeline,
@@ -822,6 +949,10 @@ def sweep_pareto(
                         "validation_eval_overlap"
                     ),
                     diagnostics_payload=diagnostics_payload,
+                    polygram_n_clusters=polygram_n_clusters,
+                    polygram_n_zeroed=polygram_n_zeroed,
+                    polygram_redundancy_ratio=polygram_redundancy_ratio,
+                    polygram_encoding_capacity=polygram_encoding_capacity,
                 )
                 fh.write(json.dumps(row.to_json_dict()) + "\n")
                 fh.flush()
@@ -918,6 +1049,10 @@ def _process_row(
     diagnostics_payload: (
         tuple[np.ndarray, np.ndarray, frozenset[int]] | None
     ) = None,
+    polygram_n_clusters: int | None = None,
+    polygram_n_zeroed: int | None = None,
+    polygram_redundancy_ratio: float | None = None,
+    polygram_encoding_capacity: int | None = None,
 ) -> ParetoFrontierRow:
     """Build one frontier row — manifest-only when ``frontier_only``, otherwise
     invoke ``pipeline.run`` inside a try/except.
@@ -960,6 +1095,10 @@ def _process_row(
             validation_threshold=provenance_validation_threshold,
             encoding_class=provenance_encoding_class,
             validation_eval_overlap=provenance_validation_eval_overlap,
+            polygram_n_clusters=polygram_n_clusters,
+            polygram_n_zeroed=polygram_n_zeroed,
+            polygram_redundancy_ratio=polygram_redundancy_ratio,
+            polygram_encoding_capacity=polygram_encoding_capacity,
         )
 
     row_output_dir = sweep_output_dir / label / f"k_{target_k}"
@@ -1015,6 +1154,10 @@ def _process_row(
             validation_eval_overlap=provenance_validation_eval_overlap,
             logit_std_ratio=logit_std_ratio,
             top1_anomalous=top1_anomalous,
+            polygram_n_clusters=polygram_n_clusters,
+            polygram_n_zeroed=polygram_n_zeroed,
+            polygram_redundancy_ratio=polygram_redundancy_ratio,
+            polygram_encoding_capacity=polygram_encoding_capacity,
         )
 
     elapsed = time.monotonic() - started
@@ -1047,4 +1190,8 @@ def _process_row(
         validation_eval_overlap=provenance_validation_eval_overlap,
         logit_std_ratio=logit_std_ratio,
         top1_anomalous=top1_anomalous,
+        polygram_n_clusters=polygram_n_clusters,
+        polygram_n_zeroed=polygram_n_zeroed,
+        polygram_redundancy_ratio=polygram_redundancy_ratio,
+        polygram_encoding_capacity=polygram_encoding_capacity,
     )

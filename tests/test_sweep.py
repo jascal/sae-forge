@@ -1664,3 +1664,213 @@ class TestMagnitudeDiagnosticsAdvisory:
         assert "logit_std_ratio=23.0000" in out
         assert "anomalous-token canary fired" in out
         assert "K=16" in out
+
+
+# ---------------------------------------------------------------------------
+# ParetoFrontierRow — polygram diagnostic fields (add-polygram-cluster-diagnostics)
+# ---------------------------------------------------------------------------
+
+
+class TestParetoFrontierRowPolygramFields:
+    def _base_row(self, **overrides) -> ParetoFrontierRow:
+        kw = dict(
+            encoding_label="rung5",
+            target_n_features_kept=128,
+            n_features_kept_actual=94,
+            pareto_reached_target=True,
+            faithfulness_kl=0.5,
+            perplexity=1.5,
+            final_fine_tune_loss=2.7,
+            sae_checkpoint="x",
+            forged_model_path=None,
+            elapsed_seconds=1.0,
+            error_message=None,
+        )
+        kw.update(overrides)
+        return ParetoFrontierRow(**kw)
+
+    def test_round_trips_polygram_fields(self):
+        row = self._base_row(
+            polygram_n_clusters=6,
+            polygram_n_zeroed=88,
+            polygram_redundancy_ratio=88 / 94,
+            polygram_encoding_capacity=128,
+        )
+        rt = ParetoFrontierRow.from_json_dict(
+            json.loads(json.dumps(row.to_json_dict()))
+        )
+        assert rt == row
+        assert rt.polygram_n_clusters == 6
+        assert rt.polygram_n_zeroed == 88
+        assert rt.polygram_encoding_capacity == 128
+
+    def test_tolerates_missing_polygram_keys(self):
+        legacy = {
+            "encoding_label": "rung4",
+            "target_n_features_kept": 8,
+            "n_features_kept_actual": 8,
+            "pareto_reached_target": True,
+            "faithfulness_kl": 1.0,
+            "perplexity": None,
+            "final_fine_tune_loss": None,
+            "sae_checkpoint": "x",
+            "forged_model_path": None,
+            "elapsed_seconds": 0.0,
+            "error_message": None,
+        }
+        row = ParetoFrontierRow.from_json_dict(legacy)
+        assert row.polygram_n_clusters is None
+        assert row.polygram_n_zeroed is None
+        assert row.polygram_redundancy_ratio is None
+        assert row.polygram_encoding_capacity is None
+
+    def test_rejects_negative_polygram_n_clusters(self):
+        with pytest.raises(ValueError, match="polygram_n_clusters"):
+            self._base_row(polygram_n_clusters=-1)
+
+    def test_rejects_negative_polygram_n_zeroed(self):
+        with pytest.raises(ValueError, match="polygram_n_zeroed"):
+            self._base_row(polygram_n_zeroed=-3)
+
+    def test_rejects_out_of_range_polygram_redundancy_ratio_high(self):
+        with pytest.raises(ValueError, match=r"\[0\.0, 1\.0\]"):
+            self._base_row(polygram_redundancy_ratio=1.5)
+
+    def test_rejects_out_of_range_polygram_redundancy_ratio_low(self):
+        with pytest.raises(ValueError, match=r"\[0\.0, 1\.0\]"):
+            self._base_row(polygram_redundancy_ratio=-0.1)
+
+    def test_rejects_zero_encoding_capacity(self):
+        with pytest.raises(ValueError, match="polygram_encoding_capacity"):
+            self._base_row(polygram_encoding_capacity=0)
+
+
+# ---------------------------------------------------------------------------
+# Sweep integration: polygram diagnostic population
+# ---------------------------------------------------------------------------
+
+
+def _write_compression_report(
+    ckpt_path: Path,
+    payload: dict,
+) -> Path:
+    """Drop a sibling ``_compression_report.json`` next to a checkpoint."""
+    report = ckpt_path.with_name(ckpt_path.stem + "_compression_report.json")
+    report.write_text(json.dumps(payload))
+    return report
+
+
+class TestSweepPolygramDiagnostics:
+    def test_populates_polygram_fields_from_report(
+        self, tmp_path, synthetic_compressed_sae, stub_basis_swap
+    ):
+        encoding_dir = _make_pareto_dir(
+            tmp_path / "rung5",
+            synthetic_compressed_sae["checkpoint"],
+            targets=[8],
+        )
+        # Inject a polygram-style compression report next to the per-K SAE.
+        per_k_ckpt = encoding_dir / "pareto" / "k_8.safetensors"
+        _write_compression_report(
+            per_k_ckpt,
+            {"n_clusters": 6, "n_zeroed": 88, "strategy": "merge"},
+        )
+        pipeline = _StubPipeline()
+        out = tmp_path / "out"
+        sweep_pareto(
+            pipeline,
+            encodings=[("rung5", encoding_dir)],
+            output_dir=out,
+        )
+        rows = [json.loads(line) for line in (out / "frontier.jsonl").read_text().splitlines()]
+        assert len(rows) == 1
+        r = rows[0]
+        assert r["polygram_n_clusters"] == 6
+        assert r["polygram_n_zeroed"] == 88
+        assert r["polygram_redundancy_ratio"] == pytest.approx(88 / 94, rel=1e-9)
+        assert r["polygram_encoding_capacity"] == 128
+
+    def test_polygram_fields_none_when_report_missing(
+        self, tmp_path, synthetic_compressed_sae, stub_basis_swap
+    ):
+        encoding_dir = _make_pareto_dir(
+            tmp_path / "rung5",
+            synthetic_compressed_sae["checkpoint"],
+            targets=[8],
+        )
+        # NO compression report is written next to per_k_ckpt.
+        pipeline = _StubPipeline()
+        sweep_pareto(
+            pipeline,
+            encodings=[("rung5", encoding_dir)],
+            output_dir=tmp_path / "out",
+        )
+        rows = [
+            json.loads(line)
+            for line in (tmp_path / "out" / "frontier.jsonl").read_text().splitlines()
+        ]
+        assert len(rows) == 1
+        r = rows[0]
+        assert r["polygram_n_clusters"] is None
+        assert r["polygram_n_zeroed"] is None
+        assert r["polygram_redundancy_ratio"] is None
+        # Encoding capacity is resolvable from the label even with no report.
+        assert r["polygram_encoding_capacity"] == 128
+
+    def test_polygram_fields_populated_on_failure_row(
+        self, tmp_path, synthetic_compressed_sae, stub_basis_swap
+    ):
+        encoding_dir = _make_pareto_dir(
+            tmp_path / "rung5",
+            synthetic_compressed_sae["checkpoint"],
+            targets=[8],
+        )
+        per_k_ckpt = encoding_dir / "pareto" / "k_8.safetensors"
+        _write_compression_report(
+            per_k_ckpt,
+            {"n_clusters": 6, "n_zeroed": 88, "strategy": "merge"},
+        )
+        pipeline = _StubPipeline(raise_on_calls=(1,))
+        with pytest.raises(RuntimeError, match="1 row"):
+            sweep_pareto(
+                pipeline,
+                encodings=[("rung5", encoding_dir)],
+                output_dir=tmp_path / "out",
+            )
+        rows = [
+            json.loads(line)
+            for line in (tmp_path / "out" / "frontier.jsonl").read_text().splitlines()
+        ]
+        assert len(rows) == 1
+        r = rows[0]
+        assert r["error_message"] is not None
+        # Polygram diagnostics survive the forge failure (computed pre-forge).
+        assert r["polygram_n_clusters"] == 6
+        assert r["polygram_n_zeroed"] == 88
+        assert r["polygram_encoding_capacity"] == 128
+
+    def test_polygram_redundancy_none_when_only_n_clusters(
+        self, tmp_path, synthetic_compressed_sae, stub_basis_swap
+    ):
+        """Older polygram outputs without ``n_zeroed`` → ratio is None."""
+        encoding_dir = _make_pareto_dir(
+            tmp_path / "rung5",
+            synthetic_compressed_sae["checkpoint"],
+            targets=[8],
+        )
+        per_k_ckpt = encoding_dir / "pareto" / "k_8.safetensors"
+        _write_compression_report(per_k_ckpt, {"n_clusters": 6})
+        pipeline = _StubPipeline()
+        sweep_pareto(
+            pipeline,
+            encodings=[("rung5", encoding_dir)],
+            output_dir=tmp_path / "out",
+        )
+        rows = [
+            json.loads(line)
+            for line in (tmp_path / "out" / "frontier.jsonl").read_text().splitlines()
+        ]
+        r = rows[0]
+        assert r["polygram_n_clusters"] == 6
+        assert r["polygram_n_zeroed"] is None
+        assert r["polygram_redundancy_ratio"] is None

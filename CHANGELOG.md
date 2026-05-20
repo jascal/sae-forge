@@ -5,6 +5,34 @@ their corresponding OpenSpec change is archived.
 
 ## [Unreleased]
 
+### Added (add-polygram-cluster-diagnostics)
+
+- **`ParetoFrontierRow` polygram concept-structure fields.** Four
+  new optional fields piped from the polygram
+  `compression_report.json` colocated with each per-K SAE:
+  `polygram_n_clusters` (distinct concept clusters), `polygram_n_zeroed`
+  (slots zeroed as redundant), `polygram_redundancy_ratio`
+  (`n_zeroed / (n_clusters + n_zeroed)`), and
+  `polygram_encoding_capacity` (Rung3=16, Rung4=32, Rung5=128,
+  HEA_Rung2(n)=2ⁿ). All default `None` for backwards compatibility
+  with older `frontier.jsonl` files and polygram outputs lacking the
+  fields. Populated even on row failure (computed pre-forge), so an
+  analyst can distinguish "doomed input" from "bug in the forge."
+- **`saeforge.polygram_diagnostics` module.** Public helpers
+  `load_polygram_report`, `compute_redundancy_ratio`, and
+  `resolve_encoding_capacity`. The capacity resolver accepts the
+  same encoding label strings the sweep CLI surfaces.
+- **Pre-flight saturation advisory.** When the largest-K SAE in any
+  encoding's manifest reports `polygram_n_clusters ==
+  polygram_encoding_capacity`, `advise_sweep_quality` appends a
+  one-line note suggesting the next encoding rung. Informational
+  only — `--quality-floor` continues to react to `quality_ratio`
+  alone; the saturation check never refuses.
+- **README**: new "Polygram concept-structure diagnostics" section
+  under `#### Pareto sweep (Axis 4)` documenting the four fields,
+  the `jq` filter idiom, and the cross-encoding sweep recipe for
+  measuring cluster-count saturation.
+
 ### Proposed (not yet implemented)
 
 - **`add-sae-moe-forge`** — turn a polygram-clustered SAE into a

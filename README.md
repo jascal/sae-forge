@@ -561,6 +561,72 @@ the residual width for your host, the Python API accepts
 `host_d_model_override=N` on `ForgePipeline.sweep_pareto(...)` to
 short-circuit the AutoConfig lookup and force diagnostics on.
 
+##### Polygram concept-structure diagnostics
+
+`quality_ratio` answers "can this basis span the host residual
+stream." It does not answer "how many distinct concepts does the
+dictionary actually encode?" — and two SAEs with identical
+`basis_rank` can have wildly different *concept concentration* (one
+could encode 6 clean concepts plus 40 redundant copies, the other 40
+distinct concepts with no redundancy). The forge consequences are
+completely different. Every sweep row therefore carries four
+polygram-side concept-structure diagnostic fields, populated from the
+`compression_report.json` that polygram drops next to each
+compressed SAE:
+
+- `polygram_n_clusters` — number of distinct concept clusters
+  polygram's compressor identified in the dictionary
+- `polygram_n_zeroed` — number of dictionary slots polygram zeroed
+  as redundant during compression
+- `polygram_redundancy_ratio` — `n_zeroed / (n_clusters + n_zeroed)`;
+  the single number to colour a frontier plot by to surface "concept
+  concentration"
+- `polygram_encoding_capacity` — the encoding's cap (Rung3=16,
+  Rung4=32, Rung5=128, HEA_Rung2(n)=2ⁿ), resolved from the encoding
+  label
+
+These metrics are as polygram reports them — see the polygram docs
+for the definitional details of how clusters are formed under each
+compressor strategy. High redundancy ≈ concentrated concepts; the
+econ-sae Phase 7.2 supervised vs unsupervised contrast at Rung5
+cap=128 produced 6 clusters / 88 zeroed (69% redundancy) vs 7
+clusters / 62 zeroed (48% redundancy) for the same substrate.
+
+To filter the frontier on concept structure:
+
+```bash
+jq 'select(.polygram_n_clusters != null) | {enc: .encoding_label,
+    k: .n_features_kept_actual, clusters: .polygram_n_clusters,
+    redundancy: .polygram_redundancy_ratio, kl: .faithfulness_kl}' \
+    runs/axis4/frontier.jsonl
+```
+
+**Cluster-count saturation sweep.** Cluster count grew 2 → 3 → 6 on
+the econ-sae supervised SAE across Rung3 → Rung4 → Rung5 and then
+saturated at 6 — i.e., bumping capacity past 128 didn't find more
+concepts. The pre-flight advisory surfaces this signal: when the
+largest-K SAE in any encoding reports `polygram_n_clusters ==
+polygram_encoding_capacity`, the advisory appends a one-line note
+suggesting the next encoding rung (Rung5 → `HEA_Rung2(n_qubits=8)`,
+etc.). The note is informational only; `--quality-floor` continues
+to react to `quality_ratio` only. The recipe is the existing
+multi-encoding flag:
+
+```bash
+sae-forge sweep-pareto \
+    --encoding rung3:runs/rung3 \
+    --encoding rung4:runs/rung4 \
+    --encoding rung5:runs/rung5 \
+    --host-model gpt2 --output-dir runs/capacity-sweep/
+```
+
+When `polygram_encoding_capacity` is `None` (unknown encoding label
+that doesn't parse to Rung3/4/5/HEA_Rung2), the saturation check is
+skipped and the row's capacity field stays `None` — no false
+positives. When the compression report is missing (sweeping against
+a non-polygram-compressed SAE), all four polygram fields are
+populated with `None` and the sweep proceeds normally.
+
 ### Inspect
 
 `sae-forge inspect` is the no-torch triage command: it loads the basis,

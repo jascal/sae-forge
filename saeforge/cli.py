@@ -204,7 +204,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Forge across per-K materialised SAE checkpoints (Pareto sweep). "
             "Consumes `polygram compress --pareto --pareto-materialize` "
-            "output; emits a JSONL frontier."
+            "output; emits a JSONL frontier. Each row carries forge-quality "
+            "diagnostics (basis_rank, quality_ratio, quality_tier) AND "
+            "polygram concept-structure diagnostics (polygram_n_clusters, "
+            "polygram_redundancy_ratio, polygram_encoding_capacity) when "
+            "the per-encoding compression report is available — see the "
+            "Pareto-sweep section of the README for jq recipes."
         ),
     )
     sweep.add_argument(
@@ -422,6 +427,19 @@ def _build_parser() -> argparse.ArgumentParser:
             "HEA_Rung2. Default off (byte-identical to polygram 0.5.0 "
             "behaviour). Flips the cache key — expect one MISS the "
             "first time you set or clear this flag."
+        ),
+    )
+    sweep.add_argument(
+        "--assign-amp-knobs",
+        action="store_true",
+        help=(
+            "[--auto-materialise only] Pass assign_amp_knobs=True to "
+            "polygram's from_sae_lens (polygram >=0.6.0). Un-dormants "
+            "MPS-substrate amp_knobs (PC4+) per-feature from decoder PCA "
+            "for MPSRung1 / Rung3 / Rung4. Structural no-op for "
+            "HEA_Rung2. Default on (recommended for MPS-substrate SAEs; "
+            "see polygram v0.6.0 release notes). Flips the cache key — "
+            "expect one MISS the first time you set or clear this flag."
         ),
     )
     sweep.add_argument(
@@ -932,6 +950,8 @@ def _cmd_sweep_pareto(args: argparse.Namespace) -> int:
             auto_only_flags_set.append("--rep-selection")
         if args.assign_phase_knobs:
             auto_only_flags_set.append("--assign-phase-knobs")
+        if args.assign_amp_knobs:
+            auto_only_flags_set.append("--assign-amp-knobs")
         if args.learn_axis_assignment:
             auto_only_flags_set.append("--learn-axis-assignment")
         if args.encoding_class:
@@ -1302,6 +1322,7 @@ def _cmd_sweep_pareto(args: argparse.Namespace) -> int:
             score_field=args.score_field or "polygram_overlap",
             rep_selection=args.rep_selection or "scale_aware",
             assign_phase_knobs=bool(args.assign_phase_knobs),
+            assign_amp_knobs=bool(args.assign_amp_knobs),
             learn_axis_assignment=bool(args.learn_axis_assignment),
             validation_eval_overlap=validation_eval_overlap,
             force_rematerialise=args.force_rematerialise,
