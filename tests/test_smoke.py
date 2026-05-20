@@ -55,6 +55,7 @@ def test_public_surface_is_frozen() -> None:
         # add-concept-anchored-finetune.
         "LABEL_SOURCE_REGISTRY",
         "LabelSource",
+        "focal_bce_loss",
         "register_label_source",
     }
     assert set(saeforge.__all__) == expected

@@ -160,3 +160,66 @@ def test_polygram_cluster_source_satisfies_protocol():
     basis = _make_fake_basis(n_kept=8, d_model=16, n_clusters=4)
     src = PolygramClusterLabelSource(polygram_basis=basis)
     assert isinstance(src, LabelSource)
+
+
+def test_prepare_warns_when_cluster_assignments_missing():
+    """When the basis metadata lacks ``cluster_assignments``, the
+    backend falls back to a round-robin partition and emits a
+    `UserWarning` so users can tell the supervision is operating on a
+    coarse mapping."""
+    import warnings
+
+    basis = _make_fake_basis(n_kept=8, d_model=16, n_clusters=4)
+    # Confirm there is no cluster_assignments key in our test basis
+    assert "cluster_assignments" not in basis.metadata
+    src = PolygramClusterLabelSource(polygram_basis=basis, calibration_batches=2)
+    model = _ToyModel(vocab_size=10, d_model=16)
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always")
+        src.prepare(model, _make_iterator(4, 2, 8, 10))
+    msgs = [str(w.message) for w in captured]
+    assert any("round-robin" in m for m in msgs), (
+        f"expected a round-robin warning, got: {msgs}"
+    )
+
+
+def test_prepare_no_warning_when_cluster_assignments_present():
+    """When metadata supplies ``cluster_assignments``, no warning fires."""
+    import warnings
+
+    basis = _make_fake_basis(n_kept=8, d_model=16, n_clusters=4)
+    # Inject explicit cluster assignments — feature i goes to cluster i//2
+    basis.metadata["cluster_assignments"] = [i // 2 for i in range(8)]
+    src = PolygramClusterLabelSource(polygram_basis=basis, calibration_batches=2)
+    model = _ToyModel(vocab_size=10, d_model=16)
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always")
+        src.prepare(model, _make_iterator(4, 2, 8, 10))
+    round_robin_msgs = [
+        str(w.message) for w in captured if "round-robin" in str(w.message)
+    ]
+    assert not round_robin_msgs, (
+        f"expected no round-robin warning, got: {round_robin_msgs}"
+    )
+
+
+def test_prepare_warns_when_iterator_short():
+    """When the iterator has fewer batches than ``calibration_batches``,
+    the backend warns that the training loop will see 0 batches."""
+    import warnings
+
+    basis = _make_fake_basis(n_kept=8, d_model=16, n_clusters=4)
+    src = PolygramClusterLabelSource(polygram_basis=basis, calibration_batches=10)
+    model = _ToyModel(vocab_size=10, d_model=16)
+    # Iterator only yields 2 batches but calibration wants 10
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always")
+        src.prepare(model, _make_iterator(2, 2, 8, 10))
+    short_msgs = [
+        str(w.message) for w in captured
+        if "consumed only" in str(w.message)
+    ]
+    assert len(short_msgs) == 1, (
+        f"expected exactly one iterator-short warning, got: "
+        f"{[str(w.message) for w in captured]}"
+    )

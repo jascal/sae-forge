@@ -24,10 +24,12 @@ their corresponding OpenSpec change is archived.
   `LABEL_SOURCE_REGISTRY`, `register_label_source(...)` decorator, and
   the v1 backend `PolygramClusterLabelSource` (self-supervised,
   pseudo-labels from per-cluster firings of the pre-fine-tune student).
-- **Three new public exports:** `LabelSource`, `LABEL_SOURCE_REGISTRY`,
-  `register_label_source` — the seam for follow-up backends
-  (`corpus-tags`, `host-probe`) to register without touching the loss
-  code.
+- **Four new public exports:** `LabelSource`, `LABEL_SOURCE_REGISTRY`,
+  `register_label_source` (the seam for follow-up backends —
+  `corpus-tags`, `host-probe` — to register without touching the loss
+  code), and `focal_bce_loss` (lifted from the heads module so
+  analysts can use the same focal-BCE term standalone in custom
+  losses outside the concept-anchoring path).
 - **Residual-stream capture via forward pre-hook on `module.lm_head`.**
   Avoids broadening every architecture adapter's `forward` signature
   with an `output_hidden_states` flag.

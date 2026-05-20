@@ -150,7 +150,21 @@ def run_finetune(model, host, iterator, config: TrainingConfig) -> TrainingResul
                 # native module's forward returns logits only, so we
                 # capture the residual at the lm_head's input via a
                 # forward pre-hook. This avoids broadening every
-                # adapter's forward signature.
+                # adapter's forward signature with
+                # ``output_hidden_states``.
+                #
+                # ADAPTER CONTRACT: this hook assumes the architecture's
+                # final unembed (a.k.a. LM head) is an attribute named
+                # ``lm_head`` on the module and is called as
+                # ``lm_head(residual)`` — i.e. its first positional arg
+                # IS the post-final-layer residual stream. The
+                # ForgedGPT2 / ForgedLlamaFamily / ForgedGemma2 /
+                # ForgedQwen3 native classes all conform; custom
+                # architectures that register an alternate unembed name
+                # (or wrap the head in a different positional contract)
+                # MUST either rename to ``lm_head`` OR drop in their own
+                # residual-capture hook before invoking ``run_finetune``
+                # with ``concept_alpha > 0``.
                 residual = None
                 hook_handle = None
                 if concept_state:
@@ -166,9 +180,10 @@ def run_finetune(model, host, iterator, config: TrainingConfig) -> TrainingResul
                         raise RuntimeError(
                             "concept anchoring expects `module.lm_head` to "
                             "exist for residual-stream capture; the active "
-                            "adapter does not expose one. Pre-hook needs an "
-                            "alternate target if your adapter names the "
-                            "unembed differently."
+                            "adapter does not expose one. See the ADAPTER "
+                            "CONTRACT comment in run_finetune (loop.py) for "
+                            "the contract and the workarounds for custom "
+                            "architectures."
                         )
                     hook_handle = lm_head.register_forward_pre_hook(_capture_residual)
                 try:

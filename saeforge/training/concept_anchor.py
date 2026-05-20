@@ -153,27 +153,43 @@ class PolygramClusterLabelSource:
             )
         self._n_concepts = int(n_clusters)
 
-        # Per-cluster membership over the kept features. Without an explicit
-        # per-feature cluster id in the basis metadata, treat each kept
-        # feature as its own cluster head modulo basis['cluster_assignments']
-        # if the metadata carries it. Falls back to a uniform partition
-        # mapping the first n_concepts features → first n_concepts clusters
-        # (one feature per cluster) — sufficient for the v1 backend and
-        # documented as a "minimum useful behaviour" choice. Custom mappings
-        # arrive via metadata.
+        # Per-cluster membership over the kept features.
+        # PREFERRED: the polygram basis carries `cluster_assignments` —
+        # a list[int] of length n_kept giving each kept feature's cluster
+        # id. Polygram's compression report has emitted this since v0.10
+        # for cosine-strategy ClusteredDictionary; if your basis is from
+        # a newer polygram + clustered build it should be present.
+        # FALLBACK: round-robin (feature i → cluster i mod n_concepts).
+        # This is *deterministic and minimal-useful*; the resulting label
+        # signal is real but only coarsely aligned with the true cluster
+        # structure. Emits a UserWarning so callers can tell when their
+        # basis is missing the metadata and the supervision is operating
+        # on the fallback partition.
         cluster_assignments = meta.get("cluster_assignments")
         if cluster_assignments is not None:
-            # Expected shape: list[int] of length n_kept giving the cluster
-            # id of each kept feature.
             membership: list[list[int]] = [[] for _ in range(self._n_concepts)]
             for kept_idx, cid in enumerate(cluster_assignments):
                 if 0 <= int(cid) < self._n_concepts:
                     membership[int(cid)].append(kept_idx)
         else:
+            import warnings as _w
+
             n_kept = int(self._basis.W_dec.shape[0])
+            _w.warn(
+                "PolygramClusterLabelSource: polygram basis metadata has "
+                "no `cluster_assignments`; using deterministic round-robin "
+                f"(feature i -> cluster i mod {self._n_concepts}). The "
+                "supervised signal will only coarsely align with the true "
+                "cluster structure. Re-run polygram compression with a "
+                "ClusteredDictionary that emits cluster_assignments, or "
+                "supply a custom mapping via "
+                "`basis.metadata['cluster_assignments'] = [...]` before "
+                "starting fine-tune.",
+                UserWarning,
+                stacklevel=2,
+            )
             membership = [[] for _ in range(self._n_concepts)]
             for kept_idx in range(n_kept):
-                # Round-robin: feature i goes to cluster (i mod n_concepts).
                 membership[kept_idx % self._n_concepts].append(kept_idx)
         self._cluster_index = membership
 
@@ -191,10 +207,12 @@ class PolygramClusterLabelSource:
         # batch shape. Future extensions (quantile-based thresholds)
         # would consume these activations.
         model.eval()
+        consumed = 0
         with torch.no_grad():
             for batch in itertools.islice(iterator, self._calibration_batches):
                 batch = batch.to(device)
                 out = model(batch)
+                consumed += 1
                 # If the module returns an object with .hidden_states,
                 # use the last layer; otherwise it returned raw logits
                 # and we can't validate the projection — that's fine,
@@ -209,6 +227,42 @@ class PolygramClusterLabelSource:
                 # fail with a clear matmul error otherwise.
                 _ = hs @ self._pinv_tensor
         model.train()
+
+        # Iterator-consumption diagnostic. `prepare` consumes from the
+        # SAME iterator the main loop will read from next, so a short
+        # corpus can mean training sees fewer steps than expected.
+        # Warn when (a) we got 0 batches (the iterator was already
+        # exhausted or empty — likely a bug) or (b) we got fewer
+        # batches than requested (corpus may be too small for
+        # `calibration_batches + total_steps`).
+        if consumed == 0:
+            import warnings as _w
+
+            _w.warn(
+                "PolygramClusterLabelSource.prepare consumed 0 batches "
+                "from the iterator — either the iterator was already "
+                "exhausted, or it yields nothing on this run. The "
+                "projection is constructed but the training loop will "
+                "see no batches either. Likely a setup bug.",
+                UserWarning,
+                stacklevel=2,
+            )
+        elif consumed < self._calibration_batches:
+            import warnings as _w
+
+            _w.warn(
+                f"PolygramClusterLabelSource.prepare consumed only "
+                f"{consumed} of the requested {self._calibration_batches} "
+                f"calibration batches before the iterator was exhausted. "
+                f"The main training loop will see ZERO batches from the "
+                f"same iterator — pre-slice your calibration corpus or "
+                f"pass a `DataLoader` (resettable) instead of a one-shot "
+                f"`iter()` chain. See "
+                f"`docs/concept-anchoring.md` (forthcoming) for the "
+                f"iterator-consumption contract.",
+                UserWarning,
+                stacklevel=2,
+            )
 
         return self._n_concepts
 
