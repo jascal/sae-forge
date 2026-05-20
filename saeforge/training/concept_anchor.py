@@ -298,9 +298,32 @@ class PolygramClusterLabelSource:
                 "labels_for_batch(...)."
             )
 
-        # Project hidden states into polygram feature space:
-        # h @ pinv -> (B, T, n_features)
-        features = hidden_states.to(self._pinv_tensor.dtype) @ self._pinv_tensor
+        # Shape-dispatched projection:
+        #
+        # - host_wrapped / classic forward modes: residual lives in the
+        #   host's d_model space, so `(B, T, d_model) @ pinv (d_model,
+        #   n_features) -> (B, T, n_features)` projects it into the
+        #   polygram feature basis.
+        # - native_in_basis: the residual stream IS the polygram feature
+        #   space by construction (the forged transformer's hidden size
+        #   equals n_features). The matmul above would be a shape error;
+        #   we skip projection and read features directly.
+        n_features = int(self._basis.W_dec.shape[0])
+        d_model = int(self._basis.W_dec.shape[1])
+        trailing = int(hidden_states.shape[-1])
+        if trailing == d_model:
+            features = hidden_states.to(self._pinv_tensor.dtype) @ self._pinv_tensor
+        elif trailing == n_features:
+            features = hidden_states.to(self._pinv_tensor.dtype)
+        else:
+            raise RuntimeError(
+                f"PolygramClusterLabelSource.labels_for_batch: "
+                f"hidden_states.shape[-1] = {trailing} matches neither "
+                f"d_model = {d_model} (project via pinv) nor "
+                f"n_features = {n_features} (already in basis). The "
+                f"residual stream is in an unexpected space; check the "
+                f"adapter's forward_mode setup."
+            )
         # Threshold features into per-feature firing booleans.
         fired = features > self._firing_threshold  # (B, T, n_features)
 

@@ -137,6 +137,44 @@ def test_labels_for_batch_shape_and_binarity():
     assert set(labels.unique().tolist()) <= {0.0, 1.0}
 
 
+def test_labels_for_batch_accepts_basis_space_residual():
+    """When the forward mode is `native_in_basis` the residual stream
+    is already in n_features space (one dim per kept feature) rather
+    than d_model. The backend SHALL detect this by trailing-dim shape
+    and skip the pseudoinverse projection."""
+    basis = _make_fake_basis(n_kept=8, d_model=16, n_clusters=4)
+    src = PolygramClusterLabelSource(polygram_basis=basis, calibration_batches=2)
+    model = _ToyModel(vocab_size=10, d_model=16)
+    src.prepare(model, _make_iterator(4, 2, 8, 10))
+
+    # Hidden states in BASIS space, shape (B, T, n_features=8).
+    hidden_basis = torch.randn(2, 8, 8)
+    labels = src.labels_for_batch(
+        batch=torch.zeros(2, 8, dtype=torch.long),
+        hidden_states=hidden_basis,
+    )
+    assert labels.shape == (2, 8, 4)
+    assert set(labels.unique().tolist()) <= {0.0, 1.0}
+
+
+def test_labels_for_batch_rejects_unrecognised_trailing_dim():
+    """If hidden_states.shape[-1] matches neither d_model nor n_features
+    the backend SHALL raise a clear error instead of producing a
+    confusing matmul shape error."""
+    basis = _make_fake_basis(n_kept=8, d_model=16, n_clusters=4)
+    src = PolygramClusterLabelSource(polygram_basis=basis, calibration_batches=2)
+    model = _ToyModel(vocab_size=10, d_model=16)
+    src.prepare(model, _make_iterator(4, 2, 8, 10))
+
+    # Wrong trailing dim — neither 8 nor 16.
+    bogus = torch.randn(2, 8, 32)
+    with pytest.raises(RuntimeError, match="hidden_states.shape\\[-1\\]"):
+        src.labels_for_batch(
+            batch=torch.zeros(2, 8, dtype=torch.long),
+            hidden_states=bogus,
+        )
+
+
 def test_labels_for_batch_requires_hidden_states():
     basis = _make_fake_basis(n_kept=8, d_model=16, n_clusters=4)
     src = PolygramClusterLabelSource(polygram_basis=basis, calibration_batches=2)
