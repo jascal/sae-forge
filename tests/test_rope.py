@@ -98,6 +98,28 @@ def test_apply_rotary_pos_emb_position_dependent():
     assert (q_rot[0, 0, 3] - q_rot[0, 0, 0]).norm() > 1e-3
 
 
+def test_compute_rope_cache_bf16_matches_fp32_cast():
+    """At bf16 output dtype the cache MUST be bit-identical to
+    fp32-built-then-cast. Pins HF's convention against a regression
+    where the bf16 path quietly does the math in bf16 — which on
+    Gemma-2 (head_dim=256) drifts cos by up to 2.0 (the full range)
+    once seq_len > 256 because bf16 can't represent integer positions
+    exactly above 256. The bug it pins is far above bf16 epsilon, so
+    no atol is needed; demand bit-equality.
+    """
+    seq_len, head_dim = 512, 256
+    cos_bf, sin_bf = compute_rope_cache(
+        seq_len, head_dim, theta=10000.0, dtype=torch.bfloat16
+    )
+    cos_fp, sin_fp = compute_rope_cache(
+        seq_len, head_dim, theta=10000.0, dtype=torch.float32
+    )
+    assert cos_bf.dtype == torch.bfloat16
+    assert sin_bf.dtype == torch.bfloat16
+    assert torch.equal(cos_bf, cos_fp.to(torch.bfloat16))
+    assert torch.equal(sin_bf, sin_fp.to(torch.bfloat16))
+
+
 def test_compute_rope_cache_theta_scaling():
     """Larger theta -> lower frequencies -> rotation accumulates more
     slowly with position. Cos at small position with large theta
