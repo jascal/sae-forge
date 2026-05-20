@@ -213,6 +213,70 @@ def resolve_host_d_model(host_model_id: str) -> tuple[int | None, str | None]:
 # ---------------------------------------------------------------------------
 
 
+def _suggest_next_encoding(encoding_label: str, capacity: int) -> str:
+    """Return the human-readable suggestion for a "larger" encoding.
+
+    Heuristic only — informational. The capacity argument disambiguates
+    the HEA_Rung2(n=N) → HEA_Rung2(n=N+1) progression.
+    """
+    lower = encoding_label.strip().lower()
+    if lower == "rung3":
+        return "Rung4"
+    if lower == "rung4":
+        return "Rung5"
+    if lower == "rung5":
+        return "HEA_Rung2(n_qubits=8)"
+    # HEA_Rung2(n_qubits=N) → HEA_Rung2(n_qubits=N+1). Derive N from the
+    # passed capacity (== 2**N) rather than re-parsing the label.
+    if "hea_rung2" in lower:
+        n = int(capacity).bit_length() - 1
+        return f"HEA_Rung2(n_qubits={n + 1})"
+    return f"HEA_Rung2(n_qubits={int(capacity).bit_length()})"
+
+
+def _polygram_saturation_note_for(
+    encoding_label: str,
+    enc_path: Path,
+    manifest_loader: Callable[[Path], dict[int, Any]],
+) -> str | None:
+    """If the largest-K SAE for this encoding has n_clusters == capacity,
+    return the saturation-note string; otherwise return ``None``.
+
+    Best-effort: returns ``None`` if the capacity can't be resolved, the
+    manifest is empty, the checkpoint can't be located, or the report
+    is unloadable.
+    """
+    from saeforge.polygram_diagnostics import (
+        format_saturation_note,
+        load_polygram_report,
+        resolve_encoding_capacity,
+    )
+
+    capacity = resolve_encoding_capacity(encoding_label)
+    if capacity is None:
+        return None
+    manifest = manifest_loader(enc_path)
+    if not manifest:
+        return None
+    largest_k = max(manifest.keys())
+    ckpt_path = enc_path / "pareto" / f"k_{largest_k}.safetensors"
+    if not ckpt_path.is_file():
+        ckpt_path = enc_path / f"k_{largest_k}.safetensors"
+    if not ckpt_path.is_file():
+        return None
+    report = load_polygram_report(ckpt_path)
+    if report is None:
+        return None
+    raw_clusters = report.get("n_clusters")
+    if not isinstance(raw_clusters, (int, float)) or isinstance(raw_clusters, bool):
+        return None
+    n_clusters = int(raw_clusters)
+    if n_clusters != capacity:
+        return None
+    suggested = _suggest_next_encoding(encoding_label, capacity)
+    return format_saturation_note(n_clusters, capacity, suggested)
+
+
 def advise_sweep_quality(
     *,
     encodings: list[tuple[str, Path]],
@@ -310,8 +374,23 @@ def advise_sweep_quality(
             )
         lines.extend(block)
 
-    if not lines:
+    # Polygram-side saturation check: per-encoding, fire when the
+    # largest-K SAE reports n_clusters == capacity. Informational only;
+    # never refuses (--quality-floor remains rank-ratio-only).
+    saturation_notes: list[str] = []
+    for label, enc_path in encodings:
+        note = _polygram_saturation_note_for(label, enc_path, manifest_loader)
+        if note is not None:
+            saturation_notes.append(note)
+
+    if not lines and not saturation_notes:
         return None
+
+    if not lines:
+        # No rank-tier advisory was warranted, but cluster saturation
+        # fired. Return a single-line advisory containing only the
+        # saturation note(s).
+        return "\n".join(saturation_notes)
 
     header = (
         "saeforge sweep-pareto: forge-quality advisory — one or more "
@@ -321,7 +400,7 @@ def advise_sweep_quality(
         "  'degenerate' describes the rank ratio, not the validity of the "
         "run; exploratory low-rank smokes remain valid for impl validation."
     )
-    return "\n".join([header, *lines, footer])
+    return "\n".join([header, *lines, footer, *saturation_notes])
 
 
 def advise_magnitude_diagnostics(rows: "list") -> "str | None":

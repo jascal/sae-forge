@@ -46,6 +46,11 @@ def test_public_surface_is_frozen() -> None:
         "load_calibration_corpus",
         "load_host_unembed",
         "top1_is_anomalous",
+        # Polygram cluster-structure diagnostics added by
+        # add-polygram-cluster-diagnostics.
+        "compute_redundancy_ratio",
+        "load_polygram_report",
+        "resolve_encoding_capacity",
     }
     assert set(saeforge.__all__) == expected
 

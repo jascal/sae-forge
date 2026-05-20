@@ -306,3 +306,228 @@ class TestBasisRankFromSafetensors:
         save_file({"W_enc": np.zeros((8, 16), dtype=np.float32)}, str(path))
         with pytest.raises(KeyError, match="W_dec"):
             basis_rank_from_safetensors(path)
+
+
+# ---------------------------------------------------------------------------
+# advise_sweep_quality — polygram saturation note
+# (add-polygram-cluster-diagnostics)
+# ---------------------------------------------------------------------------
+
+
+import json as _json  # noqa: E402
+
+
+def _make_encoding_with_report(
+    tmp_path,
+    *,
+    label: str,
+    largest_k: int,
+    n_clusters: int,
+    additional_ks: list[int] | None = None,
+):
+    """Materialise a fake encoding directory with a polygram-style report
+    at the largest-K SAE. Returns ``(enc_dir, manifest_dict)``.
+    """
+    enc_dir = tmp_path / label
+    pareto = enc_dir / "pareto"
+    pareto.mkdir(parents=True)
+    ks = sorted(set([largest_k, *(additional_ks or [])]))
+    for k in ks:
+        (pareto / f"k_{k}.safetensors").write_text("")
+    # Drop the compression report next to the largest-K checkpoint.
+    report = pareto / f"k_{largest_k}_compression_report.json"
+    report.write_text(_json.dumps({"n_clusters": n_clusters, "n_zeroed": 0}))
+    manifest = {k: mock.Mock(n_features_kept=k) for k in ks}
+    return enc_dir, manifest
+
+
+class TestAdvisePolygramSaturation:
+    def test_saturation_note_appended_when_clusters_equal_capacity(
+        self, tmp_path
+    ):
+        """rung5 sweep whose largest-K SAE has n_clusters=128 → saturation note."""
+        enc_dir, manifest = _make_encoding_with_report(
+            tmp_path,
+            label="rung5",
+            largest_k=128,
+            n_clusters=128,
+        )
+        # Rank-tier path: smallest K=128 reports rank low enough to flag.
+        advisory = advise_sweep_quality(
+            encodings=[("rung5", enc_dir)],
+            host_d_model=768,
+            thresholds=QualityThresholds(),
+            manifest_loader=lambda p: manifest,
+            basis_rank_loader=lambda p: 1,
+        )
+        assert advisory is not None
+        assert (
+            "polygram_n_clusters (128) equals encoding capacity (128) "
+            "— the encoding may be saturated" in advisory
+        )
+        assert "HEA_Rung2(n_qubits=8)" in advisory
+
+    def test_saturation_note_alone_when_no_rank_tier_warranted(self, tmp_path):
+        """Rank-tier check is silent (good basis) but cluster saturation fires
+        → return a single-line advisory containing only the saturation note.
+        """
+        enc_dir, manifest = _make_encoding_with_report(
+            tmp_path,
+            label="rung5",
+            largest_k=128,
+            n_clusters=128,
+        )
+        advisory = advise_sweep_quality(
+            encodings=[("rung5", enc_dir)],
+            host_d_model=768,
+            thresholds=QualityThresholds(),
+            manifest_loader=lambda p: manifest,
+            basis_rank_loader=lambda p: 500,  # ratio 0.65 → good
+        )
+        assert advisory is not None
+        # No rank-tier scaffolding present.
+        assert "forge-quality advisory" not in advisory
+        # Just the saturation note.
+        assert "may be saturated" in advisory
+        assert "HEA_Rung2(n_qubits=8)" in advisory
+
+    def test_no_saturation_when_clusters_below_capacity(self, tmp_path):
+        """rung5 largest-K reports 6 clusters → no saturation note."""
+        enc_dir, manifest = _make_encoding_with_report(
+            tmp_path,
+            label="rung5",
+            largest_k=128,
+            n_clusters=6,
+        )
+        advisory = advise_sweep_quality(
+            encodings=[("rung5", enc_dir)],
+            host_d_model=768,
+            thresholds=QualityThresholds(),
+            manifest_loader=lambda p: manifest,
+            basis_rank_loader=lambda p: 500,  # good
+        )
+        # No rank-tier advisory + no saturation → None.
+        assert advisory is None
+
+    def test_no_saturation_when_capacity_unknown(self, tmp_path):
+        """Unknown encoding label parses to None capacity → no saturation note."""
+        enc_dir, manifest = _make_encoding_with_report(
+            tmp_path,
+            label="bogus_rung",
+            largest_k=64,
+            n_clusters=64,
+        )
+        advisory = advise_sweep_quality(
+            encodings=[("bogus_rung", enc_dir)],
+            host_d_model=768,
+            thresholds=QualityThresholds(),
+            manifest_loader=lambda p: manifest,
+            basis_rank_loader=lambda p: 500,
+        )
+        # Capacity unknown → no saturation. No rank-tier issue either.
+        assert advisory is None
+
+    def test_no_saturation_when_report_missing(self, tmp_path):
+        """No compression report on disk → saturation check silently skips."""
+        enc_dir = tmp_path / "rung5"
+        (enc_dir / "pareto").mkdir(parents=True)
+        (enc_dir / "pareto" / "k_128.safetensors").write_text("")
+        manifest = {128: mock.Mock(n_features_kept=128)}
+        advisory = advise_sweep_quality(
+            encodings=[("rung5", enc_dir)],
+            host_d_model=768,
+            thresholds=QualityThresholds(),
+            manifest_loader=lambda p: manifest,
+            basis_rank_loader=lambda p: 500,
+        )
+        assert advisory is None
+
+    def test_rung4_suggests_rung5(self, tmp_path):
+        enc_dir, manifest = _make_encoding_with_report(
+            tmp_path,
+            label="rung4",
+            largest_k=32,
+            n_clusters=32,
+        )
+        advisory = advise_sweep_quality(
+            encodings=[("rung4", enc_dir)],
+            host_d_model=768,
+            thresholds=QualityThresholds(),
+            manifest_loader=lambda p: manifest,
+            basis_rank_loader=lambda p: 500,
+        )
+        assert advisory is not None
+        assert "Rung5" in advisory
+
+
+class TestQualityFloorIgnoresPolygramSaturation:
+    """``quality_floor`` reacts only to ``quality_ratio``, never to polygram
+    fields. Cluster saturation is descriptive, not a gate.
+    """
+
+    def test_via_sweep_runs_with_floor_when_only_saturated(
+        self, tmp_path, synthetic_compressed_sae
+    ):
+        """Sweep with `quality_floor` succeeds when the only issue is
+        cluster saturation (not rank-ratio).
+        """
+        import contextlib
+        import json as _j
+        import shutil
+        from dataclasses import dataclass, field
+        from pathlib import Path
+
+        from saeforge.sweep import sweep_pareto
+
+        # Inline minimal stub pipeline + pareto dir builder (avoid cross-
+        # test-module imports, which depend on pytest rootdir/pythonpath).
+        @dataclass
+        class _StubResult:
+            output_dir: Path
+            faithfulness: float | None = 0.5
+            faithfulness_target_name: str | None = "kl"
+            extras: dict = field(default_factory=lambda: {"perplexity": 1.0, "final_loss": 1.0})
+
+        @dataclass
+        class _StubPipeline:
+            basis: object = None
+            projector: object = None
+            _call_count: int = 0
+
+            def run(self, output_dir, **kwargs):
+                self._call_count += 1
+                Path(output_dir).mkdir(parents=True, exist_ok=True)
+                return _StubResult(output_dir=Path(output_dir))
+
+        @contextlib.contextmanager
+        def _noop_swap(pipeline, sae_checkpoint):
+            yield
+
+        import saeforge.sweep as _sweep_mod
+        original_swap = _sweep_mod._basis_swap
+        _sweep_mod._basis_swap = _noop_swap
+        try:
+            enc_dir = tmp_path / "rung5"
+            (enc_dir / "pareto").mkdir(parents=True)
+            shutil.copy(
+                synthetic_compressed_sae["checkpoint"],
+                enc_dir / "pareto" / "k_2.safetensors",
+            )
+            per_k = enc_dir / "pareto" / "k_2.safetensors"
+            report_path = per_k.with_name(per_k.stem + "_compression_report.json")
+            report_path.write_text(_j.dumps({"n_clusters": 128, "n_zeroed": 0}))
+
+            pipeline = _StubPipeline()
+            # The synthetic SAE has 6 surviving features. Override d_model
+            # to 8 so quality_ratio = 6/8 = 0.75 → good tier. Floor 0.5
+            # must pass even though cluster saturation fires.
+            sweep_pareto(
+                pipeline,
+                encodings=[("rung5", enc_dir)],
+                output_dir=tmp_path / "out",
+                quality_floor=0.5,
+                host_d_model_override=8,
+            )
+            assert pipeline._call_count == 1
+        finally:
+            _sweep_mod._basis_swap = original_swap
