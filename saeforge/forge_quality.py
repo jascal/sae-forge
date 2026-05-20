@@ -218,6 +218,18 @@ def _suggest_next_encoding(encoding_label: str, capacity: int) -> str:
 
     Heuristic only — informational. The capacity argument disambiguates
     the HEA_Rung2(n=N) → HEA_Rung2(n=N+1) progression.
+
+    Ladder (consulted when ``polygram_n_clusters == capacity`` to hint
+    at a less-saturating encoding):
+
+        Rung3 (cap=16)   → Rung4 (cap=32)
+        Rung4 (cap=32)   → Rung5 (cap=128)
+        Rung5 (cap=128)  → HEA_Rung2(n_qubits=8)  (cap=256)
+        HEA_Rung2(n=N)   → HEA_Rung2(n=N+1)       (cap doubles)
+
+    Unknown encoding labels fall back to
+    ``HEA_Rung2(n_qubits=ceil(log2(capacity)))`` — the smallest HEA
+    that just exceeds the saturated capacity.
     """
     lower = encoding_label.strip().lower()
     if lower == "rung3":

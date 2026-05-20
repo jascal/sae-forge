@@ -204,7 +204,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Forge across per-K materialised SAE checkpoints (Pareto sweep). "
             "Consumes `polygram compress --pareto --pareto-materialize` "
-            "output; emits a JSONL frontier."
+            "output; emits a JSONL frontier. Each row carries forge-quality "
+            "diagnostics (basis_rank, quality_ratio, quality_tier) AND "
+            "polygram concept-structure diagnostics (polygram_n_clusters, "
+            "polygram_redundancy_ratio, polygram_encoding_capacity) when "
+            "the per-encoding compression report is available — see the "
+            "Pareto-sweep section of the README for jq recipes."
         ),
     )
     sweep.add_argument(
