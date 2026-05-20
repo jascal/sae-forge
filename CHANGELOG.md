@@ -20,106 +20,117 @@ their corresponding OpenSpec change is archived.
 
 ## [0.7.0] — 2026-05-19
 
-The 0.7.0 release ships `add-llama-family-rope` — the fix for the
-Llama-family forged attention's missing rotary positional embedding.
-The Llama-family adapter `LlamaSelfAttention.forward` (used by
-Llama-3, Gemma-2, Qwen2, Qwen3, Qwen3-MoE) had been shipping without
-the rotation step since the family was added; three adapter
-docstrings claimed "GQA, RoPE" support and `docs/algorithm.md`
-claimed positional handling was "identical to the host," but the
-actual forward path went from Q/K projection straight to
-`scores = q @ k.T` with no rotation.
+The 0.7.0 release closes the Llama-family RoPE gap that this cycle
+opened, investigated, and fixed end-to-end. Pre-cycle, Llama /
+Gemma-2 / Qwen2-3 forged attention silently dropped RoPE entirely —
+`LlamaSelfAttention.forward` went from `q_proj`/`k_proj` straight to
+the scaled dot-product with no rotation, despite the adapter
+docstrings claiming the forge matched host positional handling. #62
+proposed the fix, #63 implemented it (`apply_rotary_pos_emb` on Q/K
+before optional Q/K-norm and SDPA, gated by `cfg.rope_mode in
+{"standard", "none"}`), #64 archived the change-dir spec into
+`openspec/specs/architecture-adapters/spec.md`, and #66 fixed two
+follow-on issues the at-scale validation surfaced:
 
-Empirical impact pre-fix: a 2026-05-19 at-scale Gemma-2-2B M4 run
-measured `faithfulness_kl = 13.19` on the example's four short
-`EVAL_PROMPTS` — only 0.74 nats above `ln(V_gemma) ≈ 12.45`, an
-essentially uninformative result. The short eval suite under-detected
-the gap; the structural cause was Llama-family attention computing
-as a pure bag-of-tokens.
+- **bf16 RoPE precision bug.** `compute_rope_cache` honored
+  `dtype=q.dtype`, so on M4 bf16/MPS it built `inv_freq`, the
+  position grid, and cos/sin entirely in bf16. At Gemma-2's
+  `head_dim=256`, `arange(seq_len, dtype=bf16)` aliases integer
+  positions above 256 (bf16's 7-bit mantissa) and the smallest
+  `inv_freq` (~1e-4) loses ~half its precision. Measured cos drift
+  saturated at the full ±1 range by seq_len=512; pre-softmax
+  attention-logit relative drift hit 91% at seq_len=8192 — a
+  randomised attention pattern, not small numerical error.
+  Post-fix: forge-vs-HF Llama at identity basis matches host to
+  float noise at fp32 (~1e-7) and to bf16 activation noise at bf16
+  (~5e-3, constant in seq_len). The fix matches HF convention:
+  build the cache in fp32 unconditionally, cast to the caller dtype
+  at the end.
 
-Validated on Intel via the smoke gate at
-`openspec/changes/archive/2026-05-19-add-llama-family-rope/smoke-results.md`:
-on a tiny synthetic LlamaForCausalLM with identity basis
-(`W_dec = I_d`), the patched forge matches host within `7.5e-7` L2;
-the no-RoPE forge differs from host by `1.7e-2`. Improvement factor:
-**22,671×**. The math matches HF's reference exactly.
+- **`partial_rotary_factor` silent no-op.** Was read into
+  `NativeModelConfig` but never consulted by
+  `LlamaSelfAttention.forward`. Llama / Gemma-2 / Qwen2-3 all use
+  1.0 so this was silently fine for them, but Gemma-3 / GPT-J /
+  NeoX-style hosts with `<1.0` would have rotated all `head_dim`
+  instead of the partial slice. Now raises `NotImplementedError` at
+  first forward, parallel to the existing `rope_scaling.type`
+  guard.
 
-The minor-version bump (vs. patch) reflects the new public surface
-(`NativeModelConfig.rope_mode` / `rope_theta` / `rope_scaling` /
-`partial_rotary_factor` and `ForgeResult.positional_encoding`) plus
-the observable behaviour change at the default `rope_mode="standard"` —
-Llama-family forges now produce different outputs than pre-fix.
+Acceptance gates (post-#66): 627 tests + 10 skipped on Intel 16GB
+CPU; forge-vs-HF Llama on identity basis at `head_dim ∈ {8, 32}`
+and `seq_len ∈ {64, 512, 2048}` shows ~1e-7 relative error at fp32
+and ~5e-3 (constant in seq_len) at bf16; full
+`ForgePipeline.run_synthetic` on a tiny Llama hits KL ~1e-8 at fp32
+and 1.7e-4 → 3.7e-4 going T=64 → 512 at bf16 (bounded, not
+unbounded — pre-fix this would have grown without limit).
 
-### Added (add-llama-family-rope)
+### Added
 
-- **`saeforge._positional.rope`** — `compute_rope_cache`,
-  `apply_rotary_pos_emb`, `_rotate_half`. Pure-torch, lazy-imported,
-  matches `transformers.models.llama.modeling_llama` as of 2026-05.
-  Validated by 7 unit tests in `tests/test_rope.py`.
-- **`NativeModelConfig` gains four RoPE fields**: `rope_mode`
-  (`"standard"` default, `"none"` regression-diff arm — emits
-  `UserWarning` on Llama-family), `rope_theta` (10000.0),
-  `rope_scaling` (None), `partial_rotary_factor` (1.0). Populated
-  from `host.config` by `LlamaAdapter.build_native_config`.
-- **`LlamaSelfAttention.forward`** applies `apply_rotary_pos_emb`
-  after Q/K projection-and-reshape, before optional Q/K-norm
-  (Qwen3) and the SDPA. Raises `NotImplementedError` pointing at
-  `add-rope-scaling-types` for unsupported `rope_scaling.type`.
-- **`ForgeResult.positional_encoding`** — new diagnostic field
-  surfacing the resolved positional mode per family:
-  `"absolute_projected"` (GPT-2's `wpe`), `"rotary"` (Llama-family
-  default), `"none_skipped"` (Llama-family with `rope_mode="none"`),
-  `"sinusoidal"` (Whisper-encoder conv-stem). Populated at all four
-  `ForgeResult` construction sites; surfaced in `forge_result.json`.
-  The pre-fix forges would have reported `"none_skipped"` had this
-  field existed — making the bug a 60-second discovery instead of a
-  faithfulness post-mortem.
-- **`tests/test_positional_encoding_assertion.py`** — 9 end-to-end
-  tests pinning the bug-fix invariants (identity-basis recovery,
-  divergence without RoPE, ≥100× improvement factor, config round-
-  trip, UserWarning surface, ForgeResult field validation).
+- **`saeforge/_positional/rope.py`** — `compute_rope_cache` and
+  `apply_rotary_pos_emb` helpers. Pure torch, HF-compatible math,
+  fp32-build-then-cast convention. Lazy-imported; no impact on the
+  no-`[torch]` install path.
+- **`ForgeResult.positional_encoding`** field ∈ `{"absolute_projected",
+  "rotary", "none_skipped"}`, populated by
+  `_resolve_positional_encoding` and propagated through
+  `forge_result.json`. Makes silent positional skips loud.
+- **`NativeModelConfig.rope_mode` / `.rope_theta` / `.rope_scaling`
+  / `.partial_rotary_factor`** fields, populated by the Llama-family
+  adapter's `build_native_config`. Legacy configs (pre-#63
+  payloads) round-trip through `from_dict` with default fills.
+- **CLI**: `--rope-mode {standard,none}` flag on the `forge`
+  subcommand (regression-diff arm; default `standard`).
 
 ### Changed
 
-- **Llama-family forges now apply RoPE by default**. Forge outputs
-  for `llama`, `gemma2`, `qwen2`, `qwen3`, `qwen3_moe` differ from
-  pre-fix no-RoPE forges. Users who genuinely need the pre-fix
-  behaviour can set `rope_mode="none"` and accept the `UserWarning`.
-- **`tests/test_world_model_byte_identity.py`** pinned digests for
-  `llama` and `qwen2` refreshed (`gemma2` / `qwen3*` digests happened
-  to be invariant at fixture scale — LN-pinv drift + small synthetic
-  basis dominate the faithfulness scalar).
-- **`docs/algorithm.md` §5** rewritten to distinguish GPT-2 (absolute
-  via `wpe`), Llama-family (RoPE), and Whisper-encoder (sinusoidal).
-  Adds `ε_rope` to the documented forge error budget alongside
-  `ε_attn`.
+- **Llama-family forged attention applies RoPE** at default
+  `rope_mode="standard"`. Behaviour change for every existing
+  Llama / Gemma-2 / Qwen2 / Qwen3 / Qwen3-MoE forge — outputs will
+  differ from `0.6.0` because the prior outputs were missing the
+  rotation entirely. The `rope_mode="none"` arm reproduces the
+  pre-fix buggy behaviour byte-identically for regression diffing.
+- **polygram dependency floor** bumped from `>=0.9.0` to `>=0.10.0`
+  (both the `polygram` extra and the `all` extra). Promotes
+  `EpochReport.redundancy_ratio` and `n_features_input` to
+  first-class fields (schema v2 with v1 forward-compat shim) and
+  emits a `UserWarning` on `BlockFormation` degenerate partitions
+  — both directly relevant to the queued
+  `add-polygram-cluster-diagnostics` proposal.
 
 ### Fixed
 
-- **Llama-family attention is no longer order-equivariant**. The
-  pre-fix forge computed attention as a bag of tokens — the last
-  token's output depended on the prefix multiset but not its
-  ordering. The shipped fix restores the position-dependence the
-  host applies.
+- **`compute_rope_cache` bf16 precision** — see the cycle overview
+  above. Pinned by `tests/test_rope.py::test_compute_rope_cache_bf16_matches_fp32_cast`,
+  which demands bit-equality (no `atol`) against the
+  fp32-built-then-cast path at Gemma-2 `head_dim=256, seq_len=512`.
+- **`partial_rotary_factor != 1.0` silent mis-rotation** — now
+  raises `NotImplementedError` at first forward. Pinned by
+  `tests/test_positional_encoding_assertion.py::test_partial_rotary_factor_non_unity_raises_at_forward`.
 
-### Tests
+### Why minor (not patch)
 
-- Test count 609 → **625** (+16: 7 RoPE math + 9 positional-
-  encoding assertion).
+Forged-output behaviour on every Llama-family host changes
+observably between 0.6.0 and 0.7.0 — pre-cycle, RoPE was absent;
+post-cycle it's applied. Users with a 0.6.0 Llama forge sitting on
+disk should expect different logits after upgrading; the change is
+correct (it now matches the host's positional handling), but it is
+observable. New runtime guard surface
+(`partial_rotary_factor != 1.0` now raises) also lands in this
+cycle.
 
-### Out of scope, queued
+### Acknowledged but not in this release
 
-- `rope_scaling.type` beyond `"default"` (linear / dynamic / yarn /
-  longrope) raises `NotImplementedError` → `add-rope-scaling-types`.
-  Required for long-context variants (Llama 3.1+, Qwen3-128K).
-- `partial_rotary_factor != 1.0` cases beyond the default are
-  plumbed but only validated against `1.0` in v1.
-- At-scale Gemma-2-2B re-measurement is M4-only; post-fix KL
-  acceptance band (< 6.0) lives in
-  `docs/flagship-gemma2-2b-demo.md` and is filled in by the M4
-  owner.
-- `ParetoFrontierRow.positional_encoding` propagation lands with the
-  queued `--forward-mode on sweep-pareto` follow-up.
+- **M4 Gemma-2-2B at-scale re-measurement.** Pre-cycle baseline hit
+  KL=13.19 on a forge that was missing RoPE *and* corrupting the
+  bf16 cos/sin cache. Both gaps are closed in 0.7.0 but the at-scale
+  number has not been re-collected; the release ships on the
+  end-to-end correctness gates above (627 tests + tiny-Llama
+  forge-vs-HF + full `run_synthetic`), with the M4 number tracked as
+  a follow-up benchmark rather than a release blocker.
+- **Other `rope_scaling.type` variants** (`linear` / `dynamic` /
+  `yarn` / `longrope`) and **`partial_rotary_factor < 1.0`** —
+  raise `NotImplementedError`; queued for the
+  `add-rope-scaling-types` follow-up.
 
 ## [0.6.0] — 2026-05-19
 
