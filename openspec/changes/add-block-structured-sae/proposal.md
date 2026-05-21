@@ -2,6 +2,37 @@
 
 Heterogeneous per-block encoding (capacity + axis-assignment policy) within a single SAE layer's dictionary. The on-disk change ID remains `add-block-structured-sae` for git-history continuity with the prior draft.
 
+## ⚠ Status update (2026-05-21) — forge-side mechanism is unproven
+
+**The polygram-side prerequisite (`add-encoding-partition`) shipped in polygram v0.13.0 (Phase 1) + v0.14.0 (Phase 2) and is on PyPI.** This proposal's Phase 0.1 pin-bump task can therefore proceed.
+
+**However**, an end-to-end real-SAE A/B experiment ran the partition through sae-forge's current `ForgePipeline.run_synthetic` and found the per-block encoding choice does NOT propagate to forge faithfulness:
+
+| metric (jbloom GPT-2 first 64 features, 4 confirmed pairs) | uniform Rung5 | partition heavy/tail |
+|---|---|---|
+| polygram substrate cost (kept reps) | 512 slots | 32 slots (16× reduction) |
+| polygram substrate cost (full SAE) | 8192 slots | 992 slots (8.26× reduction) |
+| **`forge_faithfulness_kl`** | **10.0484** | **10.0484** (identical) |
+
+Artefact: `polygram/runs/real_partition_experiment.{json,py}` (reproducible script + measurement output).
+
+The mechanism: sae-forge reads `W_dec` from the polygram-compressed safetensors. The encoding-family choice (Rung5 vs MPSRung1) does NOT affect `W_dec` — it only affects how the polygram Dictionary surfaces features for analyst inspection. So the forged transformer is identical regardless of which encoding the partition chose.
+
+**This means this proposal as currently written delivers polygram-side diagnostic value (per-block `partition_label` in `ParetoFrontierRow`, per-block diagnostics from polygram's `BlockReport`) but NOT forge-side reconstruction-quality lift.** The projected 10-30% `forge_kl` improvement cited in some earlier discussion is **unproven** and requires separate sae-forge work that is not specified anywhere today.
+
+Concrete candidates for the missing forge-side mechanism (any one of which would need its own proposal):
+
+1. **Per-block axis-assignment in `SubspaceProjector`** — heavy features get a learned axis-rotation; tail features use default PCA-aligned axes. Could improve projection fidelity for heavy features.
+2. **Per-block attention budget allocation in `NativeModel.from_host`** — heavy features get more "channels" / larger projection matrices in the forged transformer. Larger surgery.
+3. **Per-block sub-bases composed at forge time** — multiple `SubspaceProjector`s composed. Speculative.
+
+**Recommendation for whoever picks this up**:
+
+- If the goal is **analyst-facing diagnostic surfacing** (per-block compression quality in Pareto tables), proceed as-is — the polygram side is shipped and `partition_label` + per-row diagnostics are useful.
+- If the goal is **forged-transformer compression** (the original motivation), **STOP** and first file a follow-up that specifies the concrete forge-side mechanism. Without that, this proposal will ship CLI + plumbing that nobody can use to actually improve forge quality.
+
+The polygram-side substrate-cost reduction (8-16×) is real and measurable. But that's an internal polygram representation cost, not a forged-model parameter cost. The two are not the same thing.
+
 ## Why
 
 Today, one layer's SAE feature dictionary is compressed by exactly one polygram encoding — the `--encoding-class` choice picks `MPSRung1` (cap=8), `Rung3` (cap=16), `Rung4` (cap=32), `Rung5(k)` (cap=8·2^k), or `HEA_Rung2(n_qubits=N)` (cap=2^N) for the *whole* dictionary, and every surviving feature is allocated the same parameter budget and the same axis-assignment policy.
