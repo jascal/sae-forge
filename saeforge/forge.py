@@ -1476,14 +1476,65 @@ class ForgePipeline:
 def _write_basis_as_checkpoint(basis: FeatureBasis, path: str | Path) -> None:
     """Persist a basis as a no-compression safetensors checkpoint for the FSM loader.
 
-    Preserves the basis dtype (typically float64) so the round-trip through
-    ``from_polygram_checkpoint`` is byte-exact — required for the
-    imperative/FSM byte-equivalence safety net.
+    Writes all four SAE keys (``W_dec``, ``W_enc``, ``b_enc``,
+    ``b_dec``) so the resulting file can drive a real polygram
+    ``compress_with_polygram`` call when a validation report is wired
+    in. When the basis lacks a real ``W_enc`` / ``b_enc`` / ``b_dec``
+    (the typical synthetic-basis case where the FSM is just round-
+    tripping decoder geometry), this function synthesises placeholders
+    so polygram's loader (which requires all four keys) doesn't fail.
+    The placeholders are:
+
+    - ``W_enc = W_dec.T`` (shape ``(d_model, n_features)``) — the
+      decoder transpose; not a real encoder but a structurally valid
+      tensor for the loader to accept.
+    - ``b_enc = zeros(n_features)`` — sparse-coder zero-bias.
+    - ``b_dec = zeros(d_model)`` — decoder zero-bias.
+
+    The synthesised set is recorded in the safetensors header's
+    ``__synthesised_keys__`` metadata field (comma-separated list;
+    empty string when all four are real) so ``saeforge inspect`` and
+    other downstream tooling can distinguish placeholders from real
+    encoder weights.
+
+    Preserves the basis dtype (typically float64) so the round-trip
+    through ``from_polygram_checkpoint`` is byte-exact — required for
+    the imperative/FSM byte-equivalence safety net.
     """
     from safetensors.numpy import save_file
 
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    save_file({"W_dec": np.ascontiguousarray(basis.W_dec)}, str(path))
+    target_dtype = basis.W_dec.dtype
+    n_features = basis.W_dec.shape[0]
+    d_model = basis.W_dec.shape[1]
+
+    synthesised: list[str] = []
+    if basis.W_enc is not None:
+        W_enc = np.ascontiguousarray(basis.W_enc.astype(target_dtype, copy=False))
+    else:
+        W_enc = np.ascontiguousarray(basis.W_dec.T.astype(target_dtype, copy=False))
+        synthesised.append("W_enc")
+    if basis.b_enc is not None:
+        b_enc = np.ascontiguousarray(basis.b_enc.astype(target_dtype, copy=False))
+    else:
+        b_enc = np.zeros(n_features, dtype=target_dtype)
+        synthesised.append("b_enc")
+    if basis.b_dec is not None:
+        b_dec = np.ascontiguousarray(basis.b_dec.astype(target_dtype, copy=False))
+    else:
+        b_dec = np.zeros(d_model, dtype=target_dtype)
+        synthesised.append("b_dec")
+
+    save_file(
+        {
+            "W_dec": np.ascontiguousarray(basis.W_dec),
+            "W_enc": W_enc,
+            "b_enc": b_enc,
+            "b_dec": b_dec,
+        },
+        str(path),
+        metadata={"__synthesised_keys__": ",".join(synthesised)},
+    )
 
 
 def _final_state_for_log(ctx: dict) -> str:

@@ -40,11 +40,23 @@ class FeatureBasis:
     original_norms: np.ndarray
     scale_compression_ratio: float = 1.0
     metadata: dict = field(default_factory=dict)
+    # Optional full-SAE-key fields (full-sae-keys-in-synth-basis). When
+    # populated, the basis carries the original SAE's encoder + biases
+    # alongside W_dec; polygram's compress_with_polygram needs all four
+    # to run a real in-band compression (it calls
+    # ``_load_sae_checkpoint(path, ["W_enc", "b_enc", "b_dec", "W_dec"])``).
+    # The fields default to None so existing callers that build a
+    # ``W_dec``-only basis (round-trip tests, synth flows) stay
+    # byte-equivalent.
+    W_enc: np.ndarray | None = None
+    b_enc: np.ndarray | None = None
+    b_dec: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         if self.W_dec.ndim != 2:
             raise ValueError(f"W_dec must be 2-D (n_kept, d_model); got shape {self.W_dec.shape}")
         n_kept = self.W_dec.shape[0]
+        d_model = self.W_dec.shape[1]
         for name, arr in (
             ("kept_ids", self.kept_ids),
             ("merged_norms", self.merged_norms),
@@ -54,6 +66,32 @@ class FeatureBasis:
                 raise ValueError(
                     f"{name} length {arr.shape[0]} does not match W_dec rows {n_kept}"
                 )
+        # Optional-field shape validation. Each check fires only when the
+        # field is populated. Mismatches are immediate ValueError so
+        # round-tripping a malformed checkpoint fails at load time, not
+        # downstream in a confusing matmul shape error.
+        if self.W_enc is not None and self.W_enc.shape != (d_model, n_kept):
+            raise ValueError(
+                f"W_enc shape {self.W_enc.shape} does not match "
+                f"(d_model, n_kept) = ({d_model}, {n_kept})"
+            )
+        if self.b_enc is not None and self.b_enc.shape != (n_kept,):
+            raise ValueError(
+                f"b_enc shape {self.b_enc.shape} does not match (n_kept,) = ({n_kept},)"
+            )
+        if self.b_dec is not None and self.b_dec.shape != (d_model,):
+            raise ValueError(
+                f"b_dec shape {self.b_dec.shape} does not match (d_model,) = ({d_model},)"
+            )
+        # Cast optional fields to W_dec's dtype so a polygram checkpoint
+        # written at float64 doesn't silently mix dtypes downstream.
+        target_dtype = self.W_dec.dtype
+        if self.W_enc is not None and self.W_enc.dtype != target_dtype:
+            object.__setattr__(self, "W_enc", self.W_enc.astype(target_dtype))
+        if self.b_enc is not None and self.b_enc.dtype != target_dtype:
+            object.__setattr__(self, "b_enc", self.b_enc.astype(target_dtype))
+        if self.b_dec is not None and self.b_dec.dtype != target_dtype:
+            object.__setattr__(self, "b_dec", self.b_dec.astype(target_dtype))
         self._pinv_cache: np.ndarray | None = None
 
     @property
@@ -97,6 +135,7 @@ class FeatureBasis:
 
         report = _load_report(report_path) if report_path is not None else {}
         W_dec_full = _load_w_dec(checkpoint_path)
+        W_enc_full, b_enc_full, b_dec_full = _load_optional_sae_keys(checkpoint_path)
 
         # kept_ids = rows with nonzero norm. Polygram's zero strategy literally
         # zeros non-representative rows; merge strategy zeros them too (only
@@ -125,6 +164,27 @@ class FeatureBasis:
             dtype=np.float64,
         )
 
+        # Slice the optional full-SAE keys down to the kept features so
+        # the basis's optional fields stay shape-consistent with W_dec.
+        # The polygram safetensors convention has:
+        #   W_enc shape (d_model, n_features_full) — column-slice to kept
+        #   b_enc shape (n_features_full,)         — row-slice to kept
+        #   b_dec shape (d_model,)                  — invariant under
+        #                                              feature-axis slicing
+        W_enc_kept: np.ndarray | None = None
+        b_enc_kept: np.ndarray | None = None
+        b_dec_kept: np.ndarray | None = None
+        if W_enc_full is not None:
+            W_enc_kept = np.ascontiguousarray(
+                W_enc_full[:, kept_ids].astype(np.float64, copy=False)
+            )
+        if b_enc_full is not None:
+            b_enc_kept = np.ascontiguousarray(
+                b_enc_full[kept_ids].astype(np.float64, copy=False)
+            )
+        if b_dec_full is not None:
+            b_dec_kept = b_dec_full.astype(np.float64, copy=False)
+
         return cls(
             kept_ids=kept_ids,
             W_dec=W_dec.astype(np.float64, copy=False),
@@ -140,6 +200,9 @@ class FeatureBasis:
                 "n_features_kept": int(report.get("n_features_kept", kept_ids.shape[0])),
                 "n_clusters": int(report.get("n_clusters", 0)),
             },
+            W_enc=W_enc_kept,
+            b_enc=b_enc_kept,
+            b_dec=b_dec_kept,
         )
 
     def to_summary(self) -> dict:
@@ -252,6 +315,32 @@ def _load_w_dec(checkpoint_path: Path) -> np.ndarray:
         if chosen == "decoder.weight" and tensor.shape[0] != tensor.shape[1]:
             tensor = tensor.T
     return np.asarray(tensor)
+
+
+def _load_optional_sae_keys(
+    checkpoint_path: Path,
+) -> tuple[np.ndarray | None, np.ndarray | None, np.ndarray | None]:
+    """Read the optional W_enc / b_enc / b_dec keys from a polygram
+    checkpoint. Returns ``(W_enc, b_enc, b_dec)`` with ``None`` for any
+    key the file lacks.
+
+    Used by :meth:`FeatureBasis.from_polygram_checkpoint` to populate
+    the optional fields added by
+    ``full-sae-keys-in-synth-basis``. Existing checkpoints without
+    these keys load with all three as ``None``, preserving the
+    pre-change loader's behaviour byte-for-byte.
+    """
+    from safetensors import safe_open
+
+    with safe_open(str(checkpoint_path), framework="numpy") as f:
+        keys = list(f.keys())
+        out: list[np.ndarray | None] = []
+        for name in ("W_enc", "b_enc", "b_dec"):
+            if name in keys:
+                out.append(np.asarray(f.get_tensor(name)))
+            else:
+                out.append(None)
+    return tuple(out)  # type: ignore[return-value]
 
 
 def _collect_zeroed_ids(report: dict) -> set[int]:

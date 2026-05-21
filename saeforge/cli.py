@@ -1363,10 +1363,31 @@ def _cmd_inspect(args: argparse.Namespace) -> int:
 
     basis = FeatureBasis.from_polygram_checkpoint(args.checkpoint)
     summary = basis.to_summary()
+
+    # Surface the `__synthesised_keys__` safetensors-header metadata
+    # from `_write_basis_as_checkpoint` (full-sae-keys-in-synth-basis).
+    # When the checkpoint was written from a synth basis that lacked
+    # real W_enc / b_enc / b_dec, the synthesised list shows which
+    # tensors are placeholder rather than real encoder weights.
+    summary["synthesised_keys"] = _read_synthesised_keys(args.checkpoint)
+
     print(json.dumps(summary, indent=2))
     if args.report:
         Path(args.report).write_text(_render_inspect_markdown(args.checkpoint, summary))
     return 0
+
+
+def _read_synthesised_keys(checkpoint_path: str) -> list[str]:
+    """Read the ``__synthesised_keys__`` metadata field from a
+    safetensors checkpoint. Returns ``[]`` when absent or empty."""
+    from safetensors import safe_open
+
+    with safe_open(str(checkpoint_path), framework="numpy") as f:
+        md = f.metadata() or {}
+    raw = md.get("__synthesised_keys__", "")
+    if not raw:
+        return []
+    return [k for k in raw.split(",") if k]
 
 
 def _render_inspect_markdown(checkpoint: str, summary: dict) -> str:
@@ -1380,6 +1401,17 @@ def _render_inspect_markdown(checkpoint: str, summary: dict) -> str:
         f"- original norm mean: {summary['original_norm_mean']:.4f}",
         "",
     ]
+    synth = summary.get("synthesised_keys") or []
+    if synth:
+        lines.extend([
+            "## Synthesised keys",
+            "",
+            f"This checkpoint was written from a synth basis lacking the "
+            f"corresponding real SAE weights; the following tensors are "
+            f"**placeholders** (W_enc=W_dec.T, biases=zeros) rather than "
+            f"real encoder weights: **{', '.join(synth)}**.",
+            "",
+        ])
     return "\n".join(lines)
 
 
