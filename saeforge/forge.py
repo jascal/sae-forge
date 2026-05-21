@@ -1508,30 +1508,49 @@ def _write_basis_as_checkpoint(basis: FeatureBasis, path: str | Path) -> None:
     n_features = basis.W_dec.shape[0]
     d_model = basis.W_dec.shape[1]
 
+    # Table-driven per-key synthesis. Each entry maps the safetensors key
+    # to (real-value-getter, placeholder-factory). The synthesised list
+    # is populated by which placeholders fire; this layout makes it
+    # mechanical to extend with future optional SAE keys without
+    # introducing per-key marking drift between the value branch and
+    # the metadata branch.
+    #
+    # NB: W_dec is intentionally NOT in this table — it is always real
+    # (the basis's load-bearing geometry; no placeholder makes sense).
+    # It SHALL therefore never appear in __synthesised_keys__.
+    OPTIONAL_KEYS: list[tuple[str, "np.ndarray | None", "np.ndarray"]] = [
+        (
+            "W_enc",
+            basis.W_enc,
+            basis.W_dec.T.astype(target_dtype, copy=False),
+        ),
+        (
+            "b_enc",
+            basis.b_enc,
+            np.zeros(n_features, dtype=target_dtype),
+        ),
+        (
+            "b_dec",
+            basis.b_dec,
+            np.zeros(d_model, dtype=target_dtype),
+        ),
+    ]
+
+    tensors: dict[str, np.ndarray] = {
+        "W_dec": np.ascontiguousarray(basis.W_dec),
+    }
     synthesised: list[str] = []
-    if basis.W_enc is not None:
-        W_enc = np.ascontiguousarray(basis.W_enc.astype(target_dtype, copy=False))
-    else:
-        W_enc = np.ascontiguousarray(basis.W_dec.T.astype(target_dtype, copy=False))
-        synthesised.append("W_enc")
-    if basis.b_enc is not None:
-        b_enc = np.ascontiguousarray(basis.b_enc.astype(target_dtype, copy=False))
-    else:
-        b_enc = np.zeros(n_features, dtype=target_dtype)
-        synthesised.append("b_enc")
-    if basis.b_dec is not None:
-        b_dec = np.ascontiguousarray(basis.b_dec.astype(target_dtype, copy=False))
-    else:
-        b_dec = np.zeros(d_model, dtype=target_dtype)
-        synthesised.append("b_dec")
+    for key, real, placeholder in OPTIONAL_KEYS:
+        if real is not None:
+            tensors[key] = np.ascontiguousarray(
+                real.astype(target_dtype, copy=False)
+            )
+        else:
+            tensors[key] = np.ascontiguousarray(placeholder)
+            synthesised.append(key)
 
     save_file(
-        {
-            "W_dec": np.ascontiguousarray(basis.W_dec),
-            "W_enc": W_enc,
-            "b_enc": b_enc,
-            "b_dec": b_dec,
-        },
+        tensors,
         str(path),
         metadata={"__synthesised_keys__": ",".join(synthesised)},
     )
