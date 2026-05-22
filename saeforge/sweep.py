@@ -85,6 +85,25 @@ class ParetoFrontierRow:
     polygram_n_zeroed: int | None = None
     polygram_redundancy_ratio: float | None = None
     polygram_encoding_capacity: int | None = None
+    # Downstream-capability diagnostics. Populated by
+    # ``sweep_pareto_capability`` when the sweep ran with a
+    # :class:`DownstreamCapabilityTarget`. See
+    # ``add-downstream-capability-target`` capability-spec deltas
+    # for the row contract.
+    host_baseline_mauc: float | None = None
+    host_baseline_cov95: float | None = None
+    forge_mauc: float | None = None
+    forge_cov95: float | None = None
+    retained_mauc_vs_host: float | None = None
+    retained_cov95_vs_host: float | None = None
+    gap_median: float | None = None
+    gap_p25: float | None = None
+    gap_p75: float | None = None
+    gap_p95: float | None = None
+    n_features_gap_above_0_1: int | None = None
+    n_features_negative_gap: int | None = None
+    capability_aggregator: str | None = None
+    capability_min_prevalence: int | None = None
 
     def __post_init__(self) -> None:
         if int(self.target_n_features_kept) < 1:
@@ -167,6 +186,42 @@ class ParetoFrontierRow:
                 f"ParetoFrontierRow: polygram_encoding_capacity must be >= 1 "
                 f"or None; got {self.polygram_encoding_capacity}"
             )
+        # Capability-row validation. mAUC ∈ [0, 1]; cov95 ∈ [0, 1];
+        # retained_* ∈ [0, +inf) (can exceed 1.0 — bio-sae's concentrated
+        # substrate hit 103% retained mAUC at n=16); gap fields ∈
+        # [-1, 1]; counts ∈ [0, +inf). All checks fire only on
+        # populated values so a non-capability row stays unaffected.
+        for field_name in ("host_baseline_mauc", "host_baseline_cov95",
+                           "forge_mauc", "forge_cov95"):
+            v = getattr(self, field_name)
+            if v is not None and not (0.0 <= float(v) <= 1.0):
+                raise ValueError(
+                    f"ParetoFrontierRow: {field_name} must be in [0, 1] "
+                    f"or None; got {v}"
+                )
+        for field_name in ("retained_mauc_vs_host", "retained_cov95_vs_host"):
+            v = getattr(self, field_name)
+            if v is not None and float(v) < 0.0:
+                raise ValueError(
+                    f"ParetoFrontierRow: {field_name} must be >= 0 or "
+                    f"None; got {v}"
+                )
+        for field_name in ("gap_median", "gap_p25", "gap_p75", "gap_p95"):
+            v = getattr(self, field_name)
+            if v is not None and not (-1.0 <= float(v) <= 1.0):
+                raise ValueError(
+                    f"ParetoFrontierRow: {field_name} must be in [-1, 1] "
+                    f"or None; got {v}"
+                )
+        for field_name in ("n_features_gap_above_0_1",
+                           "n_features_negative_gap",
+                           "capability_min_prevalence"):
+            v = getattr(self, field_name)
+            if v is not None and int(v) < 0:
+                raise ValueError(
+                    f"ParetoFrontierRow: {field_name} must be >= 0 or "
+                    f"None; got {v}"
+                )
 
     def to_json_dict(self) -> dict[str, Any]:
         return {
@@ -219,6 +274,58 @@ class ParetoFrontierRow:
                 int(self.polygram_encoding_capacity)
                 if self.polygram_encoding_capacity is not None
                 else None
+            ),
+            **self._capability_to_json_dict(),
+        }
+
+    def _capability_to_json_dict(self) -> dict[str, Any]:
+        """Emit capability fields only when at least one is populated.
+
+        Pre-change frontier files (v0.7) don't carry these fields;
+        rows produced by the non-capability sweep path leave every
+        capability field as None and SHALL omit them from the
+        serialised dict so byte-equivalence with the old format is
+        preserved.
+        """
+        capability_fields = (
+            "host_baseline_mauc", "host_baseline_cov95",
+            "forge_mauc", "forge_cov95",
+            "retained_mauc_vs_host", "retained_cov95_vs_host",
+            "gap_median", "gap_p25", "gap_p75", "gap_p95",
+            "n_features_gap_above_0_1", "n_features_negative_gap",
+            "capability_aggregator", "capability_min_prevalence",
+        )
+        # Only emit if ANY capability field is populated — otherwise
+        # return empty dict to keep non-capability rows byte-equivalent
+        # to the v0.7 schema.
+        any_set = any(
+            getattr(self, k) is not None for k in capability_fields
+        )
+        if not any_set:
+            return {}
+        return {
+            "host_baseline_mauc":       _finite_or_none(self.host_baseline_mauc),
+            "host_baseline_cov95":      _finite_or_none(self.host_baseline_cov95),
+            "forge_mauc":               _finite_or_none(self.forge_mauc),
+            "forge_cov95":              _finite_or_none(self.forge_cov95),
+            "retained_mauc_vs_host":    _finite_or_none(self.retained_mauc_vs_host),
+            "retained_cov95_vs_host":   _finite_or_none(self.retained_cov95_vs_host),
+            "gap_median":               _finite_or_none(self.gap_median),
+            "gap_p25":                  _finite_or_none(self.gap_p25),
+            "gap_p75":                  _finite_or_none(self.gap_p75),
+            "gap_p95":                  _finite_or_none(self.gap_p95),
+            "n_features_gap_above_0_1": (
+                int(self.n_features_gap_above_0_1)
+                if self.n_features_gap_above_0_1 is not None else None
+            ),
+            "n_features_negative_gap": (
+                int(self.n_features_negative_gap)
+                if self.n_features_negative_gap is not None else None
+            ),
+            "capability_aggregator":    self.capability_aggregator,
+            "capability_min_prevalence": (
+                int(self.capability_min_prevalence)
+                if self.capability_min_prevalence is not None else None
             ),
         }
 
@@ -324,6 +431,65 @@ class ParetoFrontierRow:
                 int(data["polygram_encoding_capacity"])
                 if data.get("polygram_encoding_capacity") is not None
                 else None
+            ),
+            # Capability fields (add-downstream-capability-target).
+            # Missing keys → None, preserving v0.7 schema load
+            # compatibility byte-for-byte.
+            host_baseline_mauc=(
+                float(data["host_baseline_mauc"])
+                if data.get("host_baseline_mauc") is not None else None
+            ),
+            host_baseline_cov95=(
+                float(data["host_baseline_cov95"])
+                if data.get("host_baseline_cov95") is not None else None
+            ),
+            forge_mauc=(
+                float(data["forge_mauc"])
+                if data.get("forge_mauc") is not None else None
+            ),
+            forge_cov95=(
+                float(data["forge_cov95"])
+                if data.get("forge_cov95") is not None else None
+            ),
+            retained_mauc_vs_host=(
+                float(data["retained_mauc_vs_host"])
+                if data.get("retained_mauc_vs_host") is not None else None
+            ),
+            retained_cov95_vs_host=(
+                float(data["retained_cov95_vs_host"])
+                if data.get("retained_cov95_vs_host") is not None else None
+            ),
+            gap_median=(
+                float(data["gap_median"])
+                if data.get("gap_median") is not None else None
+            ),
+            gap_p25=(
+                float(data["gap_p25"])
+                if data.get("gap_p25") is not None else None
+            ),
+            gap_p75=(
+                float(data["gap_p75"])
+                if data.get("gap_p75") is not None else None
+            ),
+            gap_p95=(
+                float(data["gap_p95"])
+                if data.get("gap_p95") is not None else None
+            ),
+            n_features_gap_above_0_1=(
+                int(data["n_features_gap_above_0_1"])
+                if data.get("n_features_gap_above_0_1") is not None else None
+            ),
+            n_features_negative_gap=(
+                int(data["n_features_negative_gap"])
+                if data.get("n_features_negative_gap") is not None else None
+            ),
+            capability_aggregator=(
+                str(data["capability_aggregator"])
+                if data.get("capability_aggregator") is not None else None
+            ),
+            capability_min_prevalence=(
+                int(data["capability_min_prevalence"])
+                if data.get("capability_min_prevalence") is not None else None
             ),
         )
 

@@ -19,6 +19,7 @@ from saeforge.polygram_diagnostics import (
 )
 from saeforge.projector import SubspaceProjector
 from saeforge.sweep import ParetoFrontierRow, sweep_pareto
+from saeforge.sweep_capability import sweep_pareto_capability
 from saeforge.training.concept_anchor import (
     LABEL_SOURCE_REGISTRY,
     LabelSource,
@@ -55,5 +56,6 @@ __all__ = [
     "register_label_source",
     "resolve_encoding_capacity",
     "sweep_pareto",
+    "sweep_pareto_capability",
     "top1_is_anomalous",
 ]
