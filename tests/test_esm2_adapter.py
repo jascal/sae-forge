@@ -168,6 +168,49 @@ def test_identity_basis_reproduces_host_bit_for_bit():
     )
 
 
+def test_basis_decode_buffer_round_trips():
+    """basis_decode buffer carries W_dec exactly. Pinned by
+    add-downstream-capability-target: lets DownstreamCapabilityTarget
+    decode forged hidden states without inverting basis_encode."""
+    import numpy as np
+    import torch
+
+    from saeforge.adapters import adapter_for
+    from saeforge.basis import FeatureBasis
+    from saeforge.model import NativeModel
+    from saeforge.projector import SubspaceProjector
+
+    host, cfg = _build_tiny_esm_model(seed=11)
+    d = cfg.hidden_size
+    # Use a deliberately non-identity W_dec so the assertion is sharper
+    # than identity-basis trivial.
+    rng = np.random.default_rng(0)
+    W_dec = rng.standard_normal((d, d)).astype(np.float64)
+    basis = FeatureBasis(
+        kept_ids=np.arange(d, dtype=np.int64), W_dec=W_dec,
+        merged_norms=np.linalg.norm(W_dec, axis=1),
+        original_norms=np.linalg.norm(W_dec, axis=1),
+    )
+    projector = SubspaceProjector(basis=basis)
+    adapter = adapter_for(host)
+    weights = adapter.walk(host, projector)
+    assert "basis_decode" in weights, (
+        "esm2 adapter walk must emit basis_decode (Decision 2 of "
+        "add-downstream-capability-target)"
+    )
+    assert weights["basis_decode"].shape == (d, d)
+    np.testing.assert_allclose(weights["basis_decode"], W_dec)
+
+    native_cfg = adapter.build_native_config(host, n_features=d)
+    model = NativeModel.from_projected_weights(native_cfg, weights)
+    buffers = dict(model.torch_module.named_buffers())
+    assert "basis_decode" in buffers
+    torch.testing.assert_close(
+        buffers["basis_decode"],
+        torch.from_numpy(W_dec.astype(np.float32)),
+    )
+
+
 def test_walk_emits_every_expected_key():
     """Sanity check that the walk doesn't silently drop a slot. The
     forged module must accept the walked dict via load_state_dict
@@ -207,6 +250,11 @@ def test_walk_emits_every_expected_key():
             f"encoder.layer.{i}.output.dense.bias",
         ):
             expected.add(k)
+    # basis_encode / basis_decode are emitted alongside the projected
+    # weights so downstream targets can encode host states into / decode
+    # forged states out of the basis without re-deriving pinv(W_dec).
+    expected.add("basis_encode")
+    expected.add("basis_decode")
     missing = expected - set(weights)
     assert not missing, f"adapter walk missing expected keys: {missing}"
 

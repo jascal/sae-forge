@@ -213,6 +213,15 @@ class WhisperEncoderAdapter(ArchitectureAdapter):
         # that every downstream layer's projected weights expect.
         out["basis_encode"] = projector.basis.pseudoinverse() * projector.scale_boost
 
+        # f → d buffer for downstream-capability eval (add-downstream-
+        # capability-target). Carries the exact ``W_dec`` the projector
+        # used to compute ``basis_encode`` above. Lets
+        # ``DownstreamCapabilityTarget`` decode forged encoder states
+        # back to host ``d_model`` coords without inverting
+        # ``basis_encode`` numerically. Same shape contract as the esm2
+        # adapter's ``basis_decode``.
+        out["basis_decode"] = projector.basis.W_dec.copy()
+
         return out
 
     def build_native_config(
@@ -421,6 +430,16 @@ def _get_forged_whisper_encoder_class():
             self.register_buffer(
                 "basis_encode",
                 torch.zeros(d_head, cfg.hidden_size),
+            )
+            # f → d projection buffer, carrying ``W_dec`` directly.
+            # Populated by ``from_projected_weights`` from the walk's
+            # ``basis_decode`` entry. Used by
+            # ``DownstreamCapabilityTarget`` to decode forged encoder
+            # states back to host ``d_model`` coords. Not consulted at
+            # forward time.
+            self.register_buffer(
+                "basis_decode",
+                torch.zeros(cfg.hidden_size, d_head),
             )
 
         def forward(self, input_features):
