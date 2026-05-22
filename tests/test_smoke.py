@@ -42,6 +42,15 @@ def test_public_surface_is_frozen() -> None:
         # Capability-aware Pareto wrapper added by
         # add-downstream-capability-target.
         "sweep_pareto_capability",
+        # Progressive multi-stage variant added by
+        # add-progressive-capability-sweep. Plus the supporting
+        # dataclasses (ProgressiveStageResult, ProgressiveRecommendation,
+        # ProgressiveHistory, ConvergenceTrajectoryEntry).
+        "sweep_pareto_capability_progressive",
+        "ConvergenceTrajectoryEntry",
+        "ProgressiveHistory",
+        "ProgressiveRecommendation",
+        "ProgressiveStageResult",
         # Calibration helpers + constants added by fix-scale-boost-calibration.
         "ANOMALOUS_TOKEN_IDS",
         "compute_forged_logit_std",

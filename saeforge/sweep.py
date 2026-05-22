@@ -104,6 +104,13 @@ class ParetoFrontierRow:
     n_features_negative_gap: int | None = None
     capability_aggregator: str | None = None
     capability_min_prevalence: int | None = None
+    # Progressive-sweep stage tag. Populated by
+    # ``sweep_pareto_capability_progressive`` so a frontier carrying
+    # rows from multiple stages can be partitioned by stage during
+    # analysis. Default None — single-shot rows from
+    # ``sweep_pareto`` or ``sweep_pareto_capability`` omit the field
+    # from JSON (back-compat with v0.8.x writers).
+    stage: int | None = None
 
     def __post_init__(self) -> None:
         if int(self.target_n_features_kept) < 1:
@@ -222,6 +229,11 @@ class ParetoFrontierRow:
                     f"ParetoFrontierRow: {field_name} must be >= 0 or "
                     f"None; got {v}"
                 )
+        if self.stage is not None and int(self.stage) < 0:
+            raise ValueError(
+                f"ParetoFrontierRow: stage must be >= 0 or None; "
+                f"got {self.stage}"
+            )
 
     def to_json_dict(self) -> dict[str, Any]:
         return {
@@ -286,6 +298,11 @@ class ParetoFrontierRow:
         capability field as None and SHALL omit them from the
         serialised dict so byte-equivalence with the old format is
         preserved.
+
+        ``stage`` is emitted independently — it's a progressive-sweep
+        marker that can appear on capability-flavoured rows (the
+        normal case) but in principle could be set without the rest
+        of the capability block. Always omit when None.
         """
         capability_fields = (
             "host_baseline_mauc", "host_baseline_cov95",
@@ -295,15 +312,18 @@ class ParetoFrontierRow:
             "n_features_gap_above_0_1", "n_features_negative_gap",
             "capability_aggregator", "capability_min_prevalence",
         )
-        # Only emit if ANY capability field is populated — otherwise
-        # return empty dict to keep non-capability rows byte-equivalent
-        # to the v0.7 schema.
+        out: dict[str, Any] = {}
+        if self.stage is not None:
+            out["stage"] = int(self.stage)
+        # Only emit the capability block if ANY capability field is
+        # populated — keeps non-capability rows byte-equivalent to
+        # the v0.7 schema.
         any_set = any(
             getattr(self, k) is not None for k in capability_fields
         )
         if not any_set:
-            return {}
-        return {
+            return out
+        out.update({
             "host_baseline_mauc":       _finite_or_none(self.host_baseline_mauc),
             "host_baseline_cov95":      _finite_or_none(self.host_baseline_cov95),
             "forge_mauc":               _finite_or_none(self.forge_mauc),
@@ -327,7 +347,8 @@ class ParetoFrontierRow:
                 int(self.capability_min_prevalence)
                 if self.capability_min_prevalence is not None else None
             ),
-        }
+        })
+        return out
 
     @classmethod
     def from_json_dict(cls, data: Mapping[str, Any]) -> "ParetoFrontierRow":
@@ -490,6 +511,9 @@ class ParetoFrontierRow:
             capability_min_prevalence=(
                 int(data["capability_min_prevalence"])
                 if data.get("capability_min_prevalence") is not None else None
+            ),
+            stage=(
+                int(data["stage"]) if data.get("stage") is not None else None
             ),
         )
 
