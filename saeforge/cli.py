@@ -712,6 +712,126 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Emit the picked row as JSON instead of a tabular summary.",
     )
+    rec.add_argument(
+        "--accept-unconverged",
+        action="store_true",
+        help=(
+            "Accept a progressive frontier whose recommendation didn't "
+            "converge across the configured stage budget. Default: "
+            "refuse with a diagnostic explaining which stage's argmin-"
+            "plateau-member shifted. Use only when you've separately "
+            "verified the recommendation is appropriate for your "
+            "workflow."
+        ),
+    )
+
+    # ------------------------------------------------------------------
+    # sweep-capability-progressive — multi-stage capability sweep.
+    # Added by add-progressive-capability-sweep. Returns a STABLE
+    # recommendation (smallest n robust to data scale), not argmax-on-
+    # one-sample.
+    # ------------------------------------------------------------------
+    prog = sub.add_parser(
+        "sweep-capability-progressive",
+        help=(
+            "Multi-stage capability sweep. Progressively grows protein "
+            "count + narrows active widths until the recommendation "
+            "STOPS SHIFTING. Returns the smallest target_n_features_kept "
+            "stable across the last K stages — the Pareto-optimal point "
+            "on (capability, parameter-cost). See "
+            "openspec/changes/add-progressive-capability-sweep/proposal."
+            "md for the empirical motivation (bio-sae's n=10 -> n=100 "
+            "argmax-drift surfaced this design)."
+        ),
+    )
+    prog.add_argument(
+        "--dataset-config", required=True, metavar="PATH",
+        help=(
+            "YAML config (same schema as sweep-capability). Required "
+            "keys: encoder_checkpoint, sequences_path, labels_path. "
+            "Optional: feed (pooled|residue), tokenizer_id, aggregator, "
+            "min_prevalence, sae_variant, sae_k."
+        ),
+    )
+    prog.add_argument(
+        "--host", required=True,
+        help="HuggingFace host model id (or local path).",
+    )
+    prog.add_argument(
+        "--candidate-widths", required=True,
+        help=(
+            "Comma-separated basis widths to consider. The progressive "
+            "wrapper only PRUNES + EXPANDS-TO-NEIGHBOURS within this "
+            "list; it does not invent widths. E.g. "
+            "'4,8,16,32,64,128,256,512,1024'."
+        ),
+    )
+    prog.add_argument(
+        "--schedule", required=True,
+        help=(
+            "Comma-separated protein counts per stage (monotone non-"
+            "decreasing). E.g. '10,50,200,1000' is the bio-sae-"
+            "calibrated default. Single element '200' degenerates to "
+            "single-shot at 200 proteins."
+        ),
+    )
+    prog.add_argument(
+        "--scale-boosts", default="1.0",
+        help="Comma-separated scale_boost values (default: '1.0').",
+    )
+    prog.add_argument(
+        "--encodings", default="raw_slice",
+        help="Comma-separated encoding labels (default: 'raw_slice').",
+    )
+    prog.add_argument(
+        "--retained-mauc-tolerance", type=float, default=0.005,
+        help=(
+            "Caps the max-pairwise-difference in retained_mauc across "
+            "the trailing convergence_n_stages stages (default: 0.005)."
+        ),
+    )
+    prog.add_argument(
+        "--plateau-tolerance", type=float, default=0.01,
+        help=(
+            "Defines a band around the peak retained_mauc as 'tied for "
+            "first' (default: 0.01 = 1%% AUC). Loosen for flat plateaus."
+        ),
+    )
+    prog.add_argument(
+        "--min-plateau-widths", type=int, default=3,
+        help=(
+            "Floor on plateau-size; widens effective tolerance when the "
+            "natural plateau is too narrow (default: 3)."
+        ),
+    )
+    prog.add_argument(
+        "--convergence-n-stages", type=int, default=2,
+        help=(
+            "Number of consecutive stable stages required for "
+            "convergence (default: 2; recommended production: 2 or 3). "
+            "=1 is an explicit looser opt-out, not a recommended "
+            "default."
+        ),
+    )
+    prog.add_argument(
+        "--output-dir", required=True,
+        help=(
+            "Where frontier.jsonl + progressive_summary.json land. "
+            "Per-stage forge outputs under <output-dir>/stage_<K>/."
+        ),
+    )
+    prog.add_argument(
+        "--no-host-cache", action="store_true",
+        help="Disable host-extraction cache across sweep cells.",
+    )
+    prog.add_argument(
+        "--max-seq-len", type=int, default=512,
+        help="Truncate input sequences (default: 512).",
+    )
+    prog.add_argument(
+        "--device", default="cpu",
+        help="torch device for forge + extraction (default: 'cpu').",
+    )
 
     return parser
 
@@ -1618,6 +1738,106 @@ def _cmd_sweep_capability(args: argparse.Namespace) -> int:
     return 1 if errors == len(rows) else 0
 
 
+def _cmd_sweep_capability_progressive(args: argparse.Namespace) -> int:
+    """Drive ``sweep_pareto_capability_progressive`` from a YAML
+    dataset-config + CLI knobs.
+
+    Exit codes:
+      0  recommendation converged; trustworthy for production.
+      1  schedule exhausted without convergence; recommendation
+         emitted with converged=False (caller decides whether to ship
+         via ``sae-forge recommend --accept-unconverged``).
+      2  config error (missing required flag, bad YAML, schedule not
+         monotone, etc.).
+    """
+    try:
+        import yaml
+    except ImportError as exc:
+        raise ImportError(
+            "sae-forge sweep-capability-progressive requires PyYAML to "
+            "parse the dataset config. Install with `pip install pyyaml`."
+        ) from exc
+
+    from saeforge import sweep_pareto_capability_progressive
+    from saeforge.datasets import CapabilityDataset
+
+    cfg_path = Path(args.dataset_config)
+    if not cfg_path.exists():
+        print(f"sae-forge sweep-capability-progressive: dataset config "
+              f"not found: {cfg_path}", file=sys.stderr)
+        return 2
+    cfg = yaml.safe_load(cfg_path.read_text())
+    _required = {"encoder_checkpoint", "sequences_path", "labels_path"}
+    missing = _required - set(cfg)
+    if missing:
+        print(f"sae-forge sweep-capability-progressive: dataset config "
+              f"missing required keys: {sorted(missing)}",
+              file=sys.stderr)
+        return 2
+
+    encoder_checkpoint = Path(cfg["encoder_checkpoint"])
+    dataset = CapabilityDataset.from_bio_sae(
+        run_dir=encoder_checkpoint.parent,
+        bundle_path=cfg["labels_path"],
+        sequences_path=cfg["sequences_path"],
+        feed=cfg.get("feed", "pooled"),
+        n_proteins=cfg.get("n_proteins"),
+        max_seq_len=int(cfg.get("max_seq_len", args.max_seq_len)),
+        tokenizer_id=cfg.get("tokenizer_id", "facebook/esm2_t6_8M_UR50D"),
+        aggregator=cfg.get("aggregator", "pool_then_encode"),
+        min_prevalence=int(cfg.get("min_prevalence", 0)),
+        sae_variant=cfg.get("sae_variant", "topk"),
+        sae_k=int(cfg.get("sae_k", 64)),
+    )
+
+    candidate_widths = [
+        int(w.strip()) for w in args.candidate_widths.split(",") if w.strip()
+    ]
+    schedule = [
+        int(n.strip()) for n in args.schedule.split(",") if n.strip()
+    ]
+    scale_boosts: list[float | str] = []
+    for token in args.scale_boosts.split(","):
+        t = token.strip()
+        if not t:
+            continue
+        scale_boosts.append("auto" if t == "auto" else float(t))
+    encodings = [e.strip() for e in args.encodings.split(",") if e.strip()]
+
+    try:
+        history = sweep_pareto_capability_progressive(
+            sae_checkpoint=encoder_checkpoint,
+            host_model_id=args.host,
+            dataset=dataset,
+            candidate_widths=candidate_widths,
+            n_proteins_schedule=schedule,
+            output_dir=args.output_dir,
+            encodings=encodings,
+            scale_boosts=scale_boosts,
+            retained_mauc_tolerance=args.retained_mauc_tolerance,
+            plateau_tolerance=args.plateau_tolerance,
+            min_plateau_widths=args.min_plateau_widths,
+            convergence_n_stages=args.convergence_n_stages,
+            cache_host=(not args.no_host_cache),
+            max_seq_len=args.max_seq_len,
+            device=args.device,
+        )
+    except ValueError as exc:
+        print(f"sae-forge sweep-capability-progressive: {exc}",
+              file=sys.stderr)
+        return 2
+
+    rec = history.recommendation
+    summary_path = Path(args.output_dir) / "progressive_summary.json"
+    print(f"sae-forge sweep-capability-progressive: "
+          f"{len(history.stages)} stage(s); converged={rec.converged}; "
+          f"recommendation n={rec.target_n_features_kept}, "
+          f"retained_mauc={rec.retained_mauc_vs_host:.4f}; "
+          f"summary: {summary_path}")
+    print(f"Rationale: {rec.rationale}")
+    return 0 if rec.converged else 1
+
+
 # Predicate parser for `sae-forge recommend`.
 _RECOMMEND_OPS = (">=", "<=", "==", "<", ">")  # check 2-char before 1-char
 
@@ -1710,6 +1930,54 @@ def _cmd_recommend(args: argparse.Namespace) -> int:
             continue
         rows.append(ParetoFrontierRow.from_json_dict(json.loads(line)))
 
+    # Progressive-frontier detection: if any row carries the `stage`
+    # field, the frontier was emitted by sweep-capability-progressive.
+    # Check the companion progressive_summary.json's
+    # recommendation.converged; refuse to recommend on
+    # converged=False unless --accept-unconverged.
+    is_progressive = any(r.stage is not None for r in rows)
+    if is_progressive:
+        summary_path = frontier_path.parent / "progressive_summary.json"
+        if not summary_path.exists():
+            print(
+                f"sae-forge recommend: frontier {frontier_path} carries "
+                f"stage fields (progressive sweep output) but the "
+                f"companion progressive_summary.json was not found at "
+                f"{summary_path}. Either copy both files together or "
+                f"pass a single-shot frontier.",
+                file=sys.stderr,
+            )
+            return 2
+        summary = json.loads(summary_path.read_text())
+        rec_meta = summary.get("recommendation", {})
+        if not rec_meta.get("converged", False) and not args.accept_unconverged:
+            traj = rec_meta.get("convergence_trajectory", [])
+            shifted_stages = [
+                e["stage"] for e in traj
+                if e.get("shifted_from_prev_stage", False)
+            ]
+            rationale = rec_meta.get("rationale", "(no rationale on disk)")
+            print(
+                f"sae-forge recommend: progressive frontier at "
+                f"{frontier_path} did NOT converge.\n"
+                f"\n"
+                f"  Recommended n: {rec_meta.get('target_n_features_kept')}\n"
+                f"  Retained mAUC: {rec_meta.get('retained_mauc_vs_host')}\n"
+                f"  Stages run:    {len(traj)}\n"
+                f"  Shifted stages: {shifted_stages}\n"
+                f"\n"
+                f"  Rationale: {rationale}\n"
+                f"\n"
+                f"Use --accept-unconverged to recommend anyway, OR re-run "
+                f"sweep-capability-progressive with a longer schedule / "
+                f"looser plateau_tolerance / convergence_n_stages=1 "
+                f"(see openspec/changes/add-progressive-capability-"
+                f"sweep/design.md Decision 6 for the informed-opt-out "
+                f"alternatives).",
+                file=sys.stderr,
+            )
+            return 1
+
     survivors: list[ParetoFrontierRow] = []
     for row in rows:
         if row.error_message is not None:
@@ -1782,6 +2050,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_sweep_pareto(args)
     if args.command == "sweep-capability":
         return _cmd_sweep_capability(args)
+    if args.command == "sweep-capability-progressive":
+        return _cmd_sweep_capability_progressive(args)
     if args.command == "recommend":
         return _cmd_recommend(args)
     if args.command == "inspect":
