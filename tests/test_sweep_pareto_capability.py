@@ -863,7 +863,7 @@ def test_multi_encoding_rejects_both_sae_checkpoint_and_encodings(
         feed="pooled", n_proteins=4, sae_k=8,
         tokenizer_id=_tiny_host_model_id,
     )
-    with pytest.raises(ValueError, match="either `encodings`"):
+    with pytest.raises(ValueError, match=r"either `encodings=\[\(label"):
         sweep_pareto_capability(
             sae_checkpoint=run_dir / "sae.pt",
             encodings=[("a", run_dir / "sae.pt")],

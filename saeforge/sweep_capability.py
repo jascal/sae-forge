@@ -59,7 +59,14 @@ class _SweepCell:
 
 @dataclass(frozen=True)
 class _EncodingState:
-    """Per-encoding loaded SAE state for the cell loop."""
+    """Per-encoding loaded SAE state for the cell loop.
+
+    Constructed by :func:`_load_encoding_state` from an SAE state
+    dict. The invariants below are checked in ``__post_init__``
+    so callers constructing this directly (e.g. tests with hand-
+    written tensors) fail loudly on shape mismatches rather than
+    deferring to opaque downstream errors.
+    """
 
     label: str
     sae_checkpoint: Path
@@ -67,6 +74,30 @@ class _EncodingState:
     row_norms: np.ndarray    # (n_features,), float64
     order: np.ndarray        # argsort descending of row_norms
     partition_block_ids: np.ndarray | None
+
+    def __post_init__(self) -> None:
+        n_features = self.W_dec_full.shape[0]
+        if self.row_norms.shape != (n_features,):
+            raise ValueError(
+                f"_EncodingState[{self.label!r}]: row_norms shape "
+                f"{self.row_norms.shape} does not match W_dec_full "
+                f"row count ({n_features},)"
+            )
+        if self.order.shape != (n_features,):
+            raise ValueError(
+                f"_EncodingState[{self.label!r}]: order shape "
+                f"{self.order.shape} does not match W_dec_full "
+                f"row count ({n_features},)"
+            )
+        if (
+            self.partition_block_ids is not None
+            and self.partition_block_ids.shape != (n_features,)
+        ):
+            raise ValueError(
+                f"_EncodingState[{self.label!r}]: partition_block_ids "
+                f"shape {self.partition_block_ids.shape} does not match "
+                f"W_dec_full row count ({n_features},)"
+            )
 
 
 def _load_encoding_state(label: str, path: "str | Path") -> _EncodingState:
@@ -127,10 +158,14 @@ def _normalize_encodings_arg(
     """
     if encodings is not None and sae_checkpoint is not None:
         raise ValueError(
-            "sweep_pareto_capability: pass either `encodings` (multi-"
-            "encoding) OR `sae_checkpoint` (single-encoding), not both. "
-            "The legacy sae_checkpoint kwarg is sugar for "
-            "encodings=[('raw_slice', sae_checkpoint)]."
+            "sweep_pareto_capability: pass either `encodings=[(label, "
+            "path), ...]` (multi-encoding) OR `sae_checkpoint=PATH` "
+            "(single-encoding), not both. The legacy sae_checkpoint "
+            "kwarg is internally sugar for encodings=[('raw_slice', "
+            "sae_checkpoint)]; to compare raw_slice against other "
+            "encodings, list it explicitly in `encodings`. See "
+            "openspec/changes/add-multi-encoding-capability-sweep/"
+            "design.md Decision 1."
         )
     if encodings is None and sae_checkpoint is None:
         raise ValueError(
