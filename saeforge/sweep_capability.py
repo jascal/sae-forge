@@ -160,6 +160,19 @@ def sweep_pareto_capability(
     W_dec_full = sae_state["decoder.weight"].numpy().T.astype(np.float64)  # (n, d)
     row_norms = np.linalg.norm(W_dec_full, axis=1)
     order = np.argsort(-row_norms)
+    # Optional partition manifest (added by
+    # add-partition-encoding-capability-validation). If present, the
+    # per-cell basis builder slices per-tier instead of flat-by-norm.
+    # Absent: current row-norm slicing — back-compat byte-equivalent.
+    partition_block_ids: np.ndarray | None = None
+    if "partition_block_ids" in sae_state:
+        partition_block_ids = sae_state["partition_block_ids"].numpy().astype(np.int64)
+        if partition_block_ids.shape != (W_dec_full.shape[0],):
+            raise ValueError(
+                f"sweep_pareto_capability: partition_block_ids has shape "
+                f"{partition_block_ids.shape}, expected "
+                f"({W_dec_full.shape[0]},) to match decoder.weight rows."
+            )
 
     # ---- Stage 3: host-baseline metrics (compute once per sweep). ----
     # Note: host metrics need the encoder applied AFTER extraction;
@@ -222,6 +235,7 @@ def sweep_pareto_capability(
                 host_mauc=host_mauc,
                 host_cov95=host_cov95,
                 device=device,
+                partition_block_ids=partition_block_ids,
             )
         except Exception as exc:  # noqa: BLE001 — surface failures per-row
             row = ParetoFrontierRow(
@@ -244,6 +258,82 @@ def sweep_pareto_capability(
     return rows
 
 
+def _slice_partition_aware(
+    *,
+    row_norms: np.ndarray,
+    partition_block_ids: np.ndarray,
+    target_n_features_kept: int,
+) -> np.ndarray:
+    """Partition-aware basis slicing.
+
+    Allocates ``target_n_features_kept`` across the unique tiers in
+    ``partition_block_ids`` proportionally to per-tier feature counts,
+    then takes top-K by row norm WITHIN each tier. The proportional
+    allocation uses largest-fractional-remainder rounding for the last
+    slots; ties broken by lowest tier id for determinism.
+
+    Per spec
+    ``add-partition-encoding-capability-validation/specs/pareto-sweep/spec.md``:
+
+    1. tier_sizes[t] = count of features in tier t.
+    2. proportional[t] = target * tier_sizes[t] / sum(tier_sizes).
+    3. floor allocation; remainder slots distributed by largest
+       fractional residual.
+    4. within each tier, kept features = top-K by row norm.
+
+    Returns a sorted int64 array of kept feature ids. ``len(result)``
+    SHALL equal ``target_n_features_kept``.
+    """
+    n_features_total = row_norms.shape[0]
+    if partition_block_ids.shape[0] != n_features_total:
+        raise ValueError(
+            f"partition_block_ids has {partition_block_ids.shape[0]} "
+            f"entries but row_norms has {n_features_total}"
+        )
+    unique_tiers = sorted(set(int(t) for t in partition_block_ids))
+    tier_sizes = np.array(
+        [int((partition_block_ids == t).sum()) for t in unique_tiers],
+        dtype=np.int64,
+    )
+    total_size = int(tier_sizes.sum())
+    if target_n_features_kept > total_size:
+        raise ValueError(
+            f"target_n_features_kept={target_n_features_kept} exceeds "
+            f"sum(tier_sizes)={total_size}"
+        )
+    # Step 2-3: proportional allocation + remainder distribution.
+    proportional = (
+        target_n_features_kept * tier_sizes.astype(np.float64) / total_size
+    )
+    allocated = np.floor(proportional).astype(np.int64)
+    remaining_slots = target_n_features_kept - int(allocated.sum())
+    residuals = proportional - allocated
+    # Largest residual wins remaining slots; lowest tier id breaks ties.
+    if remaining_slots > 0:
+        # argsort ascending: take from the end; lowest tier-id breaks tie via
+        # stable sort (numpy's default is stable).
+        order_by_residual = np.argsort(-residuals, kind="stable")
+        for i in order_by_residual[:remaining_slots]:
+            allocated[i] += 1
+    # Step 4: within each tier, top-K by row norm.
+    kept_ids: list[int] = []
+    for tier_idx, tier in enumerate(unique_tiers):
+        k = int(allocated[tier_idx])
+        if k == 0:
+            continue
+        tier_features = np.flatnonzero(partition_block_ids == tier)
+        # Sort tier features by descending row norm; take top-K.
+        tier_norms = row_norms[tier_features]
+        sorted_indices = tier_features[np.argsort(-tier_norms, kind="stable")]
+        kept_ids.extend(int(fid) for fid in sorted_indices[:k])
+    result = np.sort(np.array(kept_ids, dtype=np.int64))
+    assert result.shape[0] == target_n_features_kept, (
+        f"partition-aware slicing produced {result.shape[0]} features, "
+        f"requested {target_n_features_kept}"
+    )
+    return result
+
+
 def _run_capability_cell(
     *,
     cell: _SweepCell,
@@ -258,8 +348,16 @@ def _run_capability_cell(
     host_mauc: float,
     host_cov95: float,
     device: str,
+    partition_block_ids: np.ndarray | None = None,
 ) -> ParetoFrontierRow:
-    """Run one sweep cell. Returns a populated ParetoFrontierRow."""
+    """Run one sweep cell. Returns a populated ParetoFrontierRow.
+
+    When ``partition_block_ids`` is provided, the basis is sliced
+    per-tier proportionally (per
+    ``add-partition-encoding-capability-validation`` spec) instead
+    of flat-by-row-norm. The proportional allocation uses largest-
+    fractional-remainder rounding for deterministic tie-breaking.
+    """
     import torch
 
     from saeforge.adapters import adapter_for
@@ -275,7 +373,14 @@ def _run_capability_cell(
             f"sweep cell width {n_features} exceeds SAE width "
             f"{W_dec_full.shape[0]}"
         )
-    kept = np.sort(order[:n_features])
+    if partition_block_ids is not None:
+        kept = _slice_partition_aware(
+            row_norms=row_norms,
+            partition_block_ids=partition_block_ids,
+            target_n_features_kept=n_features,
+        )
+    else:
+        kept = np.sort(order[:n_features])
     W_dec_slice = W_dec_full[kept]
     basis = FeatureBasis(
         kept_ids=kept.astype(np.int64),

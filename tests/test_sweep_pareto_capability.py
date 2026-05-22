@@ -556,6 +556,198 @@ def test_pooled_and_residue_caches_dont_collide(tmp_path: Path, _tiny_host_model
     )
 
 
+# ---------------------------------------------------------------------------
+# Suite 5: partition-aware basis slicing
+# (added by add-partition-encoding-capability-validation)
+# ---------------------------------------------------------------------------
+
+
+def test_partition_aware_basis_slicing_proportional():
+    """Per spec: tiers get allocated proportionally to their feature
+    count."""
+    import numpy as np
+
+    from saeforge.sweep_capability import _slice_partition_aware
+
+    # 8 features across 4 tiers [0, 0, 0, 0, 1, 1, 2, 3] →
+    # tier_sizes = [4, 2, 1, 1]. target=4: proportional = [2.0, 1.0, 0.5, 0.5].
+    # Floor = [2, 1, 0, 0] = 3 allocated; 1 remainder.
+    # Residuals = [0.0, 0.0, 0.5, 0.5]; largest residual ties at
+    # tiers 2+3. Lowest tier id (2) wins by stable sort.
+    row_norms = np.array([5, 4, 3, 2, 9, 8, 7, 6], dtype=np.float64)
+    partition_block_ids = np.array([0, 0, 0, 0, 1, 1, 2, 3], dtype=np.int64)
+    kept = _slice_partition_aware(
+        row_norms=row_norms, partition_block_ids=partition_block_ids,
+        target_n_features_kept=4,
+    )
+    # Tier 0: 2 features (top by norm = indices 0, 1; norms 5, 4).
+    # Tier 1: 1 feature (top = index 4; norm 9).
+    # Tier 2: 1 feature (only feature = index 6; norm 7).
+    # Tier 3: 0 features.
+    assert kept.tolist() == sorted([0, 1, 4, 6])
+
+
+def test_partition_aware_basis_slicing_largest_residual_wins():
+    """Edge case: proportional rounding yields off-by-one. Largest
+    fractional remainder wins the last slot."""
+    import numpy as np
+
+    from saeforge.sweep_capability import _slice_partition_aware
+
+    # 5 features, 2 tiers [0, 0, 0, 1, 1]. target=2: proportional =
+    # [1.2, 0.8]. Floor = [1, 0] = 1 allocated; 1 remainder.
+    # Residuals = [0.2, 0.8]; largest is tier 1.
+    row_norms = np.array([5, 4, 3, 2, 1], dtype=np.float64)
+    partition_block_ids = np.array([0, 0, 0, 1, 1], dtype=np.int64)
+    kept = _slice_partition_aware(
+        row_norms=row_norms, partition_block_ids=partition_block_ids,
+        target_n_features_kept=2,
+    )
+    # Tier 0 gets 1 (top by norm = index 0).
+    # Tier 1 gets 1 (top by norm = index 3).
+    assert kept.tolist() == [0, 3]
+
+
+def test_partition_aware_basis_slicing_within_tier_topk():
+    """Within each tier, the kept feature ids are the top-K by row
+    norm — NOT first-K or last-K by feature id."""
+    import numpy as np
+
+    from saeforge.sweep_capability import _slice_partition_aware
+
+    # 6 features, 1 tier [0, 0, 0, 0, 0, 0]. target=3.
+    row_norms = np.array([1, 5, 3, 6, 2, 4], dtype=np.float64)
+    partition_block_ids = np.zeros(6, dtype=np.int64)
+    kept = _slice_partition_aware(
+        row_norms=row_norms, partition_block_ids=partition_block_ids,
+        target_n_features_kept=3,
+    )
+    # Top-3 by norm: indices 3 (6), 1 (5), 5 (4). Sorted: [1, 3, 5].
+    assert kept.tolist() == [1, 3, 5]
+
+
+def test_partition_aware_basis_slicing_exceeds_total():
+    """target_n_features_kept > sum(tier_sizes) → ValueError."""
+    import numpy as np
+
+    from saeforge.sweep_capability import _slice_partition_aware
+
+    with pytest.raises(ValueError, match="exceeds sum"):
+        _slice_partition_aware(
+            row_norms=np.array([1, 2, 3], dtype=np.float64),
+            partition_block_ids=np.zeros(3, dtype=np.int64),
+            target_n_features_kept=10,
+        )
+
+
+def test_partition_aware_basis_falls_back_to_row_norm_when_absent(
+    tmp_path: Path, _tiny_host_model_id,
+):
+    """SAE state dict without partition_block_ids SHALL use the
+    current row-norm slicing path (back-compat byte-equivalent)."""
+    from saeforge import sweep_pareto_capability
+    from saeforge.datasets import CapabilityDataset
+
+    run_dir, bundle_path, seqs_path = _build_bio_sae_fixture(tmp_path)
+    dataset = CapabilityDataset.from_bio_sae(
+        run_dir, bundle_path, seqs_path,
+        feed="pooled", n_proteins=4, sae_k=8,
+        tokenizer_id=_tiny_host_model_id,
+    )
+    rows = sweep_pareto_capability(
+        sae_checkpoint=run_dir / "sae.pt",
+        host_model_id=_tiny_host_model_id,
+        dataset=dataset,
+        widths=[8, 16],
+        output_dir=tmp_path / "sweep_no_partition",
+        cache_host=False,
+        device="cpu",
+    )
+    assert len(rows) == 2
+    for row in rows:
+        assert row.error_message is None, row.error_message
+
+
+def test_partition_aware_basis_used_when_present(
+    tmp_path: Path, _tiny_host_model_id,
+):
+    """SAE state dict WITH partition_block_ids SHALL use the
+    partition-aware path. Verified end-to-end with an explicit
+    4-tier partition."""
+    import torch
+
+    from saeforge import sweep_pareto_capability
+    from saeforge.datasets import CapabilityDataset
+
+    run_dir, bundle_path, seqs_path = _build_bio_sae_fixture(tmp_path)
+    sae_state = torch.load(
+        run_dir / "sae.pt", map_location="cpu", weights_only=True,
+    )
+    sae_width = sae_state["decoder.weight"].shape[1]
+    quarter = sae_width // 4
+    partition = (
+        [0] * quarter
+        + [1] * quarter
+        + [2] * quarter
+        + [3] * (sae_width - 3 * quarter)
+    )
+    sae_state["partition_block_ids"] = torch.tensor(partition, dtype=torch.int64)
+    torch.save(sae_state, run_dir / "sae.pt")
+
+    dataset = CapabilityDataset.from_bio_sae(
+        run_dir, bundle_path, seqs_path,
+        feed="pooled", n_proteins=4, sae_k=8,
+        tokenizer_id=_tiny_host_model_id,
+    )
+    rows = sweep_pareto_capability(
+        sae_checkpoint=run_dir / "sae.pt",
+        host_model_id=_tiny_host_model_id,
+        dataset=dataset,
+        widths=[8, 16],
+        output_dir=tmp_path / "sweep_with_partition",
+        cache_host=False,
+        device="cpu",
+    )
+    assert len(rows) == 2
+    for row in rows:
+        assert row.error_message is None, row.error_message
+
+
+def test_partition_block_ids_shape_mismatch_raises(
+    tmp_path: Path, _tiny_host_model_id,
+):
+    """A partition_block_ids tensor whose shape doesn't match the
+    decoder rows SHALL raise a clear ValueError before any forge
+    cost is paid."""
+    import torch
+
+    from saeforge import sweep_pareto_capability
+    from saeforge.datasets import CapabilityDataset
+
+    run_dir, bundle_path, seqs_path = _build_bio_sae_fixture(tmp_path)
+    sae_state = torch.load(
+        run_dir / "sae.pt", map_location="cpu", weights_only=True,
+    )
+    # Wrong shape: too short.
+    sae_state["partition_block_ids"] = torch.zeros(3, dtype=torch.int64)
+    torch.save(sae_state, run_dir / "sae.pt")
+    dataset = CapabilityDataset.from_bio_sae(
+        run_dir, bundle_path, seqs_path,
+        feed="pooled", n_proteins=4, sae_k=8,
+        tokenizer_id=_tiny_host_model_id,
+    )
+    with pytest.raises(ValueError, match="partition_block_ids has shape"):
+        sweep_pareto_capability(
+            sae_checkpoint=run_dir / "sae.pt",
+            host_model_id=_tiny_host_model_id,
+            dataset=dataset,
+            widths=[8],
+            output_dir=tmp_path / "sweep_bad_partition",
+            cache_host=False,
+            device="cpu",
+        )
+
+
 def test_residue_feed_label_misalignment_raises(tmp_path: Path, _tiny_host_model_id):
     """If sequences and labels disagree on residue count (e.g. user
     passes a bundle built with a different max_seq_len), the sweep
