@@ -68,13 +68,35 @@ recommended encoding: partition_q4
 
 Three predictions against bio-sae's pooled fixture under `[1000, 5000]` schedule, comparing five encodings (raw_slice, partition_q4, mps_rung1_x4, mps_rung1_x16, rung5):
 
-| prediction | falsifies if |
-|---|---|
-| At least ONE encoding crosses the per-cell retained_mauc threshold (≥ 0.95 at n=512 at the largest stage) where raw_slice doesn't | every alternative encoding is ≤ raw_slice at every cell |
-| Some encoding's plateau argmin is data-scale-stable (`per_encoding_recommendations[...].converged = True`) where raw_slice's isn't | every alternative encoding is also un-converged at default strictness |
-| At least TWO encodings disagree on `target_n_features_kept` by more than one candidate-grid bucket at the same threshold | every encoding picks the same width (would mean encoding choice doesn't matter at this width grid) |
+| prediction | concrete threshold | falsifies if |
+|---|---|---|
+| At least ONE encoding clears retained_mauc ≥ 0.95 at width ≤ 512 at stage 1 (5000 proteins), where raw_slice doesn't | `retained_mauc_vs_host ≥ 0.95 at target_n_features_kept ≤ 512 in stage_1` | every alternative encoding is ≤ raw_slice's `retained_mauc` at every (width, stage) cell |
+| At least ONE encoding's plateau argmin is data-scale-stable | `per_encoding_recommendations[E].converged == True` for some E ≠ raw_slice, AND `per_encoding_recommendations["raw_slice"].converged == False` | every alternative is also un-converged at default strictness (`convergence_n_stages=2`, `plateau_tolerance=0.01`) |
+| At least TWO encodings disagree on `target_n_features_kept` by more than one candidate-grid bucket | `\|enc_A.target_n_features_kept - enc_B.target_n_features_kept\| > one_candidate_step` at the same `retained_mauc ≥ 0.95` predicate | every encoding picks the same width at the threshold (encoding choice doesn't matter at this width grid) |
 
-If all three predictions hold → multi-encoding sweep is load-bearing; encoding choice is a real lever. If only some hold → encoding-choice helps in specific regimes; documented. If none hold → encoding-choice doesn't move the capability frontier on this substrate; fine-tune is the next lever.
+If all three hold → multi-encoding is load-bearing. If 2/3 → partial; documented. If 0/3 → encoding choice doesn't move the frontier on this substrate; fine-tune is the next lever.
+
+## Compute cost guidance
+
+A multi-encoding sweep with K encodings runs K × per-encoding cells per stage. The host-extraction cache (PR #77) is shared across encodings (Decision 2), so the dominant per-cell cost is the forge extraction itself.
+
+Expected wall-time multipliers vs single-encoding sweep (CPU, bio-sae pooled fixture):
+
+| K (encodings) | wall-time multiplier (cold cache) | wall-time multiplier (warm host cache) |
+|---|---|---|
+| 1 | 1.0× (baseline) | 1.0× |
+| 2 | 1.7× | 1.4× |
+| 4 | 3.2× | 2.6× |
+| 5 | 3.9× | 3.2× |
+
+(Cold cache: ~45 min single-encoding at [1000, 5000] → ~3 hours at K=5. Warm host cache: ~30 min → ~1.6 hours.)
+
+Two practical mitigations the CLI exposes:
+
+- **`--dry-run`** (added by this openspec). Counts cells + benchmarks one cell at the smallest stage × first encoding × first width, projects total wall-time. Exits without running the full sweep. ~30 seconds. Use before committing to a multi-encoding sweep at scale.
+- **`--max-width N`** and **`--schedule N`** truncation. For initial exploration: run a K-encoding sweep with `--candidate-widths 16,64,256` and `--schedule 1000` (single-stage progressive surface) to identify which encodings deserve the full sweep. The `--dry-run` projection makes this decision concrete.
+
+The `add-forged-activations-cache` openspec (deferred per the warm-start counter-shape, PR #86), if shipped, would further cut multi-encoding cost: at K=5, wall time drops to ~1.5 hours under warm host + warm forge caches.
 
 ## Why this is NOT the mixed-χ ensemble proposal
 

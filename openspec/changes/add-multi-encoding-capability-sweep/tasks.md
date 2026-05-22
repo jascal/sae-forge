@@ -29,6 +29,8 @@
 - [ ] 3.3 YAML dataset config's `encoder_checkpoint` continues to work as the single-encoding sugar. When `--encoding` is also provided, `--encoding` wins; emit a warning.
 - [ ] 3.4 `sae-forge recommend` over a multi-encoding frontier (detected via multiple distinct `encoding_label` values among rows): output emits the per-encoding ranking PLUS the picked encoding+width pair. Tiebreaker per design.md Decision 6.
 - [ ] 3.5 `--help` text on `--encoding` documents the format + repeatable + winner-pick tiebreaker.
+- [ ] 3.6 `--dry-run` flag on both `sweep-capability` and `sweep-capability-progressive`. Counts cells + benchmarks one cell + projects wall time + optional `--dollars-per-gpu-hr` cost. Exits 0 without running the full sweep. Spec'd in spec.md "sweep-capability --dry-run cost projection".
+- [ ] 3.7 `sae-forge recommend` multi-encoding output emits the full per-encoding ranking table (per spec.md "recommend over multi-encoding frontiers" update). Single-encoding frontiers unchanged.
 
 ## 4. Tests
 

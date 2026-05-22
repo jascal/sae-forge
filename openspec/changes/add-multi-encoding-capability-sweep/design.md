@@ -32,11 +32,11 @@ The capability sweep needs to LOAD each encoding's SAE state dict to extract W_d
 
 The single-encoding `sae_checkpoint=PATH` keyword is retained as sugar — it becomes `encodings=[("raw_slice", sae_checkpoint)]` internally. Back-compat: every v0.8.x / v0.9.x call site continues working.
 
-### Decision 2 — Per-encoding host extraction cache, NOT shared
+### Decision 2 — Host cache is SHARED across encodings; forge cache (deferred) is per-encoding
 
-Each encoding's basis construction may need different feature subsets, but host activations are encoding-independent (they're the residual stream of the host model on the input sequences). The host-extraction cache (PR #77) is correctly shared across encodings because the cache key doesn't include encoding identity.
+Host activations are encoding-independent — they're the residual stream of the host model on the input sequences, which doesn't change based on which encoding we're forging against. The host-extraction cache (PR #77) is therefore correctly SHARED across encodings: the cache key doesn't include encoding identity, and stage K+1's host cache from a multi-encoding sweep is read by every encoding's first cell. This is a free win — N encodings cost the same host-extraction work as 1.
 
-The forge-activations cache (deferred to `add-forged-activations-cache`) is per-encoding because it caches the OUTPUT of running the forged module, which differs per encoding. This openspec doesn't ship the forge-activations cache; it leaves the door open for the deferred openspec to layer on later.
+The forge-activations cache (deferred to `add-forged-activations-cache` per the warm-start counter-shape, PR #86) WILL be per-encoding because it caches the output of running the forged module, which differs per encoding. This openspec doesn't ship the forge-activations cache; it leaves the door open for the deferred openspec to layer on later. **When both ship: multi-encoding cost approaches `host_cost + K × per_encoding_forge_cost`**, not `K × (host_cost + per_encoding_forge_cost)`.
 
 ### Decision 3 — Per-encoding plateau identification, NOT cross-encoding
 
@@ -64,7 +64,11 @@ This is a strict superset of the v0.9.x `ProgressiveRecommendation` shape — ba
 
 Backward-compat with the existing `sweep-capability --dataset-config YAML` (where `encoder_checkpoint` lives in the YAML): if neither `--encoding` nor `--dataset-config`'s `encoder_checkpoint` provides multiple encodings, the call is single-encoding. If both provide encodings (YAML AND `--encoding`), `--encoding` wins (explicit beats implicit); CLI emits a warning.
 
-### Decision 6 — `recommend` over multi-encoding frontiers picks across encodings
+### Decision 6 — `χ` is treated as an encoding-choice axis, NOT a data-scale axis
+
+The 2026-05-22 mixed-χ chat proposal framed bond dimension as a data-scale-coupled hyperparameter (different protein counts → different optimal χ). **This openspec deliberately rejects that coupling.** Bond dimension is a property of the *encoding* (how compressed the basis representation is — a polygram-side choice); the data-scale axis is about AUC-estimator variance (how much eval data we run against). These are orthogonal. An MPSRung1 encoder at χ=16 is one *encoding option* the user can compare against raw_slice, partition_q4, and Rung5 at any given data scale — the progressive wrapper's stage ladder handles the data-scale axis independently. Treating χ correctly as an encoding-choice axis is what makes the original proposal's substantive question testable without an ensemble framework.
+
+### Decision 7 — `recommend` over multi-encoding frontiers picks across encodings
 
 `sae-forge recommend --target retained-mauc>=0.95` against a multi-encoding `frontier.jsonl`:
 

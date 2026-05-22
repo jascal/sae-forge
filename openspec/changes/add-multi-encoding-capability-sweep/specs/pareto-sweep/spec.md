@@ -126,17 +126,76 @@ distinct `encoding_label` values among its rows:
 1. Apply predicates as today (filter rows that pass `--target`).
 2. Sort survivors by `(target_n_features_kept ASC,
    encoding_list_order_index ASC)`.
-3. Output names BOTH the encoding and the width:
+3. Output names BOTH the encoding and the width AND emits the
+   **full per-encoding ranking table** (not just the winner) so
+   users see WHY the winner was picked + which encodings came
+   close.
+
+Example output format:
 
 ```
 recommended encoding: partition_q4
   target_n_features_kept: 64
   retained_mauc_vs_host:  0.9523
   cross-encoding rank:    1/5
+
+Per-encoding ranking (smallest n meeting retained-mauc>=0.95):
+  rank  encoding         n     retained_mauc  converged
+  1     partition_q4     64    0.9523         True
+  2     mps_rung1_x16    128   0.9510         True
+  3     rung5            128   0.9482         True
+  4     raw_slice        256   0.9492         False
+  5     mps_rung1_x4     —     —              False  (no width meets predicate)
 ```
 
+The ranking table SHALL always print under multi-encoding
+frontiers — even when the winner is unambiguous — because the
+gap between winner and runner-up is itself a useful diagnostic
+(small gap → encoding choice is marginal; large gap → encoding
+choice is decisive).
+
 Single-encoding frontiers (only one distinct `encoding_label`)
-behave identically to v0.9.x.
+behave identically to v0.9.x — no ranking table.
+
+### Requirement: `sae-forge sweep-capability --dry-run` cost projection
+
+Both `sae-forge sweep-capability` and `sae-forge sweep-capability-progressive`
+SHALL accept a `--dry-run` flag. When passed:
+
+1. Count expected cells: `K_encodings × N_widths × S_scale_boosts × T_stages`.
+2. Benchmark ONE cell at the smallest schedule entry × first
+   encoding × first width × first scale_boost. The benchmark
+   includes host extraction (cached after first run; the
+   projection accounts for the cache) + forge construction +
+   forge extraction + AUC scoring.
+3. Project total wall time: `single_cell_seconds × cell_count`,
+   adjusted for the host-cache amortisation (each encoding's first
+   cell pays host extraction; subsequent cells get a cache hit).
+4. Project dollar cost when `--dollars-per-gpu-hr` is supplied
+   (same kwarg as `sae-forge scale-sweep` per
+   `add-scaling-summary-emitter`'s deferred openspec; ignored if
+   that openspec hasn't shipped yet — accepted as a no-op flag).
+5. Emit the projection to stdout in a structured table; exit `0`
+   without running the full sweep.
+
+Example dry-run output:
+
+```
+sweep-capability-progressive dry-run:
+  K encodings:               5
+  widths:                    [16, 64, 128, 256, 512, 1024]
+  schedule:                  [1000, 5000]
+  scale_boosts:              [1.0]
+  total cells:               60
+  one-cell benchmark:        12.4 sec (stage_0, raw_slice, n=16)
+  projected wall time:       ~12 minutes (warm host cache)
+                             ~28 minutes (cold cache)
+  projected cost (--dollars-per-gpu-hr=3.0): $0.60 (warm) / $1.40 (cold)
+```
+
+The projection's accuracy bound is documented (within ~25% on
+commodity CPUs per the residue-regime calibration in
+`add-scaling-summary-emitter`'s acceptance gate).
 
 ### Requirement: Falsifiable acceptance gate
 
