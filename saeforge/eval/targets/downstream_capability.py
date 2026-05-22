@@ -28,6 +28,64 @@ Returns ``(score, perplexity_analog)`` per the FaithfulnessTarget
 protocol. ``better_when = "higher"``. Never returned by
 ``_default_target_for(family)`` — opt-in only, must be passed via
 ``ForgePipeline(faithfulness=...)``.
+
+Example — manual construction
+=============================
+
+::
+
+    import numpy as np
+    import torch
+    from saeforge import FeatureBasis, ForgePipeline, SubspaceProjector
+    from saeforge.eval.targets import DownstreamCapabilityTarget
+
+    # A trained SAE wrapped as a "task encoder" callable. nn.Module
+    # SAEs that return (reconstruction, latents) wrap as:
+    #   encoder = lambda x: my_sae(x)[1]
+    encoder = lambda x: x @ W_enc.T + b_enc      # any d_model -> latent_width
+
+    # Binary label matrix (one row per eval sequence).
+    labels = np.array([[1, 0, 1], [0, 1, 0], ...], dtype=np.uint8)
+
+    target = DownstreamCapabilityTarget(
+        encoder=encoder,
+        labels=labels,
+        aggregator="pool_then_encode",   # or "encode_then_pool"
+        min_prevalence=10,               # drop singleton labels
+    )
+
+    pipeline = ForgePipeline(
+        basis=basis, projector=projector,
+        host_model_id="facebook/esm2_t6_8M_UR50D",
+        eval_prompts=protein_sequences,
+        faithfulness=target,
+    )
+    result = pipeline.run(output_dir)
+    # result.faithfulness is mean-best-AUC over labels.
+    # target.forge_pf_auc holds the per-feature AUC array for plotting.
+
+Example — via ``CapabilityDataset.from_bio_sae``
+================================================
+
+::
+
+    from saeforge.datasets import CapabilityDataset
+
+    dataset = CapabilityDataset.from_bio_sae(
+        run_dir="runs/uniref50_n5000/pooled_w1024_k64/",
+        bundle_path="data/bio_bundle_uniref50.safetensors",
+        sequences_path="data/uniref50_sample__n5000_seed0.parquet",
+        feed="pooled",
+        n_proteins=500,
+        min_prevalence=10,
+    )
+    target = DownstreamCapabilityTarget(
+        encoder=dataset.encoder,
+        labels=dataset.labels,
+        aggregator=dataset.aggregator,
+        min_prevalence=dataset.min_prevalence,
+    )
+    # Use ``target`` with ForgePipeline as above.
 """
 
 from __future__ import annotations
@@ -74,6 +132,14 @@ class DownstreamCapabilityTarget:
         basis-coord states into ``d_model`` coords the encoder expects.
         Set False when the encoder operates directly on basis-coord
         activations (skips the W_dec recovery entirely).
+    warn_on_pinv:
+        When True (default), emit a one-shot ``UserWarning`` per
+        ``id(forged_module)`` if the target falls back to path (c) —
+        recovering ``W_dec`` via ``pinv(basis_encode)`` because neither
+        ``ctx["basis"]`` nor ``forged_module.basis_decode`` is
+        available. Set False to silence the warning for advanced users
+        who knowingly forge against legacy / third-party adapters
+        without the buffer.
     """
 
     name = "downstream_capability"
@@ -87,6 +153,7 @@ class DownstreamCapabilityTarget:
         aggregator: "Literal['pool_then_encode', 'encode_then_pool'] | Callable" = "pool_then_encode",
         min_prevalence: int = 0,
         decode_via_basis: bool = True,
+        warn_on_pinv: bool = True,
     ) -> None:
         if not callable(encoder):
             raise TypeError(
@@ -132,6 +199,7 @@ class DownstreamCapabilityTarget:
         self.aggregator = aggregator
         self.min_prevalence = min_prevalence
         self.decode_via_basis = decode_via_basis
+        self.warn_on_pinv = warn_on_pinv
 
         # Caches keyed by id(forged_module). Populated lazily on first
         # score() call so repeat-sweeps amortise the W_dec recovery
@@ -264,8 +332,9 @@ class DownstreamCapabilityTarget:
             )
         basis_encode = be.detach().cpu().numpy().astype(np.float64)
         W_dec = np.linalg.pinv(basis_encode)
-        # One-shot warning per forged_module instance.
-        if key not in self._pinv_warning_emitted:
+        # One-shot warning per forged_module instance (silenceable via
+        # constructor flag for advanced users).
+        if self.warn_on_pinv and key not in self._pinv_warning_emitted:
             self._pinv_warning_emitted.add(key)
             rank = int(np.linalg.matrix_rank(basis_encode))
             n_features = basis_encode.shape[1]

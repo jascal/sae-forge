@@ -111,6 +111,37 @@ def test_path_b_default_no_pinv_warning():
     )
 
 
+def test_warn_on_pinv_false_silences_fallback_warning():
+    """warn_on_pinv=False suppresses the path-(c) warning while still
+    using the pinv fallback (added per #76 review)."""
+    from saeforge.eval.targets import DownstreamCapabilityTarget
+
+    model, host, input_ids, d = _identity_forge()
+    # Force path (c) by zeroing the buffer.
+    model.torch_module.basis_decode.zero_()
+
+    rng = np.random.default_rng(0)
+    W_enc = torch.from_numpy(rng.standard_normal((8, d)).astype(np.float32) * 0.1)
+    b_enc = torch.zeros(8)
+    encoder = lambda x: x @ W_enc.T + b_enc  # noqa: E731
+    labels = np.array([[1, 0], [0, 1], [1, 1], [0, 0], [1, 0]], dtype=np.uint8)
+
+    target = DownstreamCapabilityTarget(
+        encoder=encoder, labels=labels, warn_on_pinv=False,
+    )
+    with warnings.catch_warnings(record=True) as w_list:
+        warnings.simplefilter("always")
+        target.score(
+            forged=model, host=host,
+            ctx={"_eval_input_ids": input_ids, "device": "cpu"},
+        )
+    pinv_msgs = [str(w.message) for w in w_list if "pinv" in str(w.message).lower()]
+    assert not pinv_msgs, (
+        f"warn_on_pinv=False should silence the fallback warning; "
+        f"got: {pinv_msgs!r}"
+    )
+
+
 def test_path_c_pinv_fallback_emits_warning():
     """Forged module without basis_decode falls back to pinv with warning."""
     model, host, input_ids, d = _identity_forge()
