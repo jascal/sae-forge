@@ -44,11 +44,30 @@ pytest.importorskip("pandas")
 pytest.importorskip("saeforge")
 
 
-# Bio-sae fixture root. Override via SAEFORGE_BIOSAE_ROOT for users who
-# checked out bio-sae somewhere non-default.
-_BIOSAE_ROOT = Path(
-    os.environ.get("SAEFORGE_BIOSAE_ROOT", "/Users/allans/code/bio-sae")
-)
+def _resolve_biosae_root() -> Path:
+    """Locate the bio-sae checkout.
+
+    Resolution order:
+      1. ``SAEFORGE_BIOSAE_ROOT`` env var (explicit override).
+      2. ``../bio-sae`` relative to the sae-forge checkout root — the
+         canonical sibling-checkout layout most contributors use.
+      3. ``~/code/bio-sae`` — the author's local path; kept as a
+         last-resort fallback.
+
+    Tests skip cleanly when none of these resolve to an existing
+    directory; this keeps the gate runnable both on contributor
+    laptops and in fresh-checkout CI without manual config.
+    """
+    override = os.environ.get("SAEFORGE_BIOSAE_ROOT")
+    if override:
+        return Path(override)
+    sibling = Path(__file__).resolve().parents[2] / "bio-sae"
+    if sibling.exists():
+        return sibling
+    return Path.home() / "code" / "bio-sae"
+
+
+_BIOSAE_ROOT = _resolve_biosae_root()
 
 
 def _require_biosae_fixtures(*paths: Path) -> tuple[Path, ...]:
@@ -163,11 +182,11 @@ def test_pooled_regime_default_strictness_flags_plateau_shift(tmp_path):
     Running with the recommended production defaults
     (``convergence_n_stages=2``, ``plateau_tolerance=0.01``) on
     bio-sae's 500-protein pooled SAE, the plateau's argmin SHIFTS
-    between data scales: n=384 at 200 proteins, n=256 at 500
-    proteins (one candidate-grid bucket shift). The PEAK position
-    is stable around n=512; what shifts is the plateau's left edge
-    as the AUC estimate tightens and the plateau membership
-    contracts.
+    between data scales: **n=384 at 200 proteins → n=256 at 500
+    proteins** — a one-candidate-grid-bucket downward shift as data
+    scale doubles. The PEAK position is stable around n=512; what
+    shifts is the plateau's left edge as the AUC estimate tightens
+    and the plateau membership contracts.
 
     The wrapper's correct behaviour on this substrate is to
     **REFUSE the recommendation as un-converged** with a rationale

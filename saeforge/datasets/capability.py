@@ -224,14 +224,10 @@ class CapabilityDataset:
         # this implicitly in residue_index[:, 0] (protein_id column).
         residues_per_protein: list[int] | None = None
         if feed == "residue":
-            kept_protein_ids = bundle["residue_index"][mask, 0]
-            # Each protein contributes a contiguous block of residues;
-            # count them in protein-id order.
-            residues_per_protein = []
-            for pid in range(int(n_proteins)):
-                residues_per_protein.append(
-                    int((kept_protein_ids == pid).sum())
-                )
+            kept_protein_ids = bundle["residue_index"][mask, 0].astype(int)
+            residues_per_protein = np.bincount(
+                kept_protein_ids, minlength=int(n_proteins),
+            ).tolist()
 
         metadata = {
             "source":          "bio_sae",
