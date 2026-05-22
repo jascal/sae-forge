@@ -80,3 +80,10 @@
 - [ ] 6.2 Update `scripts/forge_capability_acceptance.py` with a `--progressive` flag that switches to the new wrapper.
 - [ ] 6.3 Update `tests/test_forge_capability_acceptance.py` with a progressive variant that asserts the convergence contract (smallest-stable-n) directly.
 - [ ] 6.4 Update `docs/forge-capability-bottleneck.md` §3 with the progressive measurements + the cross-stage-stability rationale.
+- [ ] 6.5 Capture the convergence trajectory on bio-sae's two fixtures via the progressive wrapper. Record the per-stage `argmin_plateau_width` shifts in the writeup as the empirical "what does convergence actually look like" reference point. Counts as the first data point for the predicted-usage-rate hypothesis (design.md Decision 6, item 4): expected un-converged ratio ≤ 10 % across the fixture matrix.
+
+## 7. Usage-rate validation (cross-repo, post-adoption)
+
+- [ ] 7.1 After 3 months of progressive-wrapper use across bio-sae / sm-sae / econ-sae, audit each fixture repo's `runs/progressive_*/progressive_summary.json` artefacts. Count what fraction had `converged=False`.
+- [ ] 7.2 Compare against the design.md ≤ 10 % falsifiable prediction. If above, file a follow-up to retune defaults (schedule shape, `plateau_tolerance`, `convergence_n_stages`). If below, the strictness is well-calibrated.
+- [ ] 7.3 Cross-reference any `--accept-unconverged` invocations in CI / docs / scripts across the three repos. The flag SHOULD be rare; if it's showing up commonly, the API contract isn't doing its job.

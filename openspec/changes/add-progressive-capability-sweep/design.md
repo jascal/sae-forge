@@ -76,6 +76,23 @@ If the convergence criterion doesn't fire within the supplied schedule, `Progres
 
 This avoids the failure mode where a user runs `sweep_pareto_capability_progressive` once with too-short a schedule, gets back a recommendation, doesn't notice the `converged=False`, and ships a non-stable forge. The CLI's `recommend` consumer raises if not converged unless `--accept-unconverged` is passed.
 
+**Reviewer concern, telemetry, and falsifiable usage-rate claim.** PR #82's review flagged: "the convergence requirement is strict by default — probably the right call, but I'd want to see how often the `--accept-unconverged` flag actually gets used in practice." That's a measurable design hypothesis. To make it falsifiable:
+
+1. **`progressive_summary.json` records the full convergence trajectory.** Every stage's `(stage, n_proteins, argmin_plateau_width, argmin_retained_mauc, plateau_size, neighbours_added)` is on disk. External benchmarking (counting un-converged ratios over a corpus of runs) needs no in-library telemetry — it's all in the artefact.
+
+2. **Predicted usage rate.** With the default schedule `[10, 50, 200, 1000]` and `convergence_n_stages=2`, **the expected fraction of runs needing `--accept-unconverged` is ≤ 10 %** on representative substrates (the bio-sae two-fixture set + sm-sae / econ-sae's analogous fixtures once they adopt this). The 10 % is the falsifiable hypothesis. Reasoning:
+   - Spread regimes converge in 1 stage (single-shot stability). 0 % un-converged expected here.
+   - Concentrated regimes converge in 2-3 stages on bio-sae's residue fixture (writeup §3.1 + this work's n=100 verification). 0-20 % un-converged expected: most converge, some hit the schedule's tail on close-call sub-regimes.
+   - Pathological substrates (no plateau exists; retained_mauc varies monotonically across all widths) will reliably exhaust the schedule. These exist but are rare in the SAE-fixture matrix.
+
+3. **Fallback that's NOT `--accept-unconverged`.** Two opt-ins ship for users who don't want the strict default but also don't want to blanket-accept un-converged output:
+   - `--convergence-n-stages 1`: declare convergence as soon as the last stage's argmin-plateau-member is plateau-stable on the *previous* stage. Looser but still data-scale-aware (vs. single-shot which doesn't even check).
+   - `--schedule N` (single integer): degenerate to single-shot `sweep_pareto_capability` at protein count N. No convergence check; emits a progressive frontier with one stage, `converged=True` by definition. Documented as "I want the progressive frontier's reporting surface but not its strictness."
+
+   These give users *informed* opt-outs, not just "trust me, the schedule failed but I'm shipping it anyway."
+
+4. **Bio-sae-side reporting follow-up.** Once the progressive wrapper ships, bio-sae's `scripts/forge_capability_acceptance.py --progressive` re-runs both regimes and `runs/forge/progressive_*` carries the convergence trajectories. Sm-sae and econ-sae's analogous fixtures follow. After 6-month adoption, count the `--accept-unconverged` invocations across the three fixture repos against the predicted ≤ 10 %. Higher → schedule defaults are wrong (or `plateau_tolerance` is too tight); lower → strictness is well-calibrated.
+
 ## Risks / Trade-offs
 
 - **The schedule is a hyperparameter.** Wrong schedule (too small, too large, wrong spacing) → wrong recommendation. Default `[10, 50, 200, 1000]` is bio-sae-calibrated; CLI documents the calibration source and recommends benchmarking the schedule on a representative substrate before committing.

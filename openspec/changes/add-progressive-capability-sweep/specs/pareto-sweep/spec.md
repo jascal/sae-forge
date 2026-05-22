@@ -83,6 +83,13 @@ recommendation + convergence narrative).
 - `rationale: str` — human-readable explanation (e.g. "Smallest
   plateau-member n=48 stable across stages 1, 2, 3; retained_mauc
   variance 0.003 within tolerance 0.005.").
+- `convergence_trajectory: tuple[ConvergenceTrajectoryEntry, ...]` —
+  per-stage record of `(stage, n_proteins, argmin_plateau_width,
+  argmin_retained_mauc, plateau_size, neighbours_added,
+  shifted_from_prev_stage)`. The full trajectory is on disk in
+  `progressive_summary.json` so external benchmarking (counting
+  un-converged ratios across a corpus of runs) can read it without
+  in-library telemetry.
 
 `saeforge.ProgressiveHistory` SHALL be a container with:
 
@@ -134,8 +141,40 @@ SHALL check the companion `progressive_summary.json` for
 `recommendation.converged`. If `False`, the subcommand SHALL refuse
 to emit a recommendation unless `--accept-unconverged` is passed.
 Refusal SHALL exit non-zero with an error message naming the
-unconverged stage(s) and pointing to the `--accept-unconverged`
-flag.
+unconverged stage(s) (drawn from `convergence_trajectory`) and
+pointing to the `--accept-unconverged` flag.
+
+The refusal message SHALL surface the trajectory's specific failure
+signature: which stage's argmin-plateau-member shifted from the
+previous stage, and by how much retained_mauc the candidates
+differed. Users get actionable information about WHY convergence
+failed — pathological substrate (no plateau exists), too-short
+schedule (would converge with one more stage), or
+too-tight tolerance (widths are tying at higher tolerance).
+
+### Requirement: Less-strict opt-ins documented as supported modes
+
+The wrapper SHALL support two opt-ins that are NOT
+`--accept-unconverged`:
+
+1. **`convergence_n_stages=1`** — declare convergence as soon as the
+   last stage's argmin-plateau-member is plateau-stable on the
+   *previous* stage. Looser than the default `convergence_n_stages=2`
+   but still data-scale-aware (vs. single-shot which doesn't check).
+   `recommendation.converged` is still meaningful at this setting:
+   `True` when 1-stage-back stability holds.
+
+2. **Single-element schedule** (`n_proteins_schedule=[N]`): degenerate
+   to single-shot `sweep_pareto_capability` at protein count N. No
+   convergence check; emits a progressive frontier with one stage,
+   `converged=True` by definition (no shift to detect). Documented
+   as "I want the progressive frontier's reporting surface but not
+   its strictness."
+
+These give users *informed* opt-outs that don't reach for
+`--accept-unconverged`. Both are first-class supported; `--help`
+text and the README SHALL mention them as alternatives to
+`--accept-unconverged` for the same use case.
 
 ### Requirement: Falsifiable acceptance gate
 
