@@ -63,7 +63,7 @@ def _identity_basis(d: int):
 
 
 def test_adapter_registers_for_esm_model():
-    from transformers import EsmForMaskedLM, EsmModel
+    from transformers import EsmForMaskedLM
 
     from saeforge.adapters import adapter_for, registered_families
 
@@ -86,7 +86,6 @@ def test_adapter_rejects_non_rotary_position_embedding():
     from transformers import EsmConfig, EsmModel
 
     from saeforge.adapters import adapter_for
-    from saeforge.basis import FeatureBasis
     from saeforge.projector import SubspaceProjector
 
     cfg = EsmConfig(

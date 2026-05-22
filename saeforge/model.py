@@ -402,11 +402,14 @@ class NativeModel:
         ``openspec/changes/add-host-wrapped-forge-fallback`` for the
         falsifiable acceptance gate.
         """
-        transformers = require_extra("transformers", "torch")
+        # Surface the missing-[torch] message early — load_host_for_forge
+        # also lazy-imports transformers but the helper's ImportError
+        # comes from a deeper stack, so an upfront require_extra call
+        # gives a cleaner failure for users without the extra.
+        require_extra("transformers", "torch")
 
         from saeforge.adapters import adapter_for
         from saeforge.forward_mode import resolve_forward_mode
-
         from saeforge.utils.host_loader import load_host_for_forge
 
         host = load_host_for_forge(host_model_id)
