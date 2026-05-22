@@ -468,3 +468,180 @@ def test_progressive_validates_inputs(tmp_path: Path):
             n_proteins_schedule=[10],  # > 3 sequences
             output_dir=tmp_path / "out",
         )
+
+
+# ---------------------------------------------------------------------------
+# Suite 4: multi-encoding progressive
+# (added by add-multi-encoding-capability-sweep slice 2/N)
+# ---------------------------------------------------------------------------
+
+
+def _build_partition_shadow(run_dir: Path) -> Path:
+    """Add a partition_block_ids tensor to the synthetic SAE's state
+    dict and save under a new filename. Returns the shadow path."""
+    sae_state = torch.load(
+        run_dir / "sae.pt", map_location="cpu", weights_only=True,
+    )
+    sae_width = sae_state["decoder.weight"].shape[1]
+    quarter = sae_width // 4
+    partition = (
+        [0] * quarter
+        + [1] * quarter
+        + [2] * quarter
+        + [3] * (sae_width - 3 * quarter)
+    )
+    shadow_state = dict(sae_state)
+    shadow_state["partition_block_ids"] = torch.tensor(
+        partition, dtype=torch.int64,
+    )
+    shadow_path = run_dir / "sae_partition_shadow.pt"
+    torch.save(shadow_state, shadow_path)
+    return shadow_path
+
+
+def test_progressive_multi_encoding_per_encoding_recommendation(
+    tmp_path: Path, _tiny_host_model_id,
+):
+    """2-encoding 2-stage progressive sweep. Assert
+    per_encoding_recommendations is populated; top-level
+    recommendation belongs to one of them."""
+    from saeforge import sweep_pareto_capability_progressive
+    from saeforge.datasets import CapabilityDataset
+
+    run_dir, bundle_path, seqs_path = _build_bio_sae_fixture(tmp_path)
+    shadow_path = _build_partition_shadow(run_dir)
+    dataset = CapabilityDataset.from_bio_sae(
+        run_dir, bundle_path, seqs_path,
+        feed="pooled", n_proteins=8, sae_k=8,
+        tokenizer_id=_tiny_host_model_id,
+    )
+    history = sweep_pareto_capability_progressive(
+        encodings=[
+            ("raw_slice", run_dir / "sae.pt"),
+            ("partition_shadow", shadow_path),
+        ],
+        host_model_id=_tiny_host_model_id,
+        dataset=dataset,
+        candidate_widths=[4, 8, 16, 32],
+        n_proteins_schedule=[4, 8],
+        output_dir=tmp_path / "progressive_multi",
+        device="cpu",
+    )
+    rec = history.recommendation
+    assert rec.per_encoding_recommendations is not None
+    assert set(rec.per_encoding_recommendations.keys()) == {
+        "raw_slice", "partition_shadow",
+    }
+    # Each per-encoding rec is a fully-formed ProgressiveRecommendation.
+    for label, per_rec in rec.per_encoding_recommendations.items():
+        assert per_rec.target_n_features_kept >= 0
+        assert per_rec.rationale  # non-empty
+    # Top-level recommendation belongs to one of the encodings.
+    assert rec.winning_encoding in {"raw_slice", "partition_shadow"}
+    assert (
+        rec.target_n_features_kept
+        == rec.per_encoding_recommendations[rec.winning_encoding].target_n_features_kept
+    )
+
+
+def test_progressive_single_encoding_per_encoding_recommendations_is_none(
+    tmp_path: Path, _tiny_host_model_id,
+):
+    """Single-encoding sweep via legacy sae_checkpoint kwarg: top-
+    level rec.per_encoding_recommendations is None (back-compat)."""
+    from saeforge import sweep_pareto_capability_progressive
+    from saeforge.datasets import CapabilityDataset
+
+    run_dir, bundle_path, seqs_path = _build_bio_sae_fixture(tmp_path)
+    dataset = CapabilityDataset.from_bio_sae(
+        run_dir, bundle_path, seqs_path,
+        feed="pooled", n_proteins=8, sae_k=8,
+        tokenizer_id=_tiny_host_model_id,
+    )
+    history = sweep_pareto_capability_progressive(
+        sae_checkpoint=run_dir / "sae.pt",
+        host_model_id=_tiny_host_model_id,
+        dataset=dataset,
+        candidate_widths=[4, 8, 16, 32],
+        n_proteins_schedule=[4, 8],
+        output_dir=tmp_path / "progressive_single",
+        device="cpu",
+    )
+    rec = history.recommendation
+    assert rec.per_encoding_recommendations is None
+    assert rec.winning_encoding is None
+
+
+def test_progressive_multi_encoding_rejects_both_args(
+    tmp_path: Path, _tiny_host_model_id,
+):
+    """Passing both sae_checkpoint AND encodings=[(label, path)] →
+    ValueError."""
+    from saeforge import sweep_pareto_capability_progressive
+    from saeforge.datasets import CapabilityDataset
+
+    run_dir, bundle_path, seqs_path = _build_bio_sae_fixture(tmp_path)
+    dataset = CapabilityDataset.from_bio_sae(
+        run_dir, bundle_path, seqs_path,
+        feed="pooled", n_proteins=8, sae_k=8,
+        tokenizer_id=_tiny_host_model_id,
+    )
+    with pytest.raises(ValueError, match=r"either `encodings"):
+        sweep_pareto_capability_progressive(
+            sae_checkpoint=run_dir / "sae.pt",
+            encodings=[("a", run_dir / "sae.pt")],
+            host_model_id=_tiny_host_model_id,
+            dataset=dataset,
+            candidate_widths=[4, 8],
+            n_proteins_schedule=[8],
+            output_dir=tmp_path / "progressive_both_args",
+            device="cpu",
+        )
+
+
+def test_progressive_multi_encoding_summary_json_carries_per_encoding(
+    tmp_path: Path, _tiny_host_model_id,
+):
+    """progressive_summary.json SHALL carry per_encoding_recommendations
+    + per_encoding_plateaus when multi-encoding."""
+    import json
+
+    from saeforge import sweep_pareto_capability_progressive
+    from saeforge.datasets import CapabilityDataset
+
+    run_dir, bundle_path, seqs_path = _build_bio_sae_fixture(tmp_path)
+    shadow_path = _build_partition_shadow(run_dir)
+    dataset = CapabilityDataset.from_bio_sae(
+        run_dir, bundle_path, seqs_path,
+        feed="pooled", n_proteins=8, sae_k=8,
+        tokenizer_id=_tiny_host_model_id,
+    )
+    output_dir = tmp_path / "progressive_multi_summary"
+    sweep_pareto_capability_progressive(
+        encodings=[
+            ("raw_slice", run_dir / "sae.pt"),
+            ("partition_shadow", shadow_path),
+        ],
+        host_model_id=_tiny_host_model_id,
+        dataset=dataset,
+        candidate_widths=[4, 8, 16, 32],
+        n_proteins_schedule=[4, 8],
+        output_dir=output_dir,
+        device="cpu",
+    )
+    summary = json.loads(
+        (output_dir / "progressive_summary.json").read_text()
+    )
+    assert "recommendation" in summary
+    rec_dict = summary["recommendation"]
+    assert "per_encoding_recommendations" in rec_dict
+    assert set(rec_dict["per_encoding_recommendations"].keys()) == {
+        "raw_slice", "partition_shadow",
+    }
+    assert "winning_encoding" in rec_dict
+    # Per-stage entries carry per_encoding_plateaus.
+    for stage_entry in summary["stages"]:
+        assert "per_encoding_plateaus" in stage_entry
+        assert set(stage_entry["per_encoding_plateaus"].keys()) == {
+            "raw_slice", "partition_shadow",
+        }
