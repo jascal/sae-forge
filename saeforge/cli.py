@@ -716,12 +716,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "--accept-unconverged",
         action="store_true",
         help=(
-            "Accept a progressive frontier whose recommendation didn't "
-            "converge across the configured stage budget. Default: "
-            "refuse with a diagnostic explaining which stage's argmin-"
-            "plateau-member shifted. Use only when you've separately "
-            "verified the recommendation is appropriate for your "
-            "workflow."
+            "Applies ONLY to progressive frontiers (those carrying the "
+            "'stage' field on rows, emitted by "
+            "sweep-capability-progressive). Single-shot frontiers from "
+            "sweep-pareto / sweep-capability are always accepted; this "
+            "flag is a no-op for them. For progressive frontiers: "
+            "accept a recommendation that didn't converge across the "
+            "configured stage budget. Default: refuse with a diagnostic "
+            "explaining which stage's argmin-plateau-member shifted. "
+            "Use only when you've separately verified the recommendation "
+            "is appropriate for your workflow."
         ),
     )
 
