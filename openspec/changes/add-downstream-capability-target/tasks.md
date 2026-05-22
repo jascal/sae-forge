@@ -3,8 +3,9 @@
 ## 0. Design pre-locks (blocking)
 
 - [ ] 0.1 Confirm `FaithfulnessTarget` protocol's `score(*, forged, host, ctx)` signature is sufficient for the new target. The downstream-encoder + labels are constructor args on `DownstreamCapabilityTarget`, not ctx fields — keeps the protocol surface unchanged. Re-affirm by reading `saeforge/eval/faithfulness.py:55-60`.
-- [ ] 0.2 Lock the `(score, perplexity_analog)` return convention: score is mean(max_over_features(AUC)) like `GroundTruthTarget`; perplexity is `max(0, 1 - score)` for `better_when="higher"` per the protocol docstring.
-- [ ] 0.3 Decide encoder calling convention: encoder is `Callable[[torch.Tensor], torch.Tensor]` returning latents only (no reconstruction tuple). Bio-sae's `_ReferenceSAE.forward` returns `(recon, z)` — adapter helper `lambda x: encoder(x)[1]` documented in the target's docstring for users who pass an nn.Module SAE.
+- [ ] 0.2 Pipe `ForgeResult.basis` into `ctx["basis"]` at `_score_faithfulness_imperative` time (the path (a) free `W_dec` source — Decision 2). Existing target callers don't read `ctx["basis"]`, so this is a one-line additive change.
+- [ ] 0.3 Lock the `(score, perplexity_analog)` return convention: score is mean(max_over_features(AUC)) like `GroundTruthTarget`; perplexity is `max(0, 1 - score)` for `better_when="higher"` per the protocol docstring.
+- [ ] 0.4 Decide encoder calling convention: encoder is `Callable[[torch.Tensor], torch.Tensor]` returning latents only (no reconstruction tuple). Bio-sae's `_ReferenceSAE.forward` returns `(recon, z)` — adapter helper `lambda x: encoder(x)[1]` documented in the target's docstring for users who pass an nn.Module SAE.
 
 ## 1. `saeforge/eval/targets/downstream_capability.py` — new built-in target
 
@@ -26,6 +27,14 @@
   - Aggregator dispatch: pool_then_encode and encode_then_pool produce different scores on a fixture where they disagree (bio-sae's data shows them differing by ~3 mAUC points on the pooled SAE).
   - Construction-time validation: raises on bad labels shape, bad aggregator string, etc.
 - [ ] 1.5 Export `DownstreamCapabilityTarget` from `saeforge.eval.targets.__init__` and `saeforge.__init__`.
+
+## 1.6 Adapter-side: emit `basis_decode` buffer on encoder-only families
+
+- [ ] 1.6.1 `saeforge/adapters/esm2.py:Esm2Adapter.walk()`: emit a `basis_decode` key alongside `basis_encode`, value = `basis.W_dec` (shape `(n_features, d_model)`). One additional line under the existing `basis_encode` emission.
+- [ ] 1.6.2 `saeforge/adapters/esm2.py:ForgedEsm2.__init__`: register a `basis_decode` non-parameter buffer (default-init to zeros, populated by `from_projected_weights` from the walk's emission). Same pattern as `basis_encode`.
+- [ ] 1.6.3 `saeforge/adapters/whisper.py:WhisperEncoderAdapter.walk()` + `ForgedWhisperEncoder.__init__`: same two-line additions. Whisper-encoder is the second encoder-only family covered by the v1 spec.
+- [ ] 1.6.4 Test: round-trip a forge through `save_pretrained` / `load_pretrained`; assert `basis_decode` matches the input basis's `W_dec` to fp precision.
+- [ ] 1.6.5 Test: `DownstreamCapabilityTarget` on an esm2 / whisper forge follows path (b) (`forged_module.basis_decode`) and does NOT call `pinv` (assert via monkeypatch on `numpy.linalg.pinv`).
 
 ## 2. `saeforge/datasets/capability.py` — `CapabilityDataset` + bio-sae loader
 
@@ -86,6 +95,9 @@
 - [ ] 6.1 README: new "Capability-aware forge tuning" section pointing at the new target + sweep.
 - [ ] 6.2 `docs/algorithm.md`: cross-reference from §5 (rank-dependent amplification) to the capability target — "the amplification is invisible to cosine; use `DownstreamCapabilityTarget` when downstream task fidelity matters".
 - [ ] 6.3 CHANGELOG entry under the next `[Unreleased]` block.
+- [ ] 6.4 Target docstring: document the recommended-practices block per Decision 7 (subset-first, host-cache, fp16, encoder-restrict) plus the encoder calling convention (single-tensor return, `lambda x: nn_sae(x)[1]` wrapper for callers passing `(recon, z)`-returning SAEs).
+- [ ] 6.5 Sweep CLI `--help`: surface the wall-time estimate per cell (~5 s/protein/cell at default precision; ~L×slower under `encode_then_pool`) so users can size sweeps appropriately.
+- [ ] 6.6 End-to-end usage example in `examples/forge_capability_bio_sae.py` mirroring the YAML + CLI example in proposal.md §5, against a bundled tiny fixture (no real ESM-2 t6_8M download required for the example to import / lint).
 
 ## 7. Sibling-repo validation (post-merge, separate PRs in those repos)
 

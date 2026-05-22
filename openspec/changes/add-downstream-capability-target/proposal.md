@@ -121,6 +121,60 @@ sae-forge sweep capability \
 
 with a follow-up `sae-forge recommend --frontier frontier.jsonl --target retained-mauc>=0.95` that picks the smallest-parameter forge meeting a retention target.
 
+### 5. Example: bio-sae's n=5000 pooled SAE (concrete)
+
+Given bio-sae's bundled fixture, the end-to-end flow:
+
+```yaml
+# bio-sae-dataset.yaml
+encoder_checkpoint: runs/uniref50_n5000/pooled_w1024_k64/sae.pt
+sequences_path:    data/uniref50_sample__n5000_seed0.parquet
+labels_path:       data/bio_bundle_uniref50.safetensors
+labels_key:        labels_protein_Y
+tokenizer_id:      facebook/esm2_t6_8M_UR50D
+aggregator:        pool_then_encode
+min_prevalence:    10
+sae_variant:       topk
+sae_k:             64
+```
+
+```bash
+sae-forge sweep capability \
+    --sae runs/uniref50_n5000/pooled_w1024_k64/sae.pt \
+    --host facebook/esm2_t6_8M_UR50D \
+    --dataset-config bio-sae-dataset.yaml \
+    --widths 16,64,128,256,512,1024 \
+    --scale-boosts 1.0,auto \
+    --encodings Rung5:n_amp_qubits=2 \
+    --output runs/capability_sweep/uniref50_n5000_pooled/
+
+sae-forge recommend \
+    --frontier runs/capability_sweep/uniref50_n5000_pooled/frontier.jsonl \
+    --target retained-mauc>=0.90
+```
+
+Expected `recommend` output (per the falsifiable acceptance gate
+below):
+
+```
+target_n_features_kept: 512
+encoding_label:         Rung5(n_amp_qubits=2)
+scale_boost:            auto
+host_baseline_mauc:     0.857
+forge_mauc:             0.799
+retained_mauc_vs_host:  0.932
+forge_cov95:            0.028
+retained_cov95_vs_host: 0.162
+gap_median:             0.052
+gap_p95:                0.159
+n_params_forged:        ~2.0M
+```
+
+For the concentrated-substrate fixture
+(`runs/uniref50_small/residue`), the same sweep should pick n=16
+with retained_mauc ≈ 1.03 — both predictions are pre-measured by
+bio-sae's manual scripts and pinned in §"Falsifiable acceptance gate".
+
 ## How (sketch)
 
 - `saeforge/eval/targets/downstream_capability.py` — new file. Implements the `FaithfulnessTarget` protocol. Lazy-imports torch via `require_extra`. Calls the encoder on decoded forged states; computes per-feature × per-label AUC via the Mann-Whitney rank-sum identity (same vectorised matmul as `GroundTruthTarget` and `biosae.sae.evaluation`).

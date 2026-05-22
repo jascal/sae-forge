@@ -39,6 +39,30 @@ Argument validation:
 - `scale_boosts` SHALL be a list of floats and/or the literal string
   `"auto"`. Defaults to `[1.0, "auto"]`.
 
+### Requirement: Host-extraction caching across sweep cells
+
+`sweep_pareto_capability` SHALL cache the host's per-protein
+activations (or per-residue / pooled latents under the appropriate
+aggregator) on the first sweep cell that uses a given
+`(host_model_id, sequences_hash, aggregator, max_seq_len)` tuple and
+reuse the cached tensor across subsequent cells. The cache lives at
+`output_dir / "host_activations.safetensors"` and is keyed on the
+SHA-256 of the sequences list (deterministic across runs over the
+same dataset).
+
+The cache SHALL be opt-out via `--no-host-cache` on the CLI / a
+`cache_host=False` kwarg on the function. Disable when:
+
+- The host model is non-deterministic (dropout enabled, stochastic
+  attention masking — currently not a v1 concern, all bundled
+  adapters are eval-mode).
+- Disk space is scarce (host_activations.safetensors can be ~200 MB
+  for n=5000 proteins × d_model=320 × fp32).
+
+The cache SHALL be invalidated when any cache-key component changes.
+Stale-cache errors SHALL be loud: a key mismatch raises with the
+divergent component named.
+
 ### Requirement: `ParetoFrontierRow` capability fields
 
 `saeforge.ParetoFrontierRow` SHALL accept the following additional
@@ -58,6 +82,16 @@ fields, all `Optional[…]` with default `None`:
 - `n_features_negative_gap: Optional[int]`
 - `capability_aggregator: Optional[str]`
 - `capability_min_prevalence: Optional[int]`
+
+The `retained_*` field names are dataset-agnostic per
+`add-downstream-capability-target/design.md` Decision 8: the
+"retained vs host baseline" semantics generalise to every domain
+(sm-sae particles, econ-sae tiers, audio probes). The
+`target_name` field on each row carries `"downstream_capability"`
+when this target produced the row — that's where cross-target
+disambiguation lives. No `downstream_*` field-name aliases ship in
+v1; if a future domain needs them, a `field_aliases` map on
+`ParetoFrontierRow.to_dict` can emit both forms.
 
 `to_dict` SHALL include these fields in the serialised dictionary
 when they are not `None`, and SHALL omit them when they are. This

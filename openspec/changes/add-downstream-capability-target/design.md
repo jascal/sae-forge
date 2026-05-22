@@ -41,35 +41,44 @@ The target's `score(*, forged, host, ctx)` method receives forged + host as prot
 
 The cost: each `ForgePipeline.run(...)` call constructs one `DownstreamCapabilityTarget` per dataset, parameterised by `(encoder, labels, aggregator, min_prevalence, decode_via_basis)`. That's one instance, not per-row; cheap.
 
-### Decision 2 — Decode via the forged module's `basis_encode` buffer when present, else explicit `basis.W_dec`
+### Decision 2 — Emit a `basis_decode` buffer on encoder-only forged modules; fall back through three paths
 
-The forged module for `esm2` and `whisper_encoder` adapters emits a `basis_encode` buffer carrying `pinv(W_dec) * scale_boost` (shape `(d_model, n_features)`). The downstream-capability path needs the *inverse* direction — basis-coord forged hidden states → host-coord activations the encoder can read. That's `forged_h @ W_dec`, shape `(d_model,)`.
+**Revised after PR #75 review.** The forged module for `esm2` and `whisper_encoder` adapters today emits a `basis_encode` buffer carrying `pinv(W_dec) * scale_boost` (shape `(d_model, n_features)`). The downstream-capability path needs the *inverse* direction — basis-coord forged hidden states → host-coord activations the encoder can read. That's `forged_h @ W_dec`, shape `(d_model,)`.
 
-The forged module DOES NOT hold `W_dec` directly today; only `basis_encode = pinv(W_dec) * scale_boost`. So the target needs to either:
+The reviewer flagged that recovering `W_dec` by inverting `pinv(basis_encode)` is roundabout: the adapter already computed `pinv(W_dec)` from `W_dec` at forge time, so the matrix is *already on disk* in the basis the adapter walked. We just don't emit it.
 
-(a) Pass `basis.W_dec` explicitly via ctx (additional ctx surface).
-(b) Hold `basis` on the target at construction time (couples target to basis lifecycle).
-(c) Recover `W_dec` from `basis_encode` via numerical pseudoinverse at score time (extra cost per row).
+**Decision: emit a `basis_decode` buffer on encoder-only adapters, alongside `basis_encode`.** Forged modules whose adapters produce a `basis_encode` buffer (`esm2`, `whisper_encoder`, future encoder-only families) SHALL also produce a `basis_decode` buffer carrying `W_dec` directly (shape `(n_features, d_model)`). The walk emits both; the native module registers both as non-parameter buffers; `state_dict()` round-trips both.
 
-**Decision: (c) with a fallback to (b).** The target lazy-computes `W_dec` from `basis_encode` on first use (pinv is O(d_model × n_features), one-time per forge), caches the result. Users who already have basis in scope can pass it directly via a `basis=...` ctx field to skip the pinv; missing-basis is the common case (multi-target FSM runs).
+The target then resolves `W_dec` via this precedence:
 
-The pinv-recovery is *only valid for orthonormal-row bases*. For non-orthonormal W_dec (the common case under real polygram compression), the recovered matrix is approximate. That's acceptable for the v1 target — the systematic error is folded into the same "fundamental forge tax" the metric is measuring. Users who need exact `W_dec` can pass the basis explicitly.
+(a) `ctx["basis"]` — explicit FeatureBasis passed by the pipeline (cheapest, exact, available when ForgeResult plumbing supplies it — see follow-up below).
+(b) `forged_module.basis_decode` — emitted by the adapter at walk time, exact, no pinv. **Default path** for capability sweeps over encoder-only families.
+(c) `pinv(forged_module.basis_encode)` — lazy fallback for forged modules lacking `basis_decode` (third-party adapters that don't follow the bundled convention; pre-rollout forge artifacts that pre-date this change). Cached per `id(forged_module)`; one-time cost; emits a `UserWarning` recommending the buffer be added on the adapter side.
 
-A future enhancement: `ForgeResult` carries `basis` already; piping it into `ctx["basis"]` at `_score_faithfulness_imperative` time gives every target free access. That's a separate one-line change tracked as task 0.1.
+The fallback (c) is *only valid for orthonormal-row bases* — for non-orthonormal W_dec the recovered matrix is approximate. With (b) as the default path, this approximation never fires for the bundled adapters and the systematic error is removed entirely from the v1 implementation.
 
-### Decision 3 — Aggregator dispatch is "pool_then_encode" by default
+A future enhancement: `ForgeResult` carries `basis` already; piping it into `ctx["basis"]` at `_score_faithfulness_imperative` time gives every target free access via path (a). That's a separate one-line change tracked as task 0.2.
 
-Two pool orders:
+### Decision 3 — Aggregator dispatch is "pool_then_encode" by default; the contract is per-protein-vector
 
-1. **`pool_then_encode`** (default): activations averaged across residues → encoder → score. Matches what the existing `GroundTruthTarget` does (pools the residual, then AUC). Bio-sae's `forge_capability_eval.py` default. The "smoothed" measurement.
+**Aggregator contract.** An aggregator is a `Callable[[Tensor], Tensor]` that takes a per-residue tensor of shape `(L, latent_or_d_model)` (single protein, CLS / EOS already stripped) and returns a per-protein tensor of shape `(latent_or_d_model,)` (collapsed across the sequence axis). The two built-in strings parameterise this contract:
 
-2. **`encode_then_pool`**: encoder applied per residue → latents averaged across residues → score. Sharper measurement that exposes per-residue forge degradation; bio-sae's data shows the gap *grows* under this aggregator (host signal gets sharper, forge can't follow).
+- **`"pool_then_encode"`** — operates on `h_d: (L, d_model)`. Returns `encoder(h_d.mean(0, keepdim=True))[0]` — shape `(latent_width,)`.
+- **`"encode_then_pool"`** — operates on `h_d: (L, d_model)`. Returns `encoder(h_d).mean(0)` — shape `(latent_width,)`.
 
-The default is `pool_then_encode` because:
+A user-supplied callable receives `h_d` (host-coord activations after the decode step) plus the encoder via closure, and is responsible for the encode + reduce composition. The return SHALL be a 1-D tensor with `latent_width` elements; the target stacks these across proteins into a 2-D `(N_items, latent_width)` matrix and applies the chunked Mann-Whitney AUC across all label columns simultaneously.
+
+**Multi-token semantics.** All built-in aggregators operate on the per-residue / per-token axis (axis 0 of `h_d` after CLS / EOS stripping). There is no "per-position" output — the target's labels live at the protein scope, not the residue scope. Users with residue-scope labels SHOULD set up a separate eval where the per-residue latents (not the pooled latents) are concatenated across all proteins; that's the residue-feed pattern bio-sae's `forge_capability_eval.py --feed residue` already exercises, and it'd flow through this target with a no-op aggregator (`lambda h_d: h_d.reshape(-1)` to flatten) only on a per-protein call.
+
+**Multi-label semantics.** Labels are a `(N_items, V)` binary matrix where `V` is the number of distinct label columns. AUC is computed per latent × per label (`(V, latent_width)` matrix of AUCs), then `max_over_latents` per label (`(V,)` array of best-discriminator AUCs), then `mean_over_labels` to produce the scalar score. This matches `GroundTruthTarget`'s convention and `biosae.sae.evaluation.score_against_ground_truth`. Labels are NOT aggregated; each label column gets its own AUC.
+
+**Why `pool_then_encode` is the default.**
+
+Justification for the default:
 
 - It matches the existing `GroundTruthTarget` behaviour and the README's published cov95 numbers downstream.
-- It's the conservative pick for "does the forge preserve biology" — answer "no" under pool_then_encode is a stronger claim than "no" under encode_then_pool.
-- Encode-then-pool is more expensive (encoder applied L times per protein instead of once) — opt-in for users who want the sharper measurement.
+- It's the conservative pick for "does the forge preserve biology" — answer "no" under pool_then_encode is a stronger claim than "no" under encode_then_pool (bio-sae's data showed encode-then-pool *widens* the gap because host signal gets sharper).
+- Encode-then-pool is ~L× more expensive (encoder applied L times per protein instead of once) — opt-in for users who want the sharper measurement.
 
 Users can opt into encode-then-pool for diagnostic deep-dives (bio-sae's `forge_pool_after_encode.py` already does this manually); the target exposes both behind a single string flag.
 
@@ -101,6 +110,42 @@ The proposal pre-commits to reproducing two specific predictions:
 These are measured (`bio-sae/runs/forge/capability_eval_smoke/`, `bio-sae/runs/forge/capability_pooled_n500*/`) and the prediction is tight (1 mAUC point). If the new sweep produces different optimal widths, that's a falsified implementation, not a "drift" — bio-sae's manual scripts and the new sweep should be measuring the same quantity.
 
 The 1 mAUC tolerance absorbs: (a) random variation in the protein subset (the manual scripts used a 10-protein eval for residue, 500-protein for pooled; the sweep may use different defaults), (b) floating-point drift across BLAS / numpy / torch versions, (c) any slightly-different aggregator semantics. Drift > 1 mAUC points to a real bug in the new sweep, not noise.
+
+### Decision 7 — Performance budget; recommended practices documented, not enforced
+
+**Added after PR #75 review.** Capability sweeps are more expensive than KL / cosine sweeps because each (encoding, width, scale_boost) cell runs the downstream encoder on top of the host's forward pass. Bio-sae's empirical timing on the n=5000 pooled SAE:
+
+| operation | cost per protein | cost @ 500 proteins × 6 widths × 2 scale_boosts |
+|---|---|---|
+| Host extraction (once per sweep) | ~0.05 s | ~25 s |
+| Forge module construction | one-time, ~0.5 s | ~6 s |
+| Forge extraction (per cell) | ~0.05 s | ~5 min |
+| AUC scoring (per cell) | trivial (matmul) | ~1 s |
+| **Total CPU wall** | — | **~5-6 min** |
+
+Encode-then-pool aggregator is ~L× slower at the extract step (encoder applied per residue instead of per protein). On the same fixture that's ~25 min instead of ~5.
+
+**Recommended practices (target's docstring + sweep CLI `--help`):**
+
+1. **Start with a subset.** Capability eval is statistically meaningful at n_proteins ≥ 200 on the pooled feed if `min_prevalence` is set to keep ≥ ~30 informative labels. Sweep over 200 first; scale up to 1000+ for the final recommended config.
+2. **Cache host extraction.** The host's per-protein activations / pooled latents are invariant across the sweep cells (one host, one tokenizer, one corpus). Cache them in `output_dir/host_activations.safetensors` on the first call and reuse across cells. Skipping this re-host-extracts on every cell — bio-sae's `forge_capability_eval.py` deliberately doesn't cache today; the sweep wrapper SHOULD.
+3. **Run sweeps at `float16` / `bfloat16`.** ESM-2-shape forges have no numerical-sensitivity in the AUC scoring (rank-based). The capability metric is invariant to small precision drift; halving the activation precision halves the forward cost.
+4. **Restrict the encoder eval.** Users with a wide SAE (≥ 4 K features) can pass `encoder=lambda x: full_sae(x)[1][:, :2048]` to score only the first 2 K latents — bio-sae's headline biology lives in the top-K-by-norm subset anyway.
+
+These are documented as guidance in the target's docstring + CLI `--help`. The implementation SHALL NOT enforce any of them (callers may want full precision / full-vocab); the cache (item 2) is the one optimisation that ships *enabled by default* with an opt-out flag.
+
+### Decision 8 — Field naming carries `retained_*` semantics, not a `downstream_` prefix
+
+**Added after PR #75 review.** The reviewer flagged that field names like `retained_mauc` are bio-sae-shaped and might benefit from a `downstream_*` prefix for sm-sae / econ-sae adoption.
+
+**Decision: keep `retained_*` as the public field names; the `downstream` qualifier lives on `DownstreamCapabilityTarget.name = "downstream_capability"`.** Rationale:
+
+- The "retained" semantics ("vs host's baseline measurement") generalise to every domain — sm-sae's particle features, econ-sae's tier categories, future audio probes. The math is dataset-agnostic.
+- The `downstream_*` prefix would imply a parallel set of metrics for non-downstream targets, which doesn't exist — every capability metric IS a downstream one by construction.
+- The `target_name` field on each row carries `"downstream_capability"` (the target's `name` attribute) — that's where the "downstream" disambiguation lives. Filtering by target_name on the frontier is the cross-target query.
+- Shorter field names render better in tabular CLI output and `jq` filters.
+
+For sm-sae / econ-sae adoption, the contract is: each fixture repo's `CapabilityDataset.from_<repo>(...)` constructor sets up the target identically; the same `retained_mauc` / `retained_cov95` fields appear on each row, qualified by `target_name` and the dataset's `sequences_path` / `labels_path` metadata. No domain-specific aliases.
 
 ## Risks / Trade-offs
 

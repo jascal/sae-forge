@@ -77,8 +77,15 @@ The pipeline inside `score()` SHALL be:
    a. forged_module(row_i) -> (1, L, n_features)
    b. Strip CLS / EOS: h_basis = ... [0, 1:-1, :]
    c. If decode_via_basis:
-        Recover W_dec from ctx["basis"].W_dec (if set) OR
-        from pinv(forged_module.basis_encode) (cached on first use).
+        Recover W_dec via three-path precedence:
+          (a) ctx["basis"].W_dec if "basis" is in ctx (exact, free)
+          (b) forged_module.basis_decode if the buffer is present
+              (exact, no pinv — default for bundled encoder-only
+              adapters esm2 / whisper_encoder)
+          (c) pinv(forged_module.basis_encode) — lazy fallback for
+              forged modules lacking basis_decode; cached per
+              id(forged_module); emits a one-shot UserWarning
+              recommending the buffer be added on the adapter side.
         h_d = h_basis @ W_dec   # (L, d_model)
       Else:
         h_d = h_basis           # caller's encoder reads basis coords
@@ -114,15 +121,38 @@ This matches the existing `GroundTruthTarget` policy (fixture-specific,
 never family-defaulted). The reason: capability targets need a
 caller-supplied encoder + labels, which family dispatch can't supply.
 
-### Requirement: `pinv(basis_encode)` warning
+### Requirement: `pinv(basis_encode)` fallback warning
 
-When `decode_via_basis=True` and the target recovers `W_dec` via
-`pinv(forged_module.basis_encode)`, if
-`numpy.linalg.matrix_rank(basis_encode) < n_features`, the target
-SHALL emit a `UserWarning` naming the rank and recommending the
-caller pass `ctx["basis"]` explicitly. The warning SHALL fire once
-per `id(forged_module)` (matching the cache key) — not once per
-`score()` call.
+When `decode_via_basis=True` and the target falls back to path (c) —
+recovering `W_dec` via `pinv(forged_module.basis_encode)` because
+neither `ctx["basis"]` nor `forged_module.basis_decode` is available —
+the target SHALL emit a `UserWarning` recommending the adapter be
+extended to emit a `basis_decode` buffer. When additionally
+`numpy.linalg.matrix_rank(basis_encode) < n_features`, the warning
+SHALL include the observed rank.
+
+The warning SHALL fire once per `id(forged_module)` (matching the
+cache key) — not once per `score()` call.
+
+### Requirement: `basis_decode` buffer on encoder-only forged modules
+
+Adapters that emit a `basis_encode` buffer alongside their projected
+weights (`esm2`, `whisper_encoder`, and any future encoder-only family)
+SHALL also emit a `basis_decode` buffer at walk time:
+
+- Shape: `(n_features, d_model)`.
+- Contents: `basis.W_dec` (exactly the matrix the projector used to
+  compute `basis_encode = pinv(W_dec) * scale_boost`).
+- Registration: non-parameter buffer on the forged module, same
+  pattern as `basis_encode`. Survives `state_dict()` round-trip.
+
+The downstream-capability target's path (b) reads this buffer when
+present. Adapters that emit only `basis_encode` (legacy or third-
+party) trigger the target's path (c) warning above. No requirement
+applies to LM-family adapters (gpt2 / llama / gemma2 / qwen) whose
+residual stream is already at `n_features`; they don't need a
+decode buffer because the downstream encoder, if any, would operate
+on basis-coord activations directly (`decode_via_basis=False`).
 
 ### Requirement: Module exports
 
