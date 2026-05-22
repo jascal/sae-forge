@@ -5,6 +5,14 @@ their corresponding OpenSpec change is archived.
 
 ## [Unreleased]
 
+## [0.8.1] — 2026-05-22
+
+Patch release on top of v0.8.0 shipping the residue-feed extension
+to `CapabilityDataset` + `sweep_pareto_capability`. Closes the
+follow-up filed by bio-sae's acceptance gate
+(`bio-sae/tests/test_forge_capability_acceptance.py`): the n=16
+residue-SAE prediction becomes directly testable upstream.
+
 ### Added (add-downstream-capability-target — residue-feed support)
 
 - **`feed="residue"` on `CapabilityDataset` + `sweep_pareto_capability`.**
