@@ -627,3 +627,86 @@ def test_cli_recommend_single_encoding_skips_ranking_table(tmp_path: Path):
     stdout = out_buf.getvalue()
     # Ranking table SHALL NOT appear for single-encoding.
     assert "Per-encoding ranking" not in stdout
+
+
+def test_cli_validates_encoding_path_exists(tmp_path: Path):
+    """--encoding LABEL:PATH where PATH doesn't exist → exit 2 with
+    actionable stderr message, before any dataset / forge cost."""
+    import contextlib
+    import io
+    import yaml
+    from saeforge.cli import main as cli_main
+
+    # Need a valid dataset-config so the YAML loader passes.
+    run_dir, bundle_path, seqs_path = _build_bio_sae_fixture(tmp_path)
+    cfg_path = tmp_path / "dataset.yaml"
+    cfg_path.write_text(yaml.safe_dump({
+        "encoder_checkpoint": str(run_dir / "sae.pt"),
+        "sequences_path": str(seqs_path),
+        "labels_path": str(bundle_path),
+        "feed": "pooled", "tokenizer_id": "facebook/esm2_t6_8M_UR50D",
+        "aggregator": "pool_then_encode", "min_prevalence": 0,
+        "sae_variant": "topk", "sae_k": 8,
+    }))
+    try:
+        from transformers import AutoTokenizer
+        AutoTokenizer.from_pretrained("facebook/esm2_t6_8M_UR50D")
+    except Exception as exc:
+        pytest.skip(f"ESM tokenizer unavailable: {exc}")
+
+    err_buf = io.StringIO()
+    with contextlib.redirect_stderr(err_buf):
+        rc = cli_main([
+            "sweep-capability",
+            "--dataset-config", str(cfg_path),
+            "--host", "facebook/esm2_t6_8M_UR50D",
+            "--widths", "4,8",
+            "--output-dir", str(tmp_path / "validate_out"),
+            "--encoding", f"raw_slice:{run_dir / 'sae.pt'}",
+            "--encoding", "missing:/tmp/this/path/definitely/does/not/exist.pt",
+        ])
+    assert rc == 2
+    stderr = err_buf.getvalue()
+    assert "path not found" in stderr
+    assert "missing" in stderr
+
+
+def test_cli_validates_duplicate_encoding_label(tmp_path: Path):
+    """--encoding with duplicate label → exit 2 with actionable
+    stderr message."""
+    import contextlib
+    import io
+    import yaml
+    from saeforge.cli import main as cli_main
+
+    run_dir, bundle_path, seqs_path = _build_bio_sae_fixture(tmp_path)
+    cfg_path = tmp_path / "dataset.yaml"
+    cfg_path.write_text(yaml.safe_dump({
+        "encoder_checkpoint": str(run_dir / "sae.pt"),
+        "sequences_path": str(seqs_path),
+        "labels_path": str(bundle_path),
+        "feed": "pooled", "tokenizer_id": "facebook/esm2_t6_8M_UR50D",
+        "aggregator": "pool_then_encode", "min_prevalence": 0,
+        "sae_variant": "topk", "sae_k": 8,
+    }))
+    try:
+        from transformers import AutoTokenizer
+        AutoTokenizer.from_pretrained("facebook/esm2_t6_8M_UR50D")
+    except Exception as exc:
+        pytest.skip(f"ESM tokenizer unavailable: {exc}")
+
+    err_buf = io.StringIO()
+    with contextlib.redirect_stderr(err_buf):
+        rc = cli_main([
+            "sweep-capability",
+            "--dataset-config", str(cfg_path),
+            "--host", "facebook/esm2_t6_8M_UR50D",
+            "--widths", "4,8",
+            "--output-dir", str(tmp_path / "dup_out"),
+            "--encoding", f"my_label:{run_dir / 'sae.pt'}",
+            "--encoding", f"my_label:{run_dir / 'sae.pt'}",
+        ])
+    assert rc == 2
+    stderr = err_buf.getvalue()
+    assert "duplicate --encoding label" in stderr
+    assert "my_label" in stderr

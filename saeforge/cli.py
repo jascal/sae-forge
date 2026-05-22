@@ -1737,6 +1737,45 @@ def _render_inspect_markdown(checkpoint: str, summary: dict) -> str:
     return "\n".join(lines)
 
 
+def _validate_encoding_specs(
+    specs: list[tuple[str, "Path | str"]], *, kind: str,
+) -> int:
+    """Early validation of multi-encoding CLI specs.
+
+    Checks duplicate labels + path existence BEFORE the dispatch
+    function pays any YAML / dataset / forge cost. Returns 0 on
+    success, 2 on failure (CLI config error exit code).
+
+    Per PR #94 review: catch typos early; "all provided encoding
+    paths exist (or at least are readable)".
+    """
+    # Duplicate labels: the wrapper also checks but a CLI-level
+    # message with the specific kwarg name is clearer for users.
+    seen: dict[str, "Path | str"] = {}
+    for label, path in specs:
+        if label in seen:
+            print(
+                f"sae-forge {kind}: duplicate --encoding label "
+                f"{label!r} (first at {seen[label]}, second at {path}). "
+                f"Encoding labels SHALL be unique.",
+                file=sys.stderr,
+            )
+            return 2
+        seen[label] = path
+    # Path existence.
+    for label, path in specs:
+        path_obj = Path(path) if not isinstance(path, Path) else path
+        if not path_obj.exists():
+            print(
+                f"sae-forge {kind}: --encoding {label!r} path not found: "
+                f"{path_obj}. Verify the SAE checkpoint exists and is "
+                f"readable.",
+                file=sys.stderr,
+            )
+            return 2
+    return 0
+
+
 def _emit_dry_run_projection(
     *,
     kind: str,
@@ -1792,6 +1831,10 @@ def _emit_dry_run_projection(
         return f"~{secs / 3600:.1f} hours"
 
     print(f"sae-forge {kind} --dry-run projection:")
+    print(f"  NOTE: this is a CONSERVATIVE static estimate "
+          f"({per_cell_seconds:.0f} sec/cell on CPU at d_model=320). "
+          f"For tighter calibration, run ONE real cell and divide by "
+          f"the projected cell count.")
     print(f"  encodings (K):             {K} ({[label for label, _ in encodings]!r})")
     print(f"  widths (N):                {N} ({widths!r})")
     print(f"  scale_boosts (S):          {S}")
@@ -1889,6 +1932,12 @@ def _cmd_sweep_capability(args: argparse.Namespace) -> int:
         except ValueError as exc:
             print(f"sae-forge sweep-capability: {exc}", file=sys.stderr)
             return 2
+        # Early validation: encoding paths SHALL exist + duplicate
+        # labels are rejected before any dataset / YAML / forge cost.
+        if (rc := _validate_encoding_specs(
+            multi_encoding_specs, kind="sweep-capability",
+        )) != 0:
+            return rc
         print(
             f"sae-forge sweep-capability: --encoding flag(s) provided; "
             f"YAML config's encoder_checkpoint ({encoder_checkpoint}) "
@@ -2019,6 +2068,10 @@ def _cmd_sweep_capability_progressive(args: argparse.Namespace) -> int:
             print(f"sae-forge sweep-capability-progressive: {exc}",
                   file=sys.stderr)
             return 2
+        if (rc := _validate_encoding_specs(
+            multi_encoding_specs, kind="sweep-capability-progressive",
+        )) != 0:
+            return rc
         print(
             f"sae-forge sweep-capability-progressive: --encoding flag(s) "
             f"provided; YAML config's encoder_checkpoint "
@@ -2327,7 +2380,9 @@ def _cmd_recommend(args: argparse.Namespace) -> int:
     if is_multi_encoding:
         print()
         print(f"Per-encoding ranking (over {len(survivors)} survivors "
-              f"after predicate filtering):")
+              f"after predicate filtering)")
+        print("  Ranking: smallest target_n_features_kept WINS; "
+              "ties broken by CLI --encoding flag order.")
         print(f"  {'rank':<5} {'encoding':<20} {'n':>5} "
               f"{'retained_mauc':>14} {'converged':>10}")
         # For each encoding, find its smallest-n survivor.
