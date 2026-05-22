@@ -22,11 +22,13 @@ from saeforge.eval.faithfulness import FaithfulnessTarget
 from saeforge.eval.targets.cosine import CosineTarget
 from saeforge.eval.targets.gt_alignment import GroundTruthTarget
 from saeforge.eval.targets.kl import KLTarget
+from saeforge.eval.targets.token_cosine import TokenCosineTarget
 
 __all__ = [
     "CosineTarget",
     "GroundTruthTarget",
     "KLTarget",
+    "TokenCosineTarget",
     "_default_target_for",
 ]
 

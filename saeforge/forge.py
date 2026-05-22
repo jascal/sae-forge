@@ -843,6 +843,11 @@ class ForgePipeline:
             return "absolute_projected"
         if family == "whisper_encoder":
             return "sinusoidal"
+        if family == "esm2":
+            # ESM-2 pins position_embedding_type='rotary' on every
+            # facebook/esm2_t*_*_UR50D checkpoint. The Esm2Adapter
+            # rejects non-rotary configs upstream of this call.
+            return "rotary"
         # Llama-family.
         if getattr(model.config, "rope_mode", "standard") == "none":
             return "none_skipped"
@@ -1006,14 +1011,18 @@ class ForgePipeline:
                 stacklevel=3,
             )
 
-        # Load via AutoModelForCausalLM so the host's actual architecture
-        # (GPT-2 / Llama / Gemma-2) drives adapter dispatch. The pre-multi-
-        # arch v0.1 path called ``GPT2LMHeadModel.from_pretrained`` against
-        # any host_model_id, which silently produced a randomly-initialised
-        # GPT-2 for non-GPT-2 inputs (e.g. ``google/gemma-2-2b``).
-        host = transformers.AutoModelForCausalLM.from_pretrained(
+        # Dispatch the AutoModel class on the host's model_type so
+        # encoder-only families (ESM-2 → AutoModelForMaskedLM) load with
+        # the right head and forward signature. GPT-2 / Llama / Gemma-2 /
+        # Qwen still flow through AutoModelForCausalLM. The pre-multi-
+        # arch v0.1 path called ``GPT2LMHeadModel.from_pretrained`` for
+        # any host_model_id, which silently produced a randomly-
+        # initialised GPT-2 for non-GPT-2 inputs (e.g. ``google/gemma-2-2b``).
+        from saeforge.utils.host_loader import load_host_for_forge
+
+        host = load_host_for_forge(
             self.host_model_id, torch_dtype=_torch_dtype(self.dtype)
-        ).eval()
+        )
         # Dispatch on forward_mode. Host-wrapped skips project_module and
         # constructs the wrapped module directly; native_in_basis (the
         # existing path) projects every weight through the basis. See
@@ -1108,9 +1117,11 @@ class ForgePipeline:
         sae_checkpoint = output_dir / "synth_basis.safetensors"
         _write_basis_as_checkpoint(self.basis, sae_checkpoint)
 
-        host = transformers.AutoModelForCausalLM.from_pretrained(
+        from saeforge.utils.host_loader import load_host_for_forge
+
+        host = load_host_for_forge(
             self.host_model_id, torch_dtype=_torch_dtype(self.dtype)
-        ).eval()
+        )
 
         # Pre-tokenise eval_prompts with the host's tokenizer so the FSM
         # ``evaluate_faithfulness`` action can compute KL via the existing

@@ -113,6 +113,7 @@ from saeforge.adapters import qwen2 as _qwen2  # noqa: E402,F401
 from saeforge.adapters import qwen3 as _qwen3  # noqa: E402,F401
 from saeforge.adapters import qwen3_moe as _qwen3_moe  # noqa: E402,F401
 from saeforge.adapters import whisper as _whisper  # noqa: E402,F401
+from saeforge.adapters import esm2 as _esm2  # noqa: E402,F401
 
 
 __all__ = [
