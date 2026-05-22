@@ -312,7 +312,13 @@ def _tiny_host_model_id(tmp_path: Path):
 
 
 def _build_bio_sae_fixture(tmp_path: Path, *, n_proteins=8, d_model=32, sae_width=32):
-    """Same fixture builder as test_sweep_pareto_capability.py."""
+    """Same fixture builder as test_sweep_pareto_capability.py.
+
+    Skips cleanly when pandas isn't installed — only the suite-3
+    end-to-end tests call this helper; the pure-helper + row-schema
+    tests in this module don't need pandas and continue to run.
+    """
+    pytest.importorskip("pandas")
     import pandas as pd
     from safetensors.numpy import save_file
 
