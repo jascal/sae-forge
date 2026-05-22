@@ -736,7 +736,7 @@ def test_partition_block_ids_shape_mismatch_raises(
         feed="pooled", n_proteins=4, sae_k=8,
         tokenizer_id=_tiny_host_model_id,
     )
-    with pytest.raises(ValueError, match="partition_block_ids has shape"):
+    with pytest.raises(ValueError, match="partition_block_ids .* has shape"):
         sweep_pareto_capability(
             sae_checkpoint=run_dir / "sae.pt",
             host_model_id=_tiny_host_model_id,
@@ -746,6 +746,258 @@ def test_partition_block_ids_shape_mismatch_raises(
             cache_host=False,
             device="cpu",
         )
+
+
+# ---------------------------------------------------------------------------
+# Suite 6: multi-encoding sweep
+# (added by add-multi-encoding-capability-sweep)
+# ---------------------------------------------------------------------------
+
+
+def _build_two_encoding_fixtures(
+    tmp_path: Path, _tiny_host_model_id: str,
+) -> tuple[Path, Path, Path, Path]:
+    """Build a synthetic fixture + TWO encoding-shadow SAEs:
+    (run_dir/sae.pt = raw_slice) + (partition_shadow.pt = partition-aware).
+
+    Returns (run_dir, bundle_path, seqs_path, partition_shadow_path).
+    """
+    import torch
+
+    run_dir, bundle_path, seqs_path = _build_bio_sae_fixture(tmp_path)
+    # Create a partition-shadow checkpoint alongside the original sae.pt.
+    sae_state = torch.load(
+        run_dir / "sae.pt", map_location="cpu", weights_only=True,
+    )
+    sae_width = sae_state["decoder.weight"].shape[1]
+    quarter = sae_width // 4
+    partition = (
+        [0] * quarter
+        + [1] * quarter
+        + [2] * quarter
+        + [3] * (sae_width - 3 * quarter)
+    )
+    shadow_state = dict(sae_state)
+    shadow_state["partition_block_ids"] = torch.tensor(
+        partition, dtype=torch.int64,
+    )
+    shadow_path = run_dir / "sae_partition_shadow.pt"
+    torch.save(shadow_state, shadow_path)
+    return run_dir, bundle_path, seqs_path, shadow_path
+
+
+def test_multi_encoding_sweep_smoke(tmp_path: Path, _tiny_host_model_id):
+    """End-to-end: pass two encodings; assert both produce cells and
+    rows carry distinct encoding_label values."""
+    from saeforge import sweep_pareto_capability
+    from saeforge.datasets import CapabilityDataset
+
+    run_dir, bundle_path, seqs_path, shadow_path = _build_two_encoding_fixtures(
+        tmp_path, _tiny_host_model_id,
+    )
+    dataset = CapabilityDataset.from_bio_sae(
+        run_dir, bundle_path, seqs_path,
+        feed="pooled", n_proteins=4, sae_k=8,
+        tokenizer_id=_tiny_host_model_id,
+    )
+    rows = sweep_pareto_capability(
+        encodings=[
+            ("raw_slice", run_dir / "sae.pt"),
+            ("partition_shadow", shadow_path),
+        ],
+        host_model_id=_tiny_host_model_id,
+        dataset=dataset,
+        widths=[8, 16],
+        output_dir=tmp_path / "multi_encoding_sweep",
+        cache_host=False,
+        device="cpu",
+    )
+    # 2 encodings × 2 widths × 1 scale_boost = 4 cells.
+    assert len(rows) == 4
+    labels = {r.encoding_label for r in rows}
+    assert labels == {"raw_slice", "partition_shadow"}
+    for row in rows:
+        if row.error_message is not None:
+            pytest.fail(f"multi-encoding cell failed: {row.error_message}")
+
+
+def test_multi_encoding_back_compat_sae_checkpoint_keyword(
+    tmp_path: Path, _tiny_host_model_id,
+):
+    """Legacy single-encoding API (sae_checkpoint=PATH) continues to
+    work. Produces single-encoding rows with encoding_label='raw_slice'."""
+    from saeforge import sweep_pareto_capability
+    from saeforge.datasets import CapabilityDataset
+
+    run_dir, bundle_path, seqs_path = _build_bio_sae_fixture(tmp_path)
+    dataset = CapabilityDataset.from_bio_sae(
+        run_dir, bundle_path, seqs_path,
+        feed="pooled", n_proteins=4, sae_k=8,
+        tokenizer_id=_tiny_host_model_id,
+    )
+    rows = sweep_pareto_capability(
+        sae_checkpoint=run_dir / "sae.pt",
+        host_model_id=_tiny_host_model_id,
+        dataset=dataset,
+        widths=[8, 16],
+        output_dir=tmp_path / "single_encoding_back_compat",
+        cache_host=False,
+        device="cpu",
+    )
+    assert len(rows) == 2
+    for row in rows:
+        assert row.encoding_label == "raw_slice"
+        assert row.error_message is None
+
+
+def test_multi_encoding_rejects_both_sae_checkpoint_and_encodings(
+    tmp_path: Path, _tiny_host_model_id,
+):
+    """Passing both sae_checkpoint AND encodings → ValueError."""
+    from saeforge import sweep_pareto_capability
+    from saeforge.datasets import CapabilityDataset
+
+    run_dir, bundle_path, seqs_path = _build_bio_sae_fixture(tmp_path)
+    dataset = CapabilityDataset.from_bio_sae(
+        run_dir, bundle_path, seqs_path,
+        feed="pooled", n_proteins=4, sae_k=8,
+        tokenizer_id=_tiny_host_model_id,
+    )
+    with pytest.raises(ValueError, match=r"either `encodings=\[\(label"):
+        sweep_pareto_capability(
+            sae_checkpoint=run_dir / "sae.pt",
+            encodings=[("a", run_dir / "sae.pt")],
+            host_model_id=_tiny_host_model_id,
+            dataset=dataset,
+            widths=[8],
+            output_dir=tmp_path / "both_args",
+            cache_host=False,
+            device="cpu",
+        )
+
+
+def test_multi_encoding_rejects_neither_argument(
+    tmp_path: Path, _tiny_host_model_id,
+):
+    """Passing neither sae_checkpoint NOR encodings → ValueError."""
+    from saeforge import sweep_pareto_capability
+    from saeforge.datasets import CapabilityDataset
+
+    run_dir, bundle_path, seqs_path = _build_bio_sae_fixture(tmp_path)
+    dataset = CapabilityDataset.from_bio_sae(
+        run_dir, bundle_path, seqs_path,
+        feed="pooled", n_proteins=4, sae_k=8,
+        tokenizer_id=_tiny_host_model_id,
+    )
+    with pytest.raises(ValueError, match="Neither was given"):
+        sweep_pareto_capability(
+            host_model_id=_tiny_host_model_id,
+            dataset=dataset,
+            widths=[8],
+            output_dir=tmp_path / "no_args",
+            cache_host=False,
+            device="cpu",
+        )
+
+
+def test_multi_encoding_duplicate_label_raises(
+    tmp_path: Path, _tiny_host_model_id,
+):
+    """encodings=[('a', p1), ('a', p2)] → ValueError naming the
+    duplicate label."""
+    from saeforge import sweep_pareto_capability
+    from saeforge.datasets import CapabilityDataset
+
+    run_dir, bundle_path, seqs_path = _build_bio_sae_fixture(tmp_path)
+    dataset = CapabilityDataset.from_bio_sae(
+        run_dir, bundle_path, seqs_path,
+        feed="pooled", n_proteins=4, sae_k=8,
+        tokenizer_id=_tiny_host_model_id,
+    )
+    with pytest.raises(ValueError, match="duplicate encoding label"):
+        sweep_pareto_capability(
+            encodings=[
+                ("dupe", run_dir / "sae.pt"),
+                ("dupe", run_dir / "sae.pt"),
+            ],
+            host_model_id=_tiny_host_model_id,
+            dataset=dataset,
+            widths=[8],
+            output_dir=tmp_path / "dup_label",
+            cache_host=False,
+            device="cpu",
+        )
+
+
+def test_multi_encoding_per_encoding_partition_state_isolated(
+    tmp_path: Path, _tiny_host_model_id,
+):
+    """When one encoding carries partition_block_ids and another
+    doesn't, the per-encoding cell loop SHALL use partition slicing
+    ONLY for the partition encoding. The non-partition encoding's
+    rows must NOT be affected by the partition manifest of the other
+    encoding."""
+    from saeforge import sweep_pareto_capability
+    from saeforge.datasets import CapabilityDataset
+
+    run_dir, bundle_path, seqs_path, shadow_path = _build_two_encoding_fixtures(
+        tmp_path, _tiny_host_model_id,
+    )
+    dataset = CapabilityDataset.from_bio_sae(
+        run_dir, bundle_path, seqs_path,
+        feed="pooled", n_proteins=4, sae_k=8,
+        tokenizer_id=_tiny_host_model_id,
+    )
+    rows = sweep_pareto_capability(
+        encodings=[
+            ("raw_slice", run_dir / "sae.pt"),
+            ("partition_shadow", shadow_path),
+        ],
+        host_model_id=_tiny_host_model_id,
+        dataset=dataset,
+        widths=[16],
+        output_dir=tmp_path / "per_encoding_isolation",
+        cache_host=False,
+        device="cpu",
+    )
+    raw_row = next(r for r in rows if r.encoding_label == "raw_slice")
+    par_row = next(r for r in rows if r.encoding_label == "partition_shadow")
+    # Both cells ran successfully and produced rows. The values
+    # themselves may or may not differ depending on the random fixture's
+    # decoder norm distribution; what we assert is structural isolation.
+    assert raw_row.error_message is None
+    assert par_row.error_message is None
+    assert raw_row.sae_checkpoint == str(run_dir / "sae.pt")
+    assert par_row.sae_checkpoint == str(shadow_path)
+
+
+def test_multi_encoding_legacy_string_list_encodings(
+    tmp_path: Path, _tiny_host_model_id,
+):
+    """v0.8.x-style ``encodings=['a', 'b']`` (informational labels)
+    SHALL continue to work, paired with sae_checkpoint. Each label
+    stamps a row; same sae_checkpoint underlies all of them."""
+    from saeforge import sweep_pareto_capability
+    from saeforge.datasets import CapabilityDataset
+
+    run_dir, bundle_path, seqs_path = _build_bio_sae_fixture(tmp_path)
+    dataset = CapabilityDataset.from_bio_sae(
+        run_dir, bundle_path, seqs_path,
+        feed="pooled", n_proteins=4, sae_k=8,
+        tokenizer_id=_tiny_host_model_id,
+    )
+    rows = sweep_pareto_capability(
+        sae_checkpoint=run_dir / "sae.pt",
+        encodings=["label_a", "label_b"],
+        host_model_id=_tiny_host_model_id,
+        dataset=dataset,
+        widths=[8],
+        output_dir=tmp_path / "legacy_string_list",
+        cache_host=False,
+        device="cpu",
+    )
+    assert len(rows) == 2
+    assert {r.encoding_label for r in rows} == {"label_a", "label_b"}
 
 
 def test_residue_feed_label_misalignment_raises(tmp_path: Path, _tiny_host_model_id):

@@ -57,40 +57,184 @@ class _SweepCell:
     scale_boost: "float | str"
 
 
+@dataclass(frozen=True)
+class _EncodingState:
+    """Per-encoding loaded SAE state for the cell loop.
+
+    Constructed by :func:`_load_encoding_state` from an SAE state
+    dict. The invariants below are checked in ``__post_init__``
+    so callers constructing this directly (e.g. tests with hand-
+    written tensors) fail loudly on shape mismatches rather than
+    deferring to opaque downstream errors.
+    """
+
+    label: str
+    sae_checkpoint: Path
+    W_dec_full: np.ndarray   # (n_features, d_model), float64
+    row_norms: np.ndarray    # (n_features,), float64
+    order: np.ndarray        # argsort descending of row_norms
+    partition_block_ids: np.ndarray | None
+
+    def __post_init__(self) -> None:
+        n_features = self.W_dec_full.shape[0]
+        if self.row_norms.shape != (n_features,):
+            raise ValueError(
+                f"_EncodingState[{self.label!r}]: row_norms shape "
+                f"{self.row_norms.shape} does not match W_dec_full "
+                f"row count ({n_features},)"
+            )
+        if self.order.shape != (n_features,):
+            raise ValueError(
+                f"_EncodingState[{self.label!r}]: order shape "
+                f"{self.order.shape} does not match W_dec_full "
+                f"row count ({n_features},)"
+            )
+        if (
+            self.partition_block_ids is not None
+            and self.partition_block_ids.shape != (n_features,)
+        ):
+            raise ValueError(
+                f"_EncodingState[{self.label!r}]: partition_block_ids "
+                f"shape {self.partition_block_ids.shape} does not match "
+                f"W_dec_full row count ({n_features},)"
+            )
+
+
+def _load_encoding_state(label: str, path: "str | Path") -> _EncodingState:
+    """Load one encoding's SAE state for the cell loop.
+
+    Reads ``decoder.weight`` (required) + the optional
+    ``partition_block_ids`` key (added by
+    ``add-partition-encoding-capability-validation``). Computes
+    row_norms + argsort order once per encoding.
+
+    Raises ``ValueError`` when ``partition_block_ids`` shape doesn't
+    match decoder rows.
+    """
+    import torch
+
+    sae_state = torch.load(str(path), map_location="cpu", weights_only=True)
+    W_dec_full = sae_state["decoder.weight"].numpy().T.astype(np.float64)
+    row_norms = np.linalg.norm(W_dec_full, axis=1)
+    order = np.argsort(-row_norms)
+    partition_block_ids: np.ndarray | None = None
+    if "partition_block_ids" in sae_state:
+        partition_block_ids = (
+            sae_state["partition_block_ids"].numpy().astype(np.int64)
+        )
+        if partition_block_ids.shape != (W_dec_full.shape[0],):
+            raise ValueError(
+                f"sweep_pareto_capability: partition_block_ids for "
+                f"encoding {label!r} has shape "
+                f"{partition_block_ids.shape}, expected "
+                f"({W_dec_full.shape[0]},) to match decoder.weight rows."
+            )
+    return _EncodingState(
+        label=label,
+        sae_checkpoint=Path(path),
+        W_dec_full=W_dec_full,
+        row_norms=row_norms,
+        order=order,
+        partition_block_ids=partition_block_ids,
+    )
+
+
+def _normalize_encodings_arg(
+    encodings: "list[tuple[str, str | Path]] | None",
+    sae_checkpoint: "str | Path | None",
+) -> list[tuple[str, Path]]:
+    """Reconcile the new ``encodings`` kwarg with the legacy
+    ``sae_checkpoint`` kwarg.
+
+    Per add-multi-encoding-capability-sweep/specs/pareto-sweep/spec.md:
+
+    - encodings provided → canonical multi-encoding list.
+    - encodings=None AND sae_checkpoint provided →
+      [("raw_slice", sae_checkpoint)] (v0.9.x back-compat).
+    - both None → ValueError.
+    - both provided → ValueError (explicit is better than ambiguous).
+
+    Encoding labels SHALL be unique; duplicates raise ValueError.
+    """
+    if encodings is not None and sae_checkpoint is not None:
+        raise ValueError(
+            "sweep_pareto_capability: pass either `encodings=[(label, "
+            "path), ...]` (multi-encoding) OR `sae_checkpoint=PATH` "
+            "(single-encoding), not both. The legacy sae_checkpoint "
+            "kwarg is internally sugar for encodings=[('raw_slice', "
+            "sae_checkpoint)]; to compare raw_slice against other "
+            "encodings, list it explicitly in `encodings`. See "
+            "openspec/changes/add-multi-encoding-capability-sweep/"
+            "design.md Decision 1."
+        )
+    if encodings is None and sae_checkpoint is None:
+        raise ValueError(
+            "sweep_pareto_capability: pass either `encodings=[(label, "
+            "path), ...]` or `sae_checkpoint=PATH`. Neither was given."
+        )
+    if encodings is None:
+        # Back-compat: single-encoding via sae_checkpoint.
+        return [("raw_slice", Path(sae_checkpoint))]  # type: ignore[arg-type]
+    # Multi-encoding path.
+    seen: set[str] = set()
+    normalized: list[tuple[str, Path]] = []
+    for label, path in encodings:
+        if label in seen:
+            raise ValueError(
+                f"sweep_pareto_capability: duplicate encoding label "
+                f"{label!r} in encodings list. Labels SHALL be unique."
+            )
+        seen.add(label)
+        normalized.append((label, Path(path)))
+    return normalized
+
+
 def sweep_pareto_capability(
-    sae_checkpoint: "str | Path",
-    host_model_id: str,
-    dataset: Any,  # CapabilityDataset
+    sae_checkpoint: "str | Path | None" = None,
+    host_model_id: str | None = None,
+    dataset: Any = None,  # CapabilityDataset
     *,
-    widths: list[int],
-    encodings: list[str] | None = None,
+    widths: list[int] | None = None,
+    encodings: "list[tuple[str, str | Path]] | list[str] | None" = None,
     scale_boosts: list["float | str"] | None = None,
-    output_dir: "str | Path",
+    output_dir: "str | Path | None" = None,
     cache_host: bool = True,
     max_seq_len: int = 512,
     device: str = "cpu",
 ) -> list[ParetoFrontierRow]:
     """Run a capability-aware Pareto sweep over the basis-config cube.
 
+    **Multi-encoding API (added by add-multi-encoding-capability-sweep).**
+    Pass ``encodings=[(label, path), ...]`` to compare multiple
+    encodings in a single sweep run. Each (label, path) pair is
+    loaded once; the per-cell loop iterates over
+    `(encoding, width, scale_boost)`. Per-cell rows carry the
+    encoding's label in ``ParetoFrontierRow.encoding_label``.
+
+    The legacy single-encoding ``sae_checkpoint=PATH`` keyword is
+    retained as sugar (equivalent to
+    ``encodings=[("raw_slice", sae_checkpoint)]``).
+
     Parameters
     ----------
     sae_checkpoint:
-        Path to the SAE state dict (the same artifact
-        :class:`CapabilityDataset.from_bio_sae` consumed). Used here
-        to construct the basis at each width.
+        Legacy single-encoding path. Mutually exclusive with
+        ``encodings``.
     host_model_id:
         HF id of the host model to forge.
     dataset:
         :class:`saeforge.datasets.CapabilityDataset` carrying
         sequences + labels + encoder + aggregator + min_prevalence.
     widths:
-        List of basis widths to sweep. Each width slices the SAE's
-        W_dec to its top-N rows by L2 norm.
+        List of basis widths to sweep. Each width slices each
+        encoding's W_dec to its top-N rows by L2 norm (or
+        per-tier proportionally when partition_block_ids is set).
     encodings:
-        List of encoding labels (currently informational; defaults
-        to ``["raw_slice"]`` because this wrapper uses a row-norm
-        slice, not a polygram encoding). Future revisions can hook
-        polygram-compressed bases per encoding.
+        List of ``(label, sae_checkpoint_path)`` pairs. Mutually
+        exclusive with ``sae_checkpoint``. A legacy list of bare
+        encoding labels (strings) is accepted with a deprecation
+        warning and treated as informational labels with the
+        legacy single-encoding path.
     scale_boosts:
         List of SubspaceProjector scale_boost values. Floats or
         the literal ``"auto"``. Defaults to ``[1.0]``.
@@ -98,24 +242,52 @@ def sweep_pareto_capability(
         Where to write ``frontier.jsonl`` and the host-extraction
         cache.
     cache_host:
-        When True (default), cache host activations across cells.
-        Opt-out for non-deterministic hosts or scarce disk.
+        When True (default), cache host activations across cells
+        AND across encodings. Host activations are encoding-
+        independent so the cache is shared.
 
     Returns
     -------
-    List of :class:`ParetoFrontierRow`, one per cell, with the
-    capability fields populated. Also written to
-    ``output_dir/frontier.jsonl``.
+    List of :class:`ParetoFrontierRow`, one per cell. Multi-encoding
+    sweeps produce rows whose ``encoding_label`` field identifies
+    which encoding was used.
     """
     import torch
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    sae_checkpoint = Path(sae_checkpoint)
-    if encodings is None or not encodings:
-        encodings = ["raw_slice"]
+
+    # Distinguish the new multi-encoding shape (list of (label, path)
+    # tuples) from the legacy informational-labels shape (list of
+    # str). The legacy shape preserves v0.8.x / v0.9.x byte-equivalent
+    # behaviour — encoding labels are just stamped on rows without
+    # actually changing the basis.
+    legacy_encoding_labels: list[str] | None = None
+    if encodings is not None and len(encodings) > 0 and isinstance(encodings[0], str):
+        legacy_encoding_labels = list(encodings)
+        encodings = None  # type: ignore[assignment]
     if scale_boosts is None or not scale_boosts:
         scale_boosts = [1.0]
+
+    # Resolve the (label, path) list. Per the openspec, exactly one of
+    # encodings / sae_checkpoint must be provided (legacy informational
+    # labels excepted — those still need sae_checkpoint).
+    if legacy_encoding_labels is not None:
+        if sae_checkpoint is None:
+            raise ValueError(
+                "sweep_pareto_capability: legacy string-list encodings "
+                "(informational labels) require sae_checkpoint to be set."
+            )
+        loaded_encodings = [
+            _load_encoding_state(label, sae_checkpoint)
+            for label in legacy_encoding_labels
+        ]
+    else:
+        encoding_pairs = _normalize_encodings_arg(encodings, sae_checkpoint)
+        loaded_encodings = [
+            _load_encoding_state(label, path)
+            for label, path in encoding_pairs
+        ]
 
     # Validate dataset shape early (catches bad fixtures before we
     # pay any forge cost). Under pooled feed, each sequence yields
@@ -155,24 +327,11 @@ def sweep_pareto_capability(
         host_X = cache.load(key)
     # Lazy-load host only if we need to extract (cache miss).
 
-    # ---- Stage 2: load SAE state for basis construction. ----
-    sae_state = torch.load(str(sae_checkpoint), map_location="cpu", weights_only=True)
-    W_dec_full = sae_state["decoder.weight"].numpy().T.astype(np.float64)  # (n, d)
-    row_norms = np.linalg.norm(W_dec_full, axis=1)
-    order = np.argsort(-row_norms)
-    # Optional partition manifest (added by
-    # add-partition-encoding-capability-validation). If present, the
-    # per-cell basis builder slices per-tier instead of flat-by-norm.
-    # Absent: current row-norm slicing — back-compat byte-equivalent.
-    partition_block_ids: np.ndarray | None = None
-    if "partition_block_ids" in sae_state:
-        partition_block_ids = sae_state["partition_block_ids"].numpy().astype(np.int64)
-        if partition_block_ids.shape != (W_dec_full.shape[0],):
-            raise ValueError(
-                f"sweep_pareto_capability: partition_block_ids has shape "
-                f"{partition_block_ids.shape}, expected "
-                f"({W_dec_full.shape[0]},) to match decoder.weight rows."
-            )
+    # ---- Stage 2: per-encoding SAE state already loaded above. ----
+    # `loaded_encodings` carries one _EncodingState per encoding;
+    # each has its own W_dec_full / row_norms / order /
+    # partition_block_ids. The host-extraction cache is shared across
+    # encodings (host activations are encoding-independent).
 
     # ---- Stage 3: host-baseline metrics (compute once per sweep). ----
     # Note: host metrics need the encoder applied AFTER extraction;
@@ -209,33 +368,43 @@ def sweep_pareto_capability(
     valid = np.isfinite(host_pf_auc)
     host_cov95 = float((host_pf_auc[valid] >= 0.95).mean()) if valid.any() else 0.0
 
-    # ---- Stage 4: sweep cells. ----
+    # ---- Stage 4: sweep cells, per-encoding. ----
+    # The cell loop iterates over (encoding × width × scale_boost).
+    # Each encoding has its own W_dec / row_norms / order /
+    # partition_block_ids; the host extraction is shared across
+    # encodings (already done above).
     cells = [
-        _SweepCell(encoding_label=e, target_n_features_kept=w, scale_boost=s)
-        for e in encodings for w in widths for s in scale_boosts
+        (enc_state, _SweepCell(
+            encoding_label=enc_state.label,
+            target_n_features_kept=w,
+            scale_boost=s,
+        ))
+        for enc_state in loaded_encodings
+        for w in widths
+        for s in scale_boosts
     ]
     rows: list[ParetoFrontierRow] = []
     frontier_path = output_dir / "frontier.jsonl"
     if frontier_path.exists():
         frontier_path.unlink()  # fresh file per invocation
 
-    for cell in cells:
+    for enc_state, cell in cells:
         t0 = time.monotonic()
         try:
             row = _run_capability_cell(
                 cell=cell,
-                sae_checkpoint=sae_checkpoint,
+                sae_checkpoint=enc_state.sae_checkpoint,
                 host_model_id=host_model_id,
                 dataset=dataset,
                 Y=Y,
-                W_dec_full=W_dec_full,
-                row_norms=row_norms,
-                order=order,
+                W_dec_full=enc_state.W_dec_full,
+                row_norms=enc_state.row_norms,
+                order=enc_state.order,
                 host_pf_auc=host_pf_auc,
                 host_mauc=host_mauc,
                 host_cov95=host_cov95,
                 device=device,
-                partition_block_ids=partition_block_ids,
+                partition_block_ids=enc_state.partition_block_ids,
             )
         except Exception as exc:  # noqa: BLE001 — surface failures per-row
             row = ParetoFrontierRow(
@@ -246,7 +415,7 @@ def sweep_pareto_capability(
                 faithfulness_kl=None,
                 perplexity=None,
                 final_fine_tune_loss=None,
-                sae_checkpoint=str(sae_checkpoint),
+                sae_checkpoint=str(enc_state.sae_checkpoint),
                 forged_model_path=None,
                 elapsed_seconds=time.monotonic() - t0,
                 error_message=f"{type(exc).__name__}: {exc}",
