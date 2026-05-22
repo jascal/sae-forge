@@ -799,6 +799,72 @@ specific follow-up; see
 `bio-sae/docs/forge-capability-bottleneck.md` §4 for the structural-
 tax-on-spread-regimes characterisation.
 
+### Multi-encoding capability sweep — compare basis choices in one run
+
+Single-encoding sweeps (above) commit to ONE basis encoding (e.g.
+the raw row-norm slice or a partition-aware slice with
+`partition_block_ids`). The multi-encoding sweep compares MULTIPLE
+encodings in a single sweep call, producing per-encoding
+recommendations and a cross-encoding winner pick.
+
+```bash
+sae-forge sweep-capability-progressive \
+    --dataset-config bio-pooled.yaml \
+    --host facebook/esm2_t6_8M_UR50D \
+    --encoding raw_slice:runs/.../sae.pt \
+    --encoding partition_q4:runs/.../sae_partition_q4.pt \
+    --encoding partition_q8:runs/.../sae_partition_q8.pt \
+    --candidate-widths 16,64,128,256,384,512,768,1024 \
+    --schedule 1000,5000 \
+    --output-dir runs/multi_encoding/
+
+sae-forge recommend \
+    --frontier runs/multi_encoding/frontier.jsonl \
+    --target retained-mauc>=0.90
+```
+
+The output emits the picked encoding + width AND a per-encoding
+ranking table:
+
+```
+recommended config: encoding=partition_q4, target_n_features_kept=128
+  retained_mauc_vs_host: 0.9096
+
+Per-encoding ranking (over 6 survivors after predicate filtering)
+  Ranking: smallest target_n_features_kept WINS; ties broken by CLI --encoding flag order.
+  rank  encoding             n  retained_mauc  converged
+  1     partition_q8        64         0.9004        False
+  2     partition_q4       128         0.9096        False
+  3     raw_slice          256         0.8975        False
+```
+
+**Empirical reference points** (bio-sae's pooled fixture at n=5000;
+slice-4 acceptance gate):
+
+| encoding | rec_n | retained_mauc | factor vs raw_slice |
+|---|---|---|---|
+| raw_slice | n=256 | 0.8975 | 1× (baseline) |
+| **partition_q4** (winner) | n=128 | 0.9096 | 2× fewer parameters |
+| partition_q8 | n=64 | 0.9004 | 4× fewer parameters |
+
+The architecture's claim is **Pareto-shift, not level-lift**:
+encodings achieve comparable retained_mauc at meaningfully fewer
+parameters. On this substrate, partition_q4 won by lowest
+trajectory variance (the cross-encoding tiebreaker fires when no
+encoding converged at default strictness — see `bio-sae/docs/forge-capability-bottleneck.md` §5.6).
+
+**Dry-run cost projection** before committing to a multi-encoding
+sweep at scale:
+
+```bash
+sae-forge sweep-capability-progressive ... --dry-run --dollars-per-gpu-hr 3.0
+```
+
+Counts cells (K encodings × N widths × S scale_boosts × T stages),
+benchmarks ONE cell, projects total wall time + optional cost.
+Exits 0 without running. ~instant; use before a multi-encoding
+sweep at production scale.
+
 ### Inspect
 
 `sae-forge inspect` is the no-torch triage command: it loads the basis,
