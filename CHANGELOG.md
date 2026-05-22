@@ -5,6 +5,44 @@ their corresponding OpenSpec change is archived.
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-05-22
+
+The 0.8.0 release ships two coordinated capabilities: the **ESM-2
+adapter** (first encoder-only protein-LM host outside the audio
+family) and **capability-aware forge tuning** (`DownstreamCapabilityTarget`
++ `sweep_pareto_capability` + `sae-forge sweep-capability` /
+`recommend` CLI). The unifying observation is that residual-cosine /
+KL faithfulness systematically misranks forges for capability-bound
+users — bio-sae's empirical work on the ESM-2 substrate showed cosine
+recommends n=256 features while the same forge at n=16 retains 103 %
+of host capability (16× discrepancy on optimal width). The new
+target answers "does the forge retain the downstream task?" instead
+of "are the forged hidden states numerically close to host?".
+
+### Minor-version bump (vs patch)
+
+- New public surface: `DownstreamCapabilityTarget`,
+  `CapabilityDataset`, `sweep_pareto_capability` exported from
+  `saeforge`; `Esm2Adapter` registered alongside the bundled
+  adapters; 14 new optional fields on `ParetoFrontierRow`; two new
+  `sae-forge` CLI subcommands.
+- New runtime contract: `ctx["basis"]` is now populated by
+  `ForgePipeline`'s imperative + synthetic score paths.
+  Cost-free for targets that don't read this key (every bundled
+  target ignores it except `DownstreamCapabilityTarget`).
+- New adapter-side requirement: encoder-only adapters
+  (`esm2`, `whisper_encoder`) emit a `basis_decode` buffer
+  alongside `basis_encode`. Pre-change forge artefacts trigger a
+  one-shot UserWarning under capability scoring (path c pinv
+  fallback); production runs against the bundled adapters never
+  hit this path.
+
+### Polygram pin
+
+- `polygram>=0.15.0` (was `>=0.12.0`). v0.15.0 ships the masked-LM
+  host dispatcher needed for the polygram side of the chain to
+  reach ESM-2 hosts.
+
 ### Added (add-downstream-capability-target)
 
 - **`DownstreamCapabilityTarget`** — new

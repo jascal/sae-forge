@@ -28,7 +28,7 @@ from saeforge.training.concept_anchor import (
 from saeforge.training.heads import focal_bce_loss
 from saeforge.world_model import WorldModel
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 __all__ = [
     "ANOMALOUS_TOKEN_IDS",
