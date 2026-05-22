@@ -21,6 +21,7 @@ import numpy as np
 import pytest
 
 torch = pytest.importorskip("torch")
+pytest.importorskip("pandas")
 
 
 # ---------------------------------------------------------------------------

@@ -39,6 +39,9 @@ def test_public_surface_is_frozen() -> None:
         "WorldModel",
         "__version__",
         "sweep_pareto",
+        # Capability-aware Pareto wrapper added by
+        # add-downstream-capability-target.
+        "sweep_pareto_capability",
         # Calibration helpers + constants added by fix-scale-boost-calibration.
         "ANOMALOUS_TOKEN_IDS",
         "compute_forged_logit_std",
