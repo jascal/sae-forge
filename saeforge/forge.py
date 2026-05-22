@@ -934,6 +934,10 @@ class ForgePipeline:
             "_eval_audio_features": self.eval_audio_features,
             "_eval_encoder_states": self.eval_encoder_states,
             "device": self.device,
+            # Pipe the basis through so downstream-capability and any
+            # future basis-aware target gets the exact W_dec without
+            # the pinv fallback. Cost-free for targets that ignore it.
+            "basis": self.basis,
         }
         score, _ = self.faithfulness.score(forged=model, host=host_model, ctx=ctx)
         return float(score), self.faithfulness.name
@@ -948,6 +952,12 @@ class ForgePipeline:
             "device": self.device,
             "_eval_audio_features": self.eval_audio_features,
             "_eval_encoder_states": self.eval_encoder_states,
+            # Pipe the basis into ctx so targets that need W_dec
+            # (e.g. DownstreamCapabilityTarget) can take the exact
+            # path-(a) source rather than recovering via the forged
+            # module's basis_decode buffer (path b) or pinv (path c).
+            # Cost-free for targets that don't read this key.
+            "basis": self.basis,
         }
         if self.eval_prompts:
             tokenizer = transformers.AutoTokenizer.from_pretrained(self.host_model_id)

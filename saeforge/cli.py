@@ -592,6 +592,125 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     inspect.add_argument("--report", help="Write a markdown summary to this path.")
 
+    # ------------------------------------------------------------------
+    # sweep-capability — Pareto sweep on downstream-task retention.
+    # Added by add-downstream-capability-target. Mirrors sweep-pareto's
+    # contract but uses DownstreamCapabilityTarget as the metric.
+    # ------------------------------------------------------------------
+    cap = sub.add_parser(
+        "sweep-capability",
+        help=(
+            "Capability-aware Pareto sweep. Scores forged models by "
+            "per-feature × per-label AUC through a downstream task "
+            "encoder (typically a trained SAE), not by cosine / KL "
+            "faithfulness. Bio-sae's empirical study showed those two "
+            "Pareto frontiers disagree by up to 16× on optimal width "
+            "(see openspec/changes/add-downstream-capability-target)."
+        ),
+    )
+    cap.add_argument(
+        "--dataset-config",
+        required=True,
+        metavar="PATH",
+        help=(
+            "YAML config describing the capability dataset (encoder "
+            "checkpoint, sequences parquet, labels safetensors, "
+            "aggregator, min_prevalence, sae_variant, sae_k). See "
+            "openspec/changes/add-downstream-capability-target/"
+            "proposal.md §5 for the schema."
+        ),
+    )
+    cap.add_argument(
+        "--host",
+        required=True,
+        help="HuggingFace host model id (or local path).",
+    )
+    cap.add_argument(
+        "--widths",
+        required=True,
+        help="Comma-separated basis widths to sweep (e.g. '16,64,128,256').",
+    )
+    cap.add_argument(
+        "--scale-boosts",
+        default="1.0,auto",
+        help=(
+            "Comma-separated scale_boost values. Floats or the literal "
+            "'auto'. Default: '1.0,auto'."
+        ),
+    )
+    cap.add_argument(
+        "--encodings",
+        default="raw_slice",
+        help=(
+            "Comma-separated encoding labels (currently informational; "
+            "the v1 wrapper uses an SAE-row-norm slice, not polygram "
+            "encodings). Default: 'raw_slice'."
+        ),
+    )
+    cap.add_argument(
+        "--output-dir",
+        required=True,
+        help=(
+            "Sweep output root. frontier.jsonl is written here; the "
+            "host-extraction cache lands under <output-dir>/host_cache/."
+        ),
+    )
+    cap.add_argument(
+        "--no-host-cache",
+        action="store_true",
+        help=(
+            "Disable host-extraction caching across sweep cells. Use "
+            "when the host model is non-deterministic or when disk is "
+            "scarce."
+        ),
+    )
+    cap.add_argument(
+        "--max-seq-len", type=int, default=512,
+        help="Truncate input sequences to this length (default: 512).",
+    )
+    cap.add_argument(
+        "--device", default="cpu",
+        help="torch device for forge + extraction (default: 'cpu').",
+    )
+
+    # ------------------------------------------------------------------
+    # recommend — pick the smallest-parameter row meeting a predicate.
+    # ------------------------------------------------------------------
+    rec = sub.add_parser(
+        "recommend",
+        help=(
+            "Recommend a forge config from a sweep frontier. Filters by "
+            "predicate(s) on ParetoFrontierRow fields, returns the row "
+            "minimising n_params_forged (fallback: "
+            "target_n_features_kept)."
+        ),
+    )
+    rec.add_argument(
+        "--frontier",
+        required=True,
+        metavar="PATH",
+        help="Path to a frontier.jsonl produced by sweep-pareto or sweep-capability.",
+    )
+    rec.add_argument(
+        "--target",
+        action="append",
+        required=True,
+        metavar="EXPR",
+        help=(
+            "Predicate over ParetoFrontierRow fields. Format: "
+            "FIELD<OP>VALUE where OP ∈ {>=, <=, ==, <, >}. Field "
+            "names accept kebab-case or snake_case (retained-mauc, "
+            "gap_p95, etc.). Repeat for AND-combined predicates: "
+            "--target retained-mauc>=0.9 --target gap-p95<=0.05."
+        ),
+    )
+    rec.add_argument(
+        "--json",
+        dest="emit_json",
+        action="store_true",
+        help="Emit the picked row as JSON instead of a tabular summary.",
+    )
+
     return parser
 
 
@@ -1415,6 +1534,223 @@ def _render_inspect_markdown(checkpoint: str, summary: dict) -> str:
     return "\n".join(lines)
 
 
+def _cmd_sweep_capability(args: argparse.Namespace) -> int:
+    """Drive ``sweep_pareto_capability`` from a YAML dataset-config.
+
+    Parses the YAML at ``--dataset-config``, constructs a
+    ``CapabilityDataset`` via ``from_bio_sae`` (the only fixture
+    loader v1 ships; other domains add their own constructors),
+    then invokes the sweep wrapper. Output: ``frontier.jsonl`` under
+    ``--output-dir``.
+    """
+    try:
+        import yaml
+    except ImportError as exc:
+        raise ImportError(
+            "sae-forge sweep-capability requires PyYAML to parse the "
+            "dataset config. Install with `pip install pyyaml` or pull "
+            "it in via a sae-forge extra that depends on it."
+        ) from exc
+
+    from saeforge.datasets import CapabilityDataset
+    from saeforge.sweep_capability import sweep_pareto_capability
+
+    cfg_path = Path(args.dataset_config)
+    if not cfg_path.exists():
+        print(f"sae-forge sweep-capability: dataset config not found: {cfg_path}",
+              file=sys.stderr)
+        return 2
+    cfg = yaml.safe_load(cfg_path.read_text())
+    _required = {"encoder_checkpoint", "sequences_path", "labels_path"}
+    missing = _required - set(cfg)
+    if missing:
+        print(f"sae-forge sweep-capability: dataset config missing required keys: "
+              f"{sorted(missing)}", file=sys.stderr)
+        return 2
+
+    encoder_checkpoint = Path(cfg["encoder_checkpoint"])
+    # from_bio_sae takes run_dir (the directory containing sae.pt), not the file path.
+    run_dir = encoder_checkpoint.parent
+
+    dataset = CapabilityDataset.from_bio_sae(
+        run_dir=run_dir,
+        bundle_path=cfg["labels_path"],
+        sequences_path=cfg["sequences_path"],
+        feed=cfg.get("feed", "pooled"),
+        n_proteins=cfg.get("n_proteins"),
+        max_seq_len=int(cfg.get("max_seq_len", args.max_seq_len)),
+        tokenizer_id=cfg.get("tokenizer_id", "facebook/esm2_t6_8M_UR50D"),
+        aggregator=cfg.get("aggregator", "pool_then_encode"),
+        min_prevalence=int(cfg.get("min_prevalence", 0)),
+        sae_variant=cfg.get("sae_variant", "topk"),
+        sae_k=int(cfg.get("sae_k", 64)),
+    )
+
+    widths = [int(w.strip()) for w in args.widths.split(",") if w.strip()]
+    encodings = [e.strip() for e in args.encodings.split(",") if e.strip()]
+    scale_boosts: list[float | str] = []
+    for token in args.scale_boosts.split(","):
+        t = token.strip()
+        if not t:
+            continue
+        if t == "auto":
+            scale_boosts.append("auto")
+        else:
+            scale_boosts.append(float(t))
+
+    rows = sweep_pareto_capability(
+        sae_checkpoint=encoder_checkpoint,
+        host_model_id=args.host,
+        dataset=dataset,
+        widths=widths,
+        encodings=encodings,
+        scale_boosts=scale_boosts,
+        output_dir=args.output_dir,
+        cache_host=(not args.no_host_cache),
+        max_seq_len=args.max_seq_len,
+        device=args.device,
+    )
+    errors = sum(1 for r in rows if r.error_message is not None)
+    print(f"sae-forge sweep-capability: {len(rows)} cells; "
+          f"errors: {errors}; frontier: {Path(args.output_dir) / 'frontier.jsonl'}")
+    return 1 if errors == len(rows) else 0
+
+
+# Predicate parser for `sae-forge recommend`.
+_RECOMMEND_OPS = (">=", "<=", "==", "<", ">")  # check 2-char before 1-char
+
+
+def _parse_recommend_predicate(expr: str) -> tuple[str, str, float]:
+    """Parse ``FIELD<OP>VALUE`` into (field_name, op, value).
+
+    Field names accept kebab-case (``retained-mauc``) or snake_case
+    (``retained_mauc_vs_host``). Kebab→snake conversion is mechanical:
+    replace ``-`` with ``_``. Special case: bare ``retained-mauc``
+    resolves to ``retained_mauc_vs_host`` (the common shorthand);
+    same for ``retained-cov95``.
+    """
+    op_used = None
+    op_idx = -1
+    for op in _RECOMMEND_OPS:
+        idx = expr.find(op)
+        if idx >= 0:
+            op_used = op
+            op_idx = idx
+            break
+    if op_used is None:
+        raise ValueError(
+            f"sae-forge recommend: predicate {expr!r} has no comparison "
+            f"operator; expected one of {_RECOMMEND_OPS!r}"
+        )
+    field_raw = expr[:op_idx].strip()
+    value_raw = expr[op_idx + len(op_used):].strip()
+    if not field_raw or not value_raw:
+        raise ValueError(
+            f"sae-forge recommend: predicate {expr!r} missing field or value"
+        )
+    field = field_raw.replace("-", "_")
+    # Shorthand aliases for the load-bearing capability fields.
+    aliases = {
+        "retained_mauc":  "retained_mauc_vs_host",
+        "retained_cov95": "retained_cov95_vs_host",
+    }
+    field = aliases.get(field, field)
+    return field, op_used, float(value_raw)
+
+
+def _cmd_recommend(args: argparse.Namespace) -> int:
+    """Filter a sweep frontier by predicate(s); return the smallest-
+    parameter row matching all predicates.
+
+    Output: tabular summary by default; JSON via ``--json``. Exits
+    non-zero when no row matches any predicate.
+    """
+    from saeforge.sweep import ParetoFrontierRow
+
+    frontier_path = Path(args.frontier)
+    if not frontier_path.exists():
+        print(f"sae-forge recommend: frontier not found: {frontier_path}",
+              file=sys.stderr)
+        return 2
+
+    predicates: list[tuple[str, str, float]] = []
+    for expr in args.target:
+        try:
+            predicates.append(_parse_recommend_predicate(expr))
+        except ValueError as exc:
+            print(f"sae-forge recommend: {exc}", file=sys.stderr)
+            return 2
+
+    rows: list[ParetoFrontierRow] = []
+    for line in frontier_path.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        rows.append(ParetoFrontierRow.from_json_dict(json.loads(line)))
+
+    survivors: list[ParetoFrontierRow] = []
+    for row in rows:
+        if row.error_message is not None:
+            continue
+        passes_all = True
+        for field, op, value in predicates:
+            attr = getattr(row, field, None)
+            if attr is None:
+                passes_all = False
+                break
+            actual = float(attr)
+            comparisons = {
+                ">=": actual >= value,
+                "<=": actual <= value,
+                "==": actual == value,
+                ">":  actual > value,
+                "<":  actual < value,
+            }
+            if not comparisons[op]:
+                passes_all = False
+                break
+        if passes_all:
+            survivors.append(row)
+
+    if not survivors:
+        print(
+            f"sae-forge recommend: no row satisfies all predicates "
+            f"({args.target!r}). Closest rows by predicate failure point "
+            f"are not yet implemented; inspect the frontier directly.",
+            file=sys.stderr,
+        )
+        return 1
+
+    # Pick smallest n_params_forged (or target_n_features_kept fallback,
+    # since n_params_forged isn't always populated by sweep_pareto_capability v1).
+    def _key(r: ParetoFrontierRow) -> int:
+        return int(r.target_n_features_kept)
+    picked = min(survivors, key=_key)
+
+    if args.emit_json:
+        print(json.dumps(picked.to_json_dict(), indent=2))
+        return 0
+
+    # Tabular: emit the load-bearing fields per the spec.
+    print(f"recommended config (smallest target_n_features_kept among "
+          f"{len(survivors)} survivor row(s)):")
+    print(f"  encoding_label:           {picked.encoding_label}")
+    print(f"  target_n_features_kept:   {picked.target_n_features_kept}")
+    if picked.host_baseline_mauc is not None:
+        print(f"  host_baseline_mauc:       {picked.host_baseline_mauc:.4f}")
+    if picked.forge_mauc is not None:
+        print(f"  forge_mauc:               {picked.forge_mauc:.4f}")
+    if picked.retained_mauc_vs_host is not None:
+        print(f"  retained_mauc_vs_host:    {picked.retained_mauc_vs_host:.4f}")
+    if picked.forge_cov95 is not None:
+        print(f"  forge_cov95:              {picked.forge_cov95:.4f}")
+    if picked.gap_median is not None:
+        print(f"  gap_median:               {picked.gap_median:+.4f}")
+    if picked.gap_p95 is not None:
+        print(f"  gap_p95:                  {picked.gap_p95:+.4f}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -1422,6 +1758,10 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_forge(args)
     if args.command == "sweep-pareto":
         return _cmd_sweep_pareto(args)
+    if args.command == "sweep-capability":
+        return _cmd_sweep_capability(args)
+    if args.command == "recommend":
+        return _cmd_recommend(args)
     if args.command == "inspect":
         return _cmd_inspect(args)
     parser.error(f"unknown command: {args.command}")
