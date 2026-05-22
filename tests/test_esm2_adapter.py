@@ -133,8 +133,15 @@ def test_native_config_validation_rejects_vocab_zero_for_esm2():
 
 def test_identity_basis_reproduces_host_bit_for_bit():
     """The load-bearing semantic test. With W_dec = I, the forged
-    ESM-2 forward must equal HF's ``EsmModel.last_hidden_state``
-    exactly (max abs diff == 0.0)."""
+    ESM-2 forward must equal HF's ``EsmModel.last_hidden_state`` at
+    float-noise level. The semantic content of the test is "the
+    adapter walk + ForgedEsm2 forward are aligned with HF
+    modeling_esm.py"; on most BLAS paths this lands at exactly 0.0
+    (locally observed), but some torch/BLAS combinations on CI emit
+    ~1e-7 of fp32 noise on the matmul that pinv(I) @ W collapses to
+    W. Threshold accepts up to 1e-5 — well above noise, well below
+    any real algebraic divergence (which would land in the 1e-3+
+    range as observed during adapter development)."""
     from saeforge.adapters import adapter_for
     from saeforge.model import NativeModel
     from saeforge.projector import SubspaceProjector
@@ -153,10 +160,11 @@ def test_identity_basis_reproduces_host_bit_for_bit():
         forged_h = model.torch_module(input_ids)
     assert host_h.shape == forged_h.shape
     max_diff = (host_h - forged_h).abs().max().item()
-    assert max_diff == 0.0, (
+    assert max_diff < 1e-5, (
         f"identity-basis forge diverged from host by {max_diff}; "
         f"adapter walk or ForgedEsm2 forward is misaligned with HF "
-        f"modeling_esm.py"
+        f"modeling_esm.py (threshold 1e-5 — float-noise upper bound; "
+        f"real adapter bugs land in the 1e-3+ range)"
     )
 
 
