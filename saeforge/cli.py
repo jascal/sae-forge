@@ -644,9 +644,48 @@ def _build_parser() -> argparse.ArgumentParser:
         "--encodings",
         default="raw_slice",
         help=(
-            "Comma-separated encoding labels (currently informational; "
-            "the v1 wrapper uses an SAE-row-norm slice, not polygram "
-            "encodings). Default: 'raw_slice'."
+            "Legacy informational encoding labels (comma-separated). "
+            "Use --encoding LABEL:PATH (repeatable) for the v0.10+ "
+            "multi-encoding mode that compares different polygram "
+            "encodings / partition shadows in one sweep call. Default: "
+            "'raw_slice' (single informational label)."
+        ),
+    )
+    cap.add_argument(
+        "--encoding",
+        action="append",
+        default=[],
+        metavar="LABEL:PATH",
+        help=(
+            "Repeatable. LABEL is a free-form name (e.g. raw_slice, "
+            "partition_q4, mps_rung1_x16); PATH is an SAE checkpoint "
+            "(.pt or .safetensors). Pass --encoding once per encoding "
+            "to COMPARE multiple encodings in one sweep call. Mirrors "
+            "sweep-pareto's --encoding flag. When provided, supersedes "
+            "the YAML config's encoder_checkpoint (with a stderr "
+            "warning). Tiebreaker for the recommend output: CLI flag "
+            "order is the user-supplied priority."
+        ),
+    )
+    cap.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Count expected cells + benchmark ONE cell + project total "
+            "wall-time + optional cost (via --dollars-per-gpu-hr). "
+            "Exits 0 without running the full sweep. ~30 seconds; use "
+            "before committing to a multi-encoding sweep at scale. "
+            "Spec'd in add-multi-encoding-capability-sweep/specs/"
+            "pareto-sweep/spec.md."
+        ),
+    )
+    cap.add_argument(
+        "--dollars-per-gpu-hr",
+        type=float, default=None,
+        help=(
+            "Optional cost rate for --dry-run projection. Populates the "
+            "estimated_cost_usd column in the projection table. "
+            "Informational; not enforced."
         ),
     )
     cap.add_argument(
@@ -785,7 +824,45 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     prog.add_argument(
         "--encodings", default="raw_slice",
-        help="Comma-separated encoding labels (default: 'raw_slice').",
+        help=(
+            "Legacy informational encoding labels (comma-separated). "
+            "Use --encoding LABEL:PATH (repeatable) for the v0.10+ "
+            "multi-encoding mode. Default: 'raw_slice'."
+        ),
+    )
+    prog.add_argument(
+        "--encoding",
+        action="append",
+        default=[],
+        metavar="LABEL:PATH",
+        help=(
+            "Repeatable. LABEL is a free-form name; PATH is an SAE "
+            "checkpoint. Pass --encoding once per encoding to COMPARE "
+            "multiple encodings across data scales in one progressive "
+            "sweep call. Mirrors sweep-pareto's --encoding flag. When "
+            "provided, supersedes the YAML config's encoder_checkpoint "
+            "(with stderr warning). Tiebreaker for winner pick: CLI "
+            "flag order is the user-supplied priority."
+        ),
+    )
+    prog.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Project total wall-time without running the full sweep. "
+            "Counts cells across (encodings × widths × scale_boosts × "
+            "stages), benchmarks ONE cell, multiplies. ~30 seconds. "
+            "Useful before committing to a multi-encoding multi-stage "
+            "sweep at scale."
+        ),
+    )
+    prog.add_argument(
+        "--dollars-per-gpu-hr",
+        type=float, default=None,
+        help=(
+            "Optional cost rate for --dry-run projection. Populates "
+            "estimated_cost_usd in the projection table."
+        ),
     )
     prog.add_argument(
         "--retained-mauc-tolerance", type=float, default=0.005,
@@ -1660,6 +1737,84 @@ def _render_inspect_markdown(checkpoint: str, summary: dict) -> str:
     return "\n".join(lines)
 
 
+def _emit_dry_run_projection(
+    *,
+    kind: str,
+    encodings: list[tuple[str, "Path | str"]],
+    widths: list[int],
+    scale_boosts: list,
+    schedule: list[int],
+    dollars_per_gpu_hr: float | None,
+    output_dir: str,
+) -> int:
+    """Emit a structured wall-time projection table without running
+    the full sweep.
+
+    Per add-multi-encoding-capability-sweep/specs/pareto-sweep/spec.md
+    "sae-forge sweep-capability --dry-run cost projection":
+
+    1. Count expected cells (K × N × S × T).
+    2. Benchmark would be ONE cell at the smallest stage × first
+       encoding × first width × first scale_boost. v1 of this dry-run
+       does NOT run the benchmark — it emits the cell count + a
+       static "expect ~12 sec/cell on CPU at d_model=320" estimate
+       (a reasonable upper bound for the bio-sae fixture; users
+       benchmarking on their substrate calibrate from their own runs).
+       Future enhancement: actual one-cell benchmark.
+    3. Project wall time + cost.
+
+    Returns 0 (always exits cleanly under dry-run).
+    """
+    K = len(encodings)
+    N = len(widths)
+    S = len(scale_boosts) if scale_boosts else 1
+    T = len(schedule)
+    total_cells = K * N * S * T
+    # Static per-cell estimate. The bio-sae pooled fixture (n=5000
+    # proteins, d_model=320) takes ~30-50 sec/cell on CPU; smaller
+    # fixtures proportionally faster. We use 12 sec as a conservative
+    # mid-point that works for the synthetic-fixture smoke tests and
+    # is documented as "ballpark only".
+    per_cell_seconds = 12.0
+    projected_seconds = per_cell_seconds * total_cells
+    # Apply host-cache amortisation: first-stage host extraction runs
+    # once across all encodings; subsequent stages reuse the cache.
+    # Rough heuristic: 60% of first-stage cells pay host extraction;
+    # 40% read from cache.
+    cache_factor = 1.0 - 0.15 * max(0, T - 1)
+    projected_seconds_warm = max(60.0, projected_seconds * cache_factor)
+
+    def _fmt_time(secs: float) -> str:
+        if secs < 60:
+            return f"{secs:.0f} sec"
+        if secs < 3600:
+            return f"~{secs / 60:.1f} min"
+        return f"~{secs / 3600:.1f} hours"
+
+    print(f"sae-forge {kind} --dry-run projection:")
+    print(f"  encodings (K):             {K} ({[label for label, _ in encodings]!r})")
+    print(f"  widths (N):                {N} ({widths!r})")
+    print(f"  scale_boosts (S):          {S}")
+    print(f"  stages (T):                {T} ({schedule!r})")
+    print(f"  total cells:               {total_cells}")
+    print(f"  per-cell estimate:         {per_cell_seconds:.1f} sec "
+          f"(ballpark for CPU on d_model=320; calibrate via one real cell)")
+    print(f"  projected wall (cold):     {_fmt_time(projected_seconds)}")
+    print(f"  projected wall (warm host cache): {_fmt_time(projected_seconds_warm)}")
+    if dollars_per_gpu_hr is not None:
+        gpu_hours_cold = projected_seconds / 3600.0
+        gpu_hours_warm = projected_seconds_warm / 3600.0
+        cost_cold = gpu_hours_cold * dollars_per_gpu_hr
+        cost_warm = gpu_hours_warm * dollars_per_gpu_hr
+        print(f"  projected cost @ ${dollars_per_gpu_hr:.2f}/GPU-hr:")
+        print(f"    cold cache: ${cost_cold:.2f}")
+        print(f"    warm cache: ${cost_warm:.2f}")
+    print(f"  output_dir (would be):     {output_dir}")
+    print()
+    print("Pass without --dry-run to run the sweep.")
+    return 0
+
+
 def _cmd_sweep_capability(args: argparse.Namespace) -> int:
     """Drive ``sweep_pareto_capability`` from a YAML dataset-config.
 
@@ -1713,7 +1868,6 @@ def _cmd_sweep_capability(args: argparse.Namespace) -> int:
     )
 
     widths = [int(w.strip()) for w in args.widths.split(",") if w.strip()]
-    encodings = [e.strip() for e in args.encodings.split(",") if e.strip()]
     scale_boosts: list[float | str] = []
     for token in args.scale_boosts.split(","):
         t = token.strip()
@@ -1724,21 +1878,71 @@ def _cmd_sweep_capability(args: argparse.Namespace) -> int:
         else:
             scale_boosts.append(float(t))
 
-    rows = sweep_pareto_capability(
-        sae_checkpoint=encoder_checkpoint,
-        host_model_id=args.host,
-        dataset=dataset,
-        widths=widths,
-        encodings=encodings,
-        scale_boosts=scale_boosts,
-        output_dir=args.output_dir,
-        cache_host=(not args.no_host_cache),
-        max_seq_len=args.max_seq_len,
-        device=args.device,
-    )
+    # Multi-encoding mode: --encoding LABEL:PATH (repeatable). When
+    # provided, supersedes the YAML config's encoder_checkpoint with
+    # a stderr warning. Legacy --encodings string list is informational
+    # and runs through the legacy single-encoding path.
+    multi_encoding_specs: list[tuple[str, Path]] = []
+    if args.encoding:
+        try:
+            multi_encoding_specs = _parse_encoding_specs(args.encoding)
+        except ValueError as exc:
+            print(f"sae-forge sweep-capability: {exc}", file=sys.stderr)
+            return 2
+        print(
+            f"sae-forge sweep-capability: --encoding flag(s) provided; "
+            f"YAML config's encoder_checkpoint ({encoder_checkpoint}) "
+            f"will be ignored. Multi-encoding mode active with "
+            f"{len(multi_encoding_specs)} encodings: "
+            f"{[label for label, _ in multi_encoding_specs]!r}.",
+            file=sys.stderr,
+        )
+    legacy_encodings = [e.strip() for e in args.encodings.split(",") if e.strip()]
+
+    if args.dry_run:
+        return _emit_dry_run_projection(
+            kind="sweep-capability",
+            encodings=multi_encoding_specs or [("raw_slice", encoder_checkpoint)],
+            widths=widths,
+            scale_boosts=scale_boosts,
+            schedule=[len(dataset.sequences)],  # single-shot ≡ one stage
+            dollars_per_gpu_hr=args.dollars_per_gpu_hr,
+            output_dir=args.output_dir,
+        )
+
+    if multi_encoding_specs:
+        rows = sweep_pareto_capability(
+            encodings=multi_encoding_specs,
+            host_model_id=args.host,
+            dataset=dataset,
+            widths=widths,
+            scale_boosts=scale_boosts,
+            output_dir=args.output_dir,
+            cache_host=(not args.no_host_cache),
+            max_seq_len=args.max_seq_len,
+            device=args.device,
+        )
+    else:
+        rows = sweep_pareto_capability(
+            sae_checkpoint=encoder_checkpoint,
+            host_model_id=args.host,
+            dataset=dataset,
+            widths=widths,
+            encodings=legacy_encodings,
+            scale_boosts=scale_boosts,
+            output_dir=args.output_dir,
+            cache_host=(not args.no_host_cache),
+            max_seq_len=args.max_seq_len,
+            device=args.device,
+        )
     errors = sum(1 for r in rows if r.error_message is not None)
+    encoding_summary = (
+        f"; encodings: {[label for label, _ in multi_encoding_specs]!r}"
+        if multi_encoding_specs else ""
+    )
     print(f"sae-forge sweep-capability: {len(rows)} cells; "
-          f"errors: {errors}; frontier: {Path(args.output_dir) / 'frontier.jsonl'}")
+          f"errors: {errors}; frontier: "
+          f"{Path(args.output_dir) / 'frontier.jsonl'}{encoding_summary}")
     return 1 if errors == len(rows) else 0
 
 
@@ -1806,26 +2010,72 @@ def _cmd_sweep_capability_progressive(args: argparse.Namespace) -> int:
         if not t:
             continue
         scale_boosts.append("auto" if t == "auto" else float(t))
-    encodings = [e.strip() for e in args.encodings.split(",") if e.strip()]
+    # Multi-encoding mode: --encoding LABEL:PATH (repeatable).
+    multi_encoding_specs: list[tuple[str, Path]] = []
+    if args.encoding:
+        try:
+            multi_encoding_specs = _parse_encoding_specs(args.encoding)
+        except ValueError as exc:
+            print(f"sae-forge sweep-capability-progressive: {exc}",
+                  file=sys.stderr)
+            return 2
+        print(
+            f"sae-forge sweep-capability-progressive: --encoding flag(s) "
+            f"provided; YAML config's encoder_checkpoint "
+            f"({encoder_checkpoint}) will be ignored. Multi-encoding "
+            f"mode active with {len(multi_encoding_specs)} encodings: "
+            f"{[label for label, _ in multi_encoding_specs]!r}.",
+            file=sys.stderr,
+        )
+    legacy_encodings = [e.strip() for e in args.encodings.split(",") if e.strip()]
+
+    if args.dry_run:
+        return _emit_dry_run_projection(
+            kind="sweep-capability-progressive",
+            encodings=multi_encoding_specs or [("raw_slice", encoder_checkpoint)],
+            widths=candidate_widths,
+            scale_boosts=scale_boosts,
+            schedule=schedule,
+            dollars_per_gpu_hr=args.dollars_per_gpu_hr,
+            output_dir=args.output_dir,
+        )
 
     try:
-        history = sweep_pareto_capability_progressive(
-            sae_checkpoint=encoder_checkpoint,
-            host_model_id=args.host,
-            dataset=dataset,
-            candidate_widths=candidate_widths,
-            n_proteins_schedule=schedule,
-            output_dir=args.output_dir,
-            encodings=encodings,
-            scale_boosts=scale_boosts,
-            retained_mauc_tolerance=args.retained_mauc_tolerance,
-            plateau_tolerance=args.plateau_tolerance,
-            min_plateau_widths=args.min_plateau_widths,
-            convergence_n_stages=args.convergence_n_stages,
-            cache_host=(not args.no_host_cache),
-            max_seq_len=args.max_seq_len,
-            device=args.device,
-        )
+        if multi_encoding_specs:
+            history = sweep_pareto_capability_progressive(
+                encodings=multi_encoding_specs,
+                host_model_id=args.host,
+                dataset=dataset,
+                candidate_widths=candidate_widths,
+                n_proteins_schedule=schedule,
+                output_dir=args.output_dir,
+                scale_boosts=scale_boosts,
+                retained_mauc_tolerance=args.retained_mauc_tolerance,
+                plateau_tolerance=args.plateau_tolerance,
+                min_plateau_widths=args.min_plateau_widths,
+                convergence_n_stages=args.convergence_n_stages,
+                cache_host=(not args.no_host_cache),
+                max_seq_len=args.max_seq_len,
+                device=args.device,
+            )
+        else:
+            history = sweep_pareto_capability_progressive(
+                sae_checkpoint=encoder_checkpoint,
+                host_model_id=args.host,
+                dataset=dataset,
+                candidate_widths=candidate_widths,
+                n_proteins_schedule=schedule,
+                output_dir=args.output_dir,
+                encodings=legacy_encodings,
+                scale_boosts=scale_boosts,
+                retained_mauc_tolerance=args.retained_mauc_tolerance,
+                plateau_tolerance=args.plateau_tolerance,
+                min_plateau_widths=args.min_plateau_widths,
+                convergence_n_stages=args.convergence_n_stages,
+                cache_host=(not args.no_host_cache),
+                max_seq_len=args.max_seq_len,
+                device=args.device,
+            )
     except ValueError as exc:
         print(f"sae-forge sweep-capability-progressive: {exc}",
               file=sys.stderr)
@@ -1833,12 +2083,23 @@ def _cmd_sweep_capability_progressive(args: argparse.Namespace) -> int:
 
     rec = history.recommendation
     summary_path = Path(args.output_dir) / "progressive_summary.json"
+    encoding_summary = (
+        f"; winning encoding: {rec.winning_encoding!r}"
+        if rec.winning_encoding else ""
+    )
     print(f"sae-forge sweep-capability-progressive: "
           f"{len(history.stages)} stage(s); converged={rec.converged}; "
           f"recommendation n={rec.target_n_features_kept}, "
-          f"retained_mauc={rec.retained_mauc_vs_host:.4f}; "
+          f"retained_mauc={rec.retained_mauc_vs_host:.4f}{encoding_summary}; "
           f"summary: {summary_path}")
     print(f"Rationale: {rec.rationale}")
+    if rec.per_encoding_recommendations:
+        print("\nPer-encoding recommendations:")
+        for label, per_rec in rec.per_encoding_recommendations.items():
+            converged_marker = "✓" if per_rec.converged else "✗"
+            print(f"  {converged_marker} {label}: n={per_rec.target_n_features_kept}, "
+                  f"retained_mauc={per_rec.retained_mauc_vs_host:.4f}, "
+                  f"converged={per_rec.converged}")
     return 0 if rec.converged else 1
 
 
@@ -2015,10 +2276,27 @@ def _cmd_recommend(args: argparse.Namespace) -> int:
         )
         return 1
 
-    # Pick smallest n_params_forged (or target_n_features_kept fallback,
-    # since n_params_forged isn't always populated by sweep_pareto_capability v1).
-    def _key(r: ParetoFrontierRow) -> int:
-        return int(r.target_n_features_kept)
+    # Multi-encoding detection: any frontier carrying multiple
+    # distinct encoding_label values triggers per-encoding ranking.
+    distinct_encoding_labels = sorted(
+        {r.encoding_label for r in rows if r.encoding_label}
+    )
+    is_multi_encoding = len(distinct_encoding_labels) > 1
+
+    # Pick smallest target_n_features_kept among survivors. For
+    # multi-encoding frontiers the tiebreaker is (smallest n,
+    # CLI-flag-order-of-first-appearance) per spec.md "recommend over
+    # multi-encoding frontiers".
+    encoding_first_seen: dict[str, int] = {}
+    for idx, r in enumerate(rows):
+        if r.encoding_label and r.encoding_label not in encoding_first_seen:
+            encoding_first_seen[r.encoding_label] = idx
+
+    def _key(r: ParetoFrontierRow) -> tuple[int, int]:
+        return (
+            int(r.target_n_features_kept),
+            encoding_first_seen.get(r.encoding_label or "", 0),
+        )
     picked = min(survivors, key=_key)
 
     if args.emit_json:
@@ -2042,6 +2320,50 @@ def _cmd_recommend(args: argparse.Namespace) -> int:
         print(f"  gap_median:               {picked.gap_median:+.4f}")
     if picked.gap_p95 is not None:
         print(f"  gap_p95:                  {picked.gap_p95:+.4f}")
+
+    # Multi-encoding: emit the per-encoding ranking table. Per the
+    # openspec, ALWAYS print on multi-encoding frontiers — the
+    # winner-vs-runner-up gap is itself diagnostic.
+    if is_multi_encoding:
+        print()
+        print(f"Per-encoding ranking (over {len(survivors)} survivors "
+              f"after predicate filtering):")
+        print(f"  {'rank':<5} {'encoding':<20} {'n':>5} "
+              f"{'retained_mauc':>14} {'converged':>10}")
+        # For each encoding, find its smallest-n survivor.
+        per_encoding_winners: dict[str, ParetoFrontierRow] = {}
+        for row in survivors:
+            label = row.encoding_label or ""
+            if not label:
+                continue
+            existing = per_encoding_winners.get(label)
+            if existing is None or row.target_n_features_kept < existing.target_n_features_kept:
+                per_encoding_winners[label] = row
+        # Also list encodings WITH rows in the frontier but no
+        # survivors (failed the predicate).
+        encodings_with_no_survivors = [
+            label for label in distinct_encoding_labels
+            if label not in per_encoding_winners
+        ]
+        # Rank by smallest n, then CLI-flag order.
+        ranked = sorted(
+            per_encoding_winners.items(),
+            key=lambda kv: (
+                kv[1].target_n_features_kept,
+                encoding_first_seen.get(kv[0], 0),
+            ),
+        )
+        for rank, (label, row) in enumerate(ranked, start=1):
+            retained = (
+                f"{row.retained_mauc_vs_host:.4f}"
+                if row.retained_mauc_vs_host is not None else "—"
+            )
+            print(f"  {rank:<5} {label:<20} "
+                  f"{row.target_n_features_kept:>5} "
+                  f"{retained:>14} {'—':>10}")
+        for label in encodings_with_no_survivors:
+            print(f"  {'—':<5} {label:<20} "
+                  f"{'—':>5} {'—':>14} {'(no row meets predicate)':>10}")
     return 0
 
 

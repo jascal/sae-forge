@@ -413,3 +413,217 @@ def test_recommend_single_shot_frontier_unaffected(tmp_path: Path):
     assert rc == 0
     picked = json.loads(out_buf.getvalue())
     assert picked["target_n_features_kept"] == 8
+
+
+# ---------------------------------------------------------------------------
+# Suite 4: multi-encoding CLI surface
+# (added by add-multi-encoding-capability-sweep slice 3/N)
+# ---------------------------------------------------------------------------
+
+
+def test_cli_multi_encoding_flag_parses():
+    """--encoding LABEL:PATH (repeatable) accumulates into args.encoding."""
+    from saeforge.cli import _build_parser, _parse_encoding_specs
+
+    parser = _build_parser()
+    args = parser.parse_args([
+        "sweep-capability",
+        "--dataset-config", "x.yaml",
+        "--host", "h",
+        "--widths", "4,8",
+        "--output-dir", "out",
+        "--encoding", "raw_slice:p1",
+        "--encoding", "partition_q4:p2",
+        "--encoding", "mps_rung1_x16:p3",
+    ])
+    assert args.encoding == ["raw_slice:p1", "partition_q4:p2", "mps_rung1_x16:p3"]
+    parsed = _parse_encoding_specs(args.encoding)
+    assert len(parsed) == 3
+    assert parsed[0] == ("raw_slice", Path("p1"))
+    assert parsed[2] == ("mps_rung1_x16", Path("p3"))
+
+
+def test_cli_progressive_multi_encoding_flag_parses():
+    """Same --encoding flag works on sweep-capability-progressive."""
+    from saeforge.cli import _build_parser
+
+    parser = _build_parser()
+    args = parser.parse_args([
+        "sweep-capability-progressive",
+        "--dataset-config", "x.yaml",
+        "--host", "h",
+        "--candidate-widths", "4,8,16",
+        "--schedule", "10,50",
+        "--output-dir", "out",
+        "--encoding", "raw_slice:p1",
+        "--encoding", "partition:p2",
+    ])
+    assert args.encoding == ["raw_slice:p1", "partition:p2"]
+    assert args.dry_run is False  # default
+    assert args.dollars_per_gpu_hr is None  # default
+
+
+def test_cli_dry_run_flag_parses_with_cost_rate():
+    """--dry-run + --dollars-per-gpu-hr both parse cleanly."""
+    from saeforge.cli import _build_parser
+
+    parser = _build_parser()
+    args = parser.parse_args([
+        "sweep-capability",
+        "--dataset-config", "x.yaml", "--host", "h",
+        "--widths", "4,8", "--output-dir", "out",
+        "--dry-run", "--dollars-per-gpu-hr", "3.0",
+    ])
+    assert args.dry_run is True
+    assert args.dollars_per_gpu_hr == 3.0
+
+
+def test_cli_sweep_capability_dry_run_exits_zero(tmp_path: Path):
+    """--dry-run emits projection and exits 0 WITHOUT running the
+    sweep. Tested by passing a non-existent dataset-config path that
+    would fail at runtime — but dry-run still needs --dataset-config
+    to be a real file because the YAML loader runs before the dry-
+    run branch."""
+    import yaml
+    from saeforge.cli import main as cli_main
+
+    cfg_path = tmp_path / "dataset.yaml"
+    # Need a YAML config that AT LEAST has the required keys; the
+    # dataset loader runs before dry-run kicks in. We use a stub
+    # config pointing at non-existent fixture paths; the dataset
+    # constructor will fail on file-not-found UNLESS we point it at
+    # a real fixture. Use the synthetic fixture from elsewhere in
+    # this file.
+    run_dir, bundle_path, seqs_path = _build_bio_sae_fixture(tmp_path)
+    cfg_path.write_text(yaml.safe_dump({
+        "encoder_checkpoint": str(run_dir / "sae.pt"),
+        "sequences_path": str(seqs_path),
+        "labels_path": str(bundle_path),
+        "feed": "pooled",
+        "tokenizer_id": "facebook/esm2_t6_8M_UR50D",
+        "aggregator": "pool_then_encode",
+        "min_prevalence": 0,
+        "sae_variant": "topk",
+        "sae_k": 8,
+    }))
+    # Skip if tokenizer can't be fetched.
+    try:
+        from transformers import AutoTokenizer
+        AutoTokenizer.from_pretrained("facebook/esm2_t6_8M_UR50D")
+    except Exception as exc:
+        pytest.skip(f"ESM tokenizer unavailable: {exc}")
+
+    rc = cli_main([
+        "sweep-capability",
+        "--dataset-config", str(cfg_path),
+        "--host", "facebook/esm2_t6_8M_UR50D",
+        "--widths", "4,8",
+        "--output-dir", str(tmp_path / "dry_run_out"),
+        "--encoding", f"raw_slice:{run_dir / 'sae.pt'}",
+        "--encoding", f"shadow_b:{run_dir / 'sae.pt'}",  # OK to reuse path
+        "--dry-run",
+        "--dollars-per-gpu-hr", "3.0",
+    ])
+    assert rc == 0
+    # The sweep would have written frontier.jsonl if it ran; under
+    # dry-run, no such file exists.
+    assert not (tmp_path / "dry_run_out" / "frontier.jsonl").exists()
+
+
+def test_cli_recommend_multi_encoding_emits_ranking_table(tmp_path: Path):
+    """Multi-encoding frontier (rows with multiple distinct
+    encoding_label values) → recommend output emits the per-encoding
+    ranking table."""
+    import contextlib
+    import io
+    import json
+
+    from saeforge.cli import main as cli_main
+
+    # Synthesize a multi-encoding frontier.
+    frontier_dir = tmp_path / "multi_encoding"
+    frontier_dir.mkdir()
+    rows = []
+    for label, base_retained in [("raw_slice", 0.90), ("partition_q4", 0.92)]:
+        for width in (16, 32, 64):
+            rows.append({
+                "encoding_label": label,
+                "target_n_features_kept": width,
+                "n_features_kept_actual": width,
+                "pareto_reached_target": True,
+                "faithfulness_kl": None,
+                "perplexity": None,
+                "final_fine_tune_loss": None,
+                "sae_checkpoint": "/tmp/sae",
+                "forged_model_path": None,
+                "elapsed_seconds": 0.1,
+                "error_message": None,
+                "host_baseline_mauc": 0.95,
+                "forge_mauc": 0.85,
+                "retained_mauc_vs_host": base_retained,
+                "capability_aggregator": "pool_then_encode",
+                "capability_min_prevalence": 0,
+            })
+    frontier_path = frontier_dir / "frontier.jsonl"
+    frontier_path.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+
+    out_buf = io.StringIO()
+    with contextlib.redirect_stdout(out_buf):
+        rc = cli_main([
+            "recommend",
+            "--frontier", str(frontier_path),
+            "--target", "retained-mauc>=0.85",
+        ])
+    assert rc == 0
+    stdout = out_buf.getvalue()
+    # Ranking table SHALL appear.
+    assert "Per-encoding ranking" in stdout
+    assert "raw_slice" in stdout
+    assert "partition_q4" in stdout
+    # Both encodings have a row in the ranking table.
+    assert stdout.count("rank") >= 1
+
+
+def test_cli_recommend_single_encoding_skips_ranking_table(tmp_path: Path):
+    """Single-encoding frontier (only one distinct encoding_label) →
+    recommend does NOT emit the ranking table (back-compat)."""
+    import contextlib
+    import io
+    import json
+
+    from saeforge.cli import main as cli_main
+
+    frontier_dir = tmp_path / "single_encoding"
+    frontier_dir.mkdir()
+    rows = [
+        {
+            "encoding_label": "raw_slice",
+            "target_n_features_kept": w,
+            "n_features_kept_actual": w,
+            "pareto_reached_target": True,
+            "faithfulness_kl": None, "perplexity": None,
+            "final_fine_tune_loss": None,
+            "sae_checkpoint": "/tmp/sae",
+            "forged_model_path": None,
+            "elapsed_seconds": 0.1, "error_message": None,
+            "host_baseline_mauc": 0.95, "forge_mauc": 0.85,
+            "retained_mauc_vs_host": 0.90,
+            "capability_aggregator": "pool_then_encode",
+            "capability_min_prevalence": 0,
+        }
+        for w in (16, 32, 64)
+    ]
+    frontier_path = frontier_dir / "frontier.jsonl"
+    frontier_path.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+
+    out_buf = io.StringIO()
+    with contextlib.redirect_stdout(out_buf):
+        rc = cli_main([
+            "recommend",
+            "--frontier", str(frontier_path),
+            "--target", "retained-mauc>=0.85",
+        ])
+    assert rc == 0
+    stdout = out_buf.getvalue()
+    # Ranking table SHALL NOT appear for single-encoding.
+    assert "Per-encoding ranking" not in stdout
