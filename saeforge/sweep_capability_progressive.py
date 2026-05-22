@@ -313,7 +313,38 @@ def sweep_pareto_capability_progressive(
     :class:`ProgressiveHistory` carrying per-stage results +
     the final :class:`ProgressiveRecommendation`.
 
-    Two opt-in modes that are NOT ``--accept-unconverged``:
+    **Parameter guidance (production defaults):**
+
+    - ``convergence_n_stages`` — **production users SHOULD leave
+      this at the default of 2** (or set 3 for more conservative
+      claims). The value controls how many consecutive non-shifting
+      stages the wrapper requires before declaring convergence;
+      higher values give stronger stability guarantees at the cost
+      of one or two extra stages of compute.
+
+      ``convergence_n_stages=1`` is supported as an *explicit
+      opt-out* of the strict default, NOT as a recommended
+      production value: it accepts a recommendation that's
+      stable-vs-the-previous-single-stage but provides no
+      multi-stage robustness attestation. Use only when the user
+      has already separately verified the substrate's optimum is
+      data-scale-stable, or for cheap exploratory probes before
+      committing to a full sweep.
+
+    - ``plateau_tolerance`` — 0.01 (default) defines a 1 % AUC
+      band around the peak as "tied for first". Tighten to 0.005
+      for substrates where retained_mauc separates cleanly;
+      loosen to 0.02 for flat plateaus where many widths sit close
+      together.
+
+    - ``retained_mauc_tolerance`` — 0.005 (default) caps the
+      max-pairwise-difference in retained_mauc across the
+      trailing ``convergence_n_stages`` stages. Tighten only when
+      you need extremely precise stability claims; the noise
+      floor from protein-sample variation typically sits around
+      this value.
+
+    **Two opt-in modes that are NOT --accept-unconverged:**
 
     - ``convergence_n_stages=1``: looser data-scale check. Still
       asks "did the last stage shift from the previous?", just
@@ -321,10 +352,16 @@ def sweep_pareto_capability_progressive(
     - Single-element ``n_proteins_schedule=[N]``: degenerate to a
       single-shot ``sweep_pareto_capability`` at N proteins. Emits
       a progressive frontier with one stage; ``converged=True`` by
-      definition.
+      definition (no prior stage exists to shift from).
 
-    Validation:
-    - ``n_proteins_schedule`` SHALL be monotone non-decreasing.
+    Both are *informed opt-outs* for users who don't want the strict
+    default but also don't want to blanket-accept un-converged
+    output via ``--accept-unconverged``.
+
+    **Validation (raises ``ValueError`` with actionable messages):**
+
+    - ``n_proteins_schedule`` SHALL be monotone non-decreasing
+      (cumulative subsampling requires this).
     - ``n_proteins_schedule[-1]`` SHALL NOT exceed
       ``len(dataset.sequences)``.
     - ``candidate_widths`` SHALL be non-empty.
@@ -339,23 +376,40 @@ def sweep_pareto_capability_progressive(
     if not schedule:
         raise ValueError(
             "sweep_pareto_capability_progressive: n_proteins_schedule must "
-            "be non-empty"
+            "be non-empty. Pass a list like [10, 50, 200, 1000] (the "
+            "fidelity ladder) or [200] for single-shot mode."
         )
-    if any(schedule[i] > schedule[i + 1] for i in range(len(schedule) - 1)):
+    bad_transitions = [
+        (i, schedule[i], schedule[i + 1])
+        for i in range(len(schedule) - 1)
+        if schedule[i] > schedule[i + 1]
+    ]
+    if bad_transitions:
+        i, hi, lo = bad_transitions[0]
         raise ValueError(
-            f"sweep_pareto_capability_progressive: n_proteins_schedule must "
-            f"be monotone non-decreasing; got {schedule!r}"
+            f"sweep_pareto_capability_progressive: n_proteins_schedule "
+            f"must be monotone non-decreasing because each stage's "
+            f"subsample is the previous stage's superset. Got "
+            f"{schedule!r}; the transition at index {i} drops "
+            f"{hi} -> {lo}. Sort the schedule ascending or check for "
+            f"a typo."
         )
     if schedule[-1] > len(dataset.sequences):
         raise ValueError(
-            f"sweep_pareto_capability_progressive: schedule's largest stage "
-            f"({schedule[-1]}) exceeds len(dataset.sequences) "
-            f"({len(dataset.sequences)})"
+            f"sweep_pareto_capability_progressive: schedule's largest "
+            f"stage ({schedule[-1]} proteins) exceeds the dataset's "
+            f"available sequences ({len(dataset.sequences)}). Either "
+            f"shrink the largest stage to <= {len(dataset.sequences)} "
+            f"or load a larger dataset slice (e.g. raise "
+            f"CapabilityDataset.from_bio_sae(n_proteins=...) at "
+            f"construction time)."
         )
     if not candidate_widths:
         raise ValueError(
-            "sweep_pareto_capability_progressive: candidate_widths must be "
-            "non-empty"
+            "sweep_pareto_capability_progressive: candidate_widths must "
+            "be non-empty. Pass a list of basis widths to consider, e.g. "
+            "[16, 64, 128, 256, 512, 1024] for a typical SAE-of-1024 "
+            "fixture."
         )
 
     if encodings is None or not encodings:

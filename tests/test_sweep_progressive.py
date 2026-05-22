@@ -453,7 +453,7 @@ def test_progressive_validates_inputs(tmp_path: Path):
             n_proteins_schedule=[3, 2],  # non-monotone
             output_dir=tmp_path / "out",
         )
-    with pytest.raises(ValueError, match="exceeds len"):
+    with pytest.raises(ValueError, match="exceeds the dataset's"):
         sweep_pareto_capability_progressive(
             sae_checkpoint="/tmp/sae",
             host_model_id="any",
