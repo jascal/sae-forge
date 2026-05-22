@@ -689,6 +689,101 @@ emits) with optional capability fields populated:
 Pre-change frontier files load unchanged (back-compat); rows lacking
 these fields default them to `None`.
 
+### Progressive capability sweep — smallest n robust to data scale
+
+`sae-forge sweep-capability-progressive` answers a stronger question
+than the single-shot sweep above: **what's the smallest n that's
+stable across data scales?**
+
+Single-shot `sweep-capability` reports the argmax retained_mauc on
+whatever eval sample you fed it. Bio-sae's residue-feed empirical
+work showed that argmax position drifts with data scale: n=16 at 10
+proteins → n=48 at 100 proteins, both at retained_mauc ≈ 1.03. The
+PEAK value is data-scale-stable; *which* small basis is the argmax
+isn't. A user running single-shot at low data picks a noise-driven
+argmax; a user running at higher data picks a different noise-driven
+argmax. Neither is robust.
+
+The progressive wrapper runs the sweep at increasing protein counts,
+identifies the **plateau** of widths within `plateau_tolerance` of
+the peak, and **converges only when the smallest plateau-member
+stops shifting** across stages. The recommendation contract becomes:
+
+> Smallest `target_n_features_kept` whose retained_mauc is stable
+> across the last K stages of data scaling.
+
+This is **Occam's razor applied to forge basis selection**: among
+widths that explain the labels equally well across data scales, pick
+the smallest. The
+[openspec proposal](openspec/changes/add-progressive-capability-sweep/proposal.md)
+walks through the empirical motivation + the connection to classical
+model selection (BIC / AIC / MDL).
+
+Workflow (same YAML config as `sweep-capability`):
+
+```bash
+sae-forge sweep-capability-progressive \
+    --dataset-config bio-residue.yaml \
+    --host facebook/esm2_t6_8M_UR50D \
+    --candidate-widths 4,8,16,32,64,128,256,512,1024 \
+    --schedule 10,50,200 \
+    --convergence-n-stages 2 \
+    --output-dir runs/progressive_residue/
+
+sae-forge recommend \
+    --frontier runs/progressive_residue/frontier.jsonl \
+    --target retained-mauc>=0.95
+```
+
+Schedule shape: comma-separated protein counts per stage, monotone
+non-decreasing. Cumulative subsampling means stage K+1's protein set
+is a strict superset of stage K's, so the host-extraction cache
+survives across stages.
+
+**Convergence-aware `recommend`.** When `sae-forge recommend` is
+invoked against a progressive frontier (any row carrying a `stage`
+field), it reads the companion `progressive_summary.json` for the
+`recommendation.converged` flag. If `False`, the subcommand
+**refuses to emit a recommendation** with a rich diagnostic naming:
+
+- The recommended n + retained_mauc.
+- The list of shifted stages drawn from `convergence_trajectory`.
+- The on-disk rationale string.
+- **Four informed opt-outs**: `--accept-unconverged`, longer schedule,
+  looser `plateau_tolerance`, `convergence_n_stages=1`.
+
+Single-shot frontiers (no `stage` field) bypass the check entirely
+— back-compat with v0.8.x.
+
+**Two opt-in "less-strict" modes** that are NOT
+`--accept-unconverged`:
+
+- `--convergence-n-stages 1`: looser data-scale check. Asks "did
+  the last stage shift?", doesn't require K-in-a-row stability.
+  The right tool for spread regimes whose peaks are stable but whose
+  plateau-argmins shift subtly.
+- Single-element schedule (e.g. `--schedule 200`): degenerate single-
+  shot via the progressive reporting surface. Emits a frontier with
+  one stage; `converged=True` by definition. "I want the progressive
+  outputs but not the strictness."
+
+**Empirical reference points** (bio-sae's
+`bio-sae/runs/forge/` measurements against `facebook/esm2_t6_8M_UR50D`):
+
+| fixture | feed | schedule | recommendation | converged | wall time CPU |
+|---|---|---|---|---|---|
+| `uniref50_small/residue` | residue | [10, 50, 100] | n=48, retained_mauc ≈ 1.04 | ✓ in 3 stages | ~45 s |
+| `uniref50_n5000/pooled_w1024_k64` | pooled | [200, 500] | n=256, retained_mauc ≈ 0.92 | ✗ (plateau argmin shifted n=384→n=256) | ~5 min |
+| same fixture | pooled | [200] | n=256, retained_mauc ≈ 0.93 | ✓ (single-shot via progressive surface) | ~2 min |
+
+The pooled regime's failure to converge under default strictness is
+the expected outcome: writeup §3.2 measured the **peak** position as
+stable (n=512 across data scales), but the wrapper's argmin-of-
+plateau contract picks the plateau's **left edge**, which shifts
+because the plateau membership contracts as the AUC estimate
+tightens. `convergence_n_stages=1` is the documented opt-out for
+that exact shape.
+
 ### Inspect
 
 `sae-forge inspect` is the no-torch triage command: it loads the basis,

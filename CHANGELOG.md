@@ -5,6 +5,79 @@ their corresponding OpenSpec change is archived.
 
 ## [Unreleased]
 
+### Added (add-progressive-capability-sweep)
+
+- **`sweep_pareto_capability_progressive(...)`** — new top-level
+  entry point. Drives a multi-stage capability-aware Pareto sweep
+  with cumulative protein subsamples + plateau-based pruning +
+  neighbour expansion + convergence detection. Returns a stable
+  recommendation (smallest n robust to data scale) instead of an
+  argmax-on-one-sample. The recommendation contract is Occam's
+  razor applied to forge basis selection: among widths that retain
+  host capability equally well across data scales, pick the
+  smallest.
+- **`ProgressiveStageResult` / `ProgressiveRecommendation` /
+  `ProgressiveHistory` / `ConvergenceTrajectoryEntry`** — four new
+  frozen dataclasses. `ProgressiveHistory.to_json_dict()` emits
+  `progressive_summary.json` carrying the per-stage trajectory +
+  the final recommendation + the convergence narrative. External
+  benchmarking can count un-converged ratios from the on-disk
+  artefacts without in-library telemetry.
+- **`ParetoFrontierRow.stage`** — optional `int | None` field
+  default `None`. Populated on progressive-sweep cells; omitted
+  from JSON when None (v0.8.x back-compat preserved).
+- **`sae-forge sweep-capability-progressive`** CLI subcommand.
+  Mirrors `sweep-capability`'s YAML config schema; adds
+  `--candidate-widths`, `--schedule`, `--retained-mauc-tolerance`,
+  `--plateau-tolerance`, `--min-plateau-widths`,
+  `--convergence-n-stages`. Exit codes: 0 converged / 1 schedule-
+  exhausted-but-recommendation-emitted / 2 config error.
+- **`sae-forge recommend --accept-unconverged`** — opt-in to accept
+  an un-converged progressive frontier. Default behaviour: refuse
+  with a rich diagnostic naming the recommended n + retained_mauc,
+  the list of shifted stages, the on-disk rationale string, and
+  four informed opt-outs (`--accept-unconverged`, longer schedule,
+  looser `plateau_tolerance`, `convergence_n_stages=1`). Single-
+  shot frontiers (no `stage` field) bypass the check entirely —
+  v0.8.x recommend semantics preserved.
+- **`CapabilityDataset.from_bio_sae` residues-per-protein
+  metadata** — under `feed='residue'`, the constructor now
+  populates `metadata['residues_per_protein']` (per-protein
+  residue counts derived from the bundle's `residue_index[:, 0]`).
+  Required by the progressive wrapper's subsampling under residue
+  feed. Computed via `np.bincount` for clean O(N_residues)
+  performance.
+- **Bio-sae acceptance gate** — three slow integration tests
+  (`tests/test_progressive_acceptance_gate.py`) pinning the
+  empirical predictions against real bio-sae fixtures: residue
+  regime converges in ≤ 3 stages with rec ∈ [12, 64] and
+  retained_mauc ≥ 0.98; pooled regime under default strictness
+  flags the plateau argmin shift (n=384→n=256 between 200 and 500
+  proteins) and refuses the recommendation cleanly; pooled regime
+  under documented opt-out (`convergence_n_stages=1`) converges.
+- **README "Progressive capability sweep" section** + **algorithm.md
+  §5 cross-reference** + this CHANGELOG entry. Covers the
+  recommendation contract, the schedule shape, the un-converged
+  refusal UX, the two opt-outs, and the empirical reference points
+  from bio-sae's runs.
+
+### Notes on the empirical finding
+
+The openspec's initial prediction was "the pooled regime is single-
+shot stable per writeup §3.2; converges in 1 data-scale transition."
+The empirical run surfaced that §3.2 was measuring the *peak*
+position (argmax retained_mauc) as stable across data scales, not
+the *smallest-plateau-member* position. The wrapper's argmin-of-
+plateau contract correctly picks the plateau's left edge, which
+shifts because the plateau membership contracts as the AUC estimate
+tightens with more data. The acceptance-gate test pair documents
+this honestly: the strict-default test validates the wrapper's
+correct refusal behaviour; the opt-out test validates the documented
+looser-strictness path works on the substrate that defeats the
+strict path. See
+`openspec/changes/add-progressive-capability-sweep/specs/pareto-sweep/spec.md`
+for the corrected prediction in the spec deltas.
+
 ## [0.8.1] — 2026-05-22
 
 Patch release on top of v0.8.0 shipping the residue-feed extension
