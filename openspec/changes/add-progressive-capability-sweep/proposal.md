@@ -107,7 +107,28 @@ Total compute SHALL be ≤ the equivalent full single-shot sweep at the largest 
 
 ## Why this is the right contract
 
-The user's framing — "smallest n that's robust to data scale" — is exactly what this returns. Three concrete benefits over single-shot:
+The user's framing — "smallest n that's robust to data scale" — is exactly what this returns. **This is Occam's razor applied to deep learning models**, surfaced at the forge layer.
+
+Classical model selection (BIC, AIC, MDL) says: among models that explain the data equally well, prefer the simplest. Bio-sae's residue regime is a clean instance of that principle showing up here:
+
+- n=16 and n=48 both retain ≥ 103 % of host capability (within sampling noise).
+- n=48 has 3× the parameters.
+- **Occam's razor says: pick n=16.**
+
+Single-shot `sweep_pareto_capability` violates the razor because it picks argmax-on-this-sample — the *capability* peak, not the simplest sufficient model. Progressive sweeping with the *argmin-of-plateau* contract enforces the razor empirically: among widths that explain the labels equally well across data scales, pick the smallest. That's **MDL applied to forge basis selection**, but bootstrap-style — no explicit complexity penalty term, no prior on the simplicity-fit trade-off. Just: re-roll the data; whichever simpler model still ties the more complex one keeps tying.
+
+What's interesting about applying the razor here vs traditional model selection:
+
+| classical model selection | progressive forge sweep |
+|---|---|
+| penalty term (BIC/AIC) trades off fit vs complexity at fixed data | empirical plateau across data scales — no explicit penalty |
+| penalty is a hyperparameter / depends on a prior | plateau width is data-driven via `plateau_tolerance` |
+| risks penalising correct-but-complex models | risks tolerance being too loose, picking a too-small n |
+| works on log-likelihood (a smooth proxy) | works on retained_mauc (a rank-based metric, noisier per-cell) |
+
+The argmin-of-plateau contract is the simplest model selection rule that lets the data tell you when more complexity *isn't* doing useful work. If a smaller n keeps tying the larger n as you add data, the larger n's extra features were noise-tuning, not signal-tuning. Discard them.
+
+Three concrete benefits over single-shot follow from this:
 
 1. **Avoids picking a noise-driven argmax.** Single-shot at low n picks the width that happened to win that subsample's roll-of-the-dice. Progressive demands the width survive multiple subsamples.
 
