@@ -5,6 +5,60 @@ their corresponding OpenSpec change is archived.
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-05-22
+
+**Multi-encoding capability sweep + partition-aware basis builder
+release.** Combines six PRs (#88, #89, #92, #93, #94, #95) into one
+minor version covering partition validation + multi-encoding API +
+CLI surface + falsifiable acceptance gate (validated on bio-sae's
+pooled fixture).
+
+### Headline empirical validation
+
+Multi-encoding acceptance gate ran K=3 encodings (raw_slice +
+partition_q4 + partition_q8) on bio-sae's pooled fixture at
+[1000, 5000] proteins:
+
+| metric | raw_slice | partition_q4 (winner) | partition_q8 |
+|---|---|---|---|
+| recommendation target_n_features_kept | n=256 | **n=128** | n=64 |
+| retained_mauc_vs_host at rec | 0.8975 | **0.9096** | 0.9004 |
+| converged at default strictness | False | False | False |
+
+- **Rec_n factor of 4×** between encodings — multi-encoding sweep
+  correctly distinguishes per-encoding recommendations.
+- **Pareto-shift**: same retained_mauc at fewer parameters
+  (partition_q4 at n=128 matches raw_slice at n=256).
+- **None converged at default strictness** — data-scale tax on
+  spread regime persists across encoding choices.
+
+Full writeup: `bio-sae/docs/forge-capability-bottleneck.md` §5.6.
+
+### Added (add-multi-encoding-capability-sweep)
+
+- **`sweep_pareto_capability(encodings=[(label, path), ...])`** —
+  multi-encoding API (PR #92). Per-encoding basis state; per-cell
+  rows carry encoding_label.
+- **`sweep_pareto_capability_progressive(encodings=[...])`** — same
+  on progressive (PR #93). Per-encoding plateau + convergence +
+  cross-encoding winner-pick tiebreaker.
+- **`ProgressiveStageResult.per_encoding_plateau_widths`** —
+  per-encoding plateau dict.
+- **`ProgressiveRecommendation.per_encoding_recommendations`** —
+  optional dict, populated for multi-encoding sweeps.
+- **`ProgressiveRecommendation.winning_encoding`** — winning
+  encoding string identifier.
+- **`sae-forge sweep-capability --encoding LABEL:PATH`** + same on
+  `sweep-capability-progressive` (PR #94). Repeatable.
+- **`sae-forge sweep-capability --dry-run`** + `--dollars-per-gpu-hr`.
+  Counts cells × projects wall-time without running.
+- **`sae-forge recommend` multi-encoding ranking table**. Picks
+  smallest target_n_features_kept among survivors; tiebreaks by
+  CLI flag order.
+- **Falsifiable acceptance gate** (PR #95) on bio-sae's pooled
+  fixture. Three predictions tested; all three pass under the
+  revised Pareto-shift framing.
+
 ### Added (add-partition-encoding-capability-validation)
 
 - **Partition-aware basis builder** (PR #89). `sweep_pareto_capability` and
