@@ -35,10 +35,13 @@ class CapabilityDataset:
     ----------
     sequences:
         List of inputs (protein sequences, text prompts, …) to forge
-        against. ``len(sequences) == labels.shape[0]``.
+        against.
     labels:
-        ``(N_items, V)`` binary label matrix. Coerced inside the
-        target.
+        Binary label matrix. Under ``feed="pooled"`` (default) shape
+        is ``(len(sequences), V)`` — one row per protein. Under
+        ``feed="residue"`` shape is ``(n_total_residues, V)`` — one
+        row per residue across all proteins, ordered protein-major
+        per ``residue_index``-style flattening.
     encoder:
         Callable ``(Tensor (..., d_model)) -> Tensor (..., latent_width)``.
         Bio-sae's ``_ReferenceSAE.forward`` returns ``(reconstruction,
@@ -47,9 +50,21 @@ class CapabilityDataset:
         HF id of the host's tokenizer. Used by the sweep wrapper to
         re-extract host activations; not consumed by the dataset
         itself.
+    feed:
+        ``"pooled"`` (default) or ``"residue"``. Drives the sweep
+        wrapper's extraction behaviour:
+
+        - ``"pooled"``: mean-pool per protein → ``(n_proteins, d_model)``
+          host activations; score against per-protein labels.
+        - ``"residue"``: keep per-residue activations (CLS / EOS
+          stripped, concatenated across proteins) →
+          ``(n_total_residues, d_model)``; score against per-residue
+          labels. Required to match bio-sae's residue-SAE measurements
+          on categorical AA / SS3 features.
     aggregator:
-        Forwarded to the target. ``"pool_then_encode"`` (default),
-        ``"encode_then_pool"``, or a callable.
+        Pool-order under ``feed="pooled"``. ``"pool_then_encode"`` /
+        ``"encode_then_pool"`` / callable. Ignored under
+        ``feed="residue"`` (residue-feed never pools).
     min_prevalence:
         Forwarded to the target. Drops label columns with positive
         count below this threshold.
@@ -66,12 +81,33 @@ class CapabilityDataset:
     labels: Any  # np.ndarray; typed as Any to avoid numpy import here
     encoder: Callable[..., Any]
     tokenizer_id: str
+    feed: "Literal['pooled', 'residue']" = "pooled"
     aggregator: "Literal['pool_then_encode', 'encode_then_pool'] | Callable" = (
         "pool_then_encode"
     )
     min_prevalence: int = 0
     decode_via_basis: bool = True
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.feed not in ("pooled", "residue"):
+            raise ValueError(
+                f"CapabilityDataset(feed=...): expected 'pooled' or "
+                f"'residue'; got {self.feed!r}."
+            )
+        if self.feed == "pooled" and self.labels.shape[0] != len(self.sequences):
+            raise ValueError(
+                f"CapabilityDataset(feed='pooled'): labels rows "
+                f"({self.labels.shape[0]}) must equal len(sequences) "
+                f"({len(self.sequences)})."
+            )
+        if self.feed == "residue" and self.labels.shape[0] < len(self.sequences):
+            raise ValueError(
+                f"CapabilityDataset(feed='residue'): labels rows "
+                f"({self.labels.shape[0]}) must be >= len(sequences) "
+                f"({len(self.sequences)}) — each protein contributes "
+                f">=1 residue row."
+            )
 
     @classmethod
     def from_bio_sae(
@@ -185,6 +221,7 @@ class CapabilityDataset:
             labels=np.ascontiguousarray(labels),
             encoder=encoder,
             tokenizer_id=tokenizer_id,
+            feed=feed,
             aggregator=aggregator,
             min_prevalence=min_prevalence,
             decode_via_basis=True,

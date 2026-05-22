@@ -44,6 +44,7 @@ class HostCacheKey:
     sequences_hash: str
     aggregator: str
     max_seq_len: int
+    feed: str = "pooled"
 
     @classmethod
     def from_inputs(
@@ -52,10 +53,16 @@ class HostCacheKey:
         sequences: list[str],
         aggregator: "str | Any",
         max_seq_len: int,
+        feed: str = "pooled",
     ) -> "HostCacheKey":
         """Build a key from the raw inputs. Hashes ``sequences`` via
         SHA-256 of the newline-joined list (deterministic; surfaces
-        any ordering or content drift)."""
+        any ordering or content drift).
+
+        ``feed`` distinguishes pooled vs residue extraction — the same
+        sequences under different feeds produce different cached
+        tensors and MUST NOT share a key.
+        """
         if isinstance(aggregator, str):
             agg_str = aggregator
         elif callable(aggregator):
@@ -64,6 +71,11 @@ class HostCacheKey:
             raise TypeError(
                 f"HostCacheKey: aggregator must be a string or callable; "
                 f"got {type(aggregator).__name__!r}"
+            )
+        if feed not in ("pooled", "residue"):
+            raise ValueError(
+                f"HostCacheKey: feed must be 'pooled' or 'residue'; "
+                f"got {feed!r}"
             )
         h = hashlib.sha256()
         # Length prefix per sequence so two different lists that
@@ -77,6 +89,7 @@ class HostCacheKey:
             sequences_hash=h.hexdigest(),
             aggregator=agg_str,
             max_seq_len=int(max_seq_len),
+            feed=feed,
         )
 
     def digest(self) -> str:
@@ -89,6 +102,8 @@ class HostCacheKey:
         h.update(self.aggregator.encode("utf-8"))
         h.update(b"|")
         h.update(str(self.max_seq_len).encode("utf-8"))
+        h.update(b"|")
+        h.update(self.feed.encode("utf-8"))
         return h.hexdigest()[:16]
 
     def to_meta_dict(self) -> dict[str, Any]:
@@ -97,6 +112,7 @@ class HostCacheKey:
             "sequences_hash": self.sequences_hash,
             "aggregator": self.aggregator,
             "max_seq_len": self.max_seq_len,
+            "feed": self.feed,
         }
 
 

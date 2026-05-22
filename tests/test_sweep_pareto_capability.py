@@ -270,6 +270,74 @@ def _build_bio_sae_fixture(tmp_path: Path, *, n_proteins=4, d_model=32, sae_widt
     return run_dir, bundle_path, seqs_path
 
 
+def _build_bio_sae_residue_fixture(
+    tmp_path: Path, *, sequences: list[str], d_model=32, sae_width=32,
+):
+    """Variant of _build_bio_sae_fixture that builds labels_residue_Y
+    sized to the actual residue count produced by re-extracting the
+    given sequences through ESM-2 t6_8M's tokenizer (minus CLS/EOS).
+
+    The residue feed requires bundle's labels_residue_Y to row-align
+    with re-extracted activations. Real bio-sae bundles have this by
+    construction (max_seq_len truncation matches build vs read);
+    the synthetic fixture replicates that contract."""
+    import pandas as pd
+    from safetensors.numpy import save_file
+    from transformers import AutoTokenizer
+
+    rng = np.random.default_rng(0)
+    run_dir = tmp_path / "run_residue"
+    run_dir.mkdir()
+    torch.save({
+        "encoder.weight": torch.from_numpy(
+            rng.standard_normal((sae_width, d_model)).astype(np.float32)
+        ),
+        "encoder.bias": torch.zeros(sae_width),
+        "decoder.weight": torch.from_numpy(
+            rng.standard_normal((d_model, sae_width)).astype(np.float32)
+        ),
+        "decoder.bias": torch.zeros(d_model),
+    }, run_dir / "sae.pt")
+
+    # Compute residue counts via the same tokenizer the sweep will use.
+    tok = AutoTokenizer.from_pretrained("facebook/esm2_t6_8M_UR50D")
+    residue_counts = [
+        len(tok(s, return_tensors="pt")["input_ids"][0]) - 2  # strip CLS + EOS
+        for s in sequences
+    ]
+    n_total_residues = sum(residue_counts)
+    n_proteins = len(sequences)
+
+    bundle = {
+        "pooled": rng.standard_normal((n_proteins, d_model)).astype(np.float32),
+        "labels_protein_Y": rng.integers(0, 2, (n_proteins, 3)).astype(np.uint8),
+        "residue_index": np.stack([
+            np.concatenate([
+                np.full(L, i, dtype=np.int32)
+                for i, L in enumerate(residue_counts)
+            ]),
+            np.concatenate([
+                np.arange(L, dtype=np.int32) for L in residue_counts
+            ]),
+            np.concatenate([
+                np.full(L, L, dtype=np.int32) for L in residue_counts
+            ]),
+        ], axis=1),
+        "labels_residue_Y": rng.integers(
+            0, 2, (n_total_residues, 4),
+        ).astype(np.uint8),
+        "activations": rng.standard_normal(
+            (n_total_residues, d_model),
+        ).astype(np.float32),
+    }
+    bundle_path = tmp_path / "bio_bundle_residue.safetensors"
+    save_file(bundle, str(bundle_path))
+    seqs_df = pd.DataFrame({"sequence": sequences})
+    seqs_path = tmp_path / "sequences_residue.parquet"
+    seqs_df.to_parquet(seqs_path)
+    return run_dir, bundle_path, seqs_path, n_total_residues
+
+
 @pytest.fixture
 def _tiny_host_model_id(tmp_path: Path):
     """Save a tiny ESM-2-shape host to a temp dir so the host loader
@@ -388,3 +456,135 @@ def test_sweep_cache_hits_on_second_cell(tmp_path: Path, _tiny_host_model_id):
     assert new_mtime == cache_mtime, (
         "host cache was overwritten on second sweep — cache logic broken"
     )
+
+
+# ---------------------------------------------------------------------------
+# Suite 4: residue-feed sweep (added by residue-feed slice 4/N)
+# ---------------------------------------------------------------------------
+
+
+def test_sweep_residue_feed_extracts_per_residue(tmp_path: Path, _tiny_host_model_id):
+    """End-to-end residue feed: sweep extracts per-residue host
+    activations (not mean-pooled) and scores against the dataset's
+    per-residue labels. ParetoFrontierRow rows carry the capability
+    fields populated; nothing crashes on label-alignment."""
+    from saeforge import sweep_pareto_capability
+    from saeforge.datasets import CapabilityDataset
+
+    # Synthesize a residue-aligned fixture (labels_residue_Y rows ==
+    # actual ESM-2-tokenizer-produced residue count).
+    sequences = ["MAKVITDR", "GLEPVAGR" + "G" * 3, "TKMRSEW" + "K" * 5]
+    run_dir, bundle_path, seqs_path, n_total = _build_bio_sae_residue_fixture(
+        tmp_path, sequences=sequences,
+    )
+    dataset = CapabilityDataset.from_bio_sae(
+        run_dir, bundle_path, seqs_path,
+        feed="residue", n_proteins=len(sequences), sae_k=8,
+        tokenizer_id=_tiny_host_model_id,
+    )
+    assert dataset.feed == "residue"
+    assert dataset.labels.shape[0] == n_total
+
+    rows = sweep_pareto_capability(
+        sae_checkpoint=run_dir / "sae.pt",
+        host_model_id=_tiny_host_model_id,
+        dataset=dataset,
+        widths=[8, 16],
+        output_dir=tmp_path / "sweep_residue",
+        cache_host=True,
+        device="cpu",
+    )
+    assert len(rows) == 2
+    for row in rows:
+        if row.error_message is not None:
+            pytest.fail(f"residue-feed sweep cell failed: {row.error_message}")
+        assert row.host_baseline_mauc is not None
+        assert row.forge_mauc is not None
+        assert row.retained_mauc_vs_host is not None
+
+
+def test_pooled_and_residue_caches_dont_collide(tmp_path: Path, _tiny_host_model_id):
+    """Same sequences under different feeds MUST produce different
+    cache files (cache key includes feed). Otherwise pooled and
+    residue runs would silently share corrupt data."""
+    from saeforge import sweep_pareto_capability
+    from saeforge.datasets import CapabilityDataset
+
+    # Build separate fixtures because pooled/residue need different
+    # label shapes; but use IDENTICAL sequences across them so the
+    # only differing cache-key component is feed.
+    pooled_run, pooled_bundle, pooled_seqs = _build_bio_sae_fixture(tmp_path)
+    sequences = ["MAKVITDR", "GLEPVAGR"]
+    residue_base = tmp_path / "residue_only"
+    residue_base.mkdir()
+    residue_run, residue_bundle, residue_seqs, _ = _build_bio_sae_residue_fixture(
+        residue_base, sequences=sequences,
+    )
+    # Force same sequences on both datasets.
+    import pandas as pd
+    pd.DataFrame({"sequence": sequences}).to_parquet(pooled_seqs)
+
+    pooled_ds = CapabilityDataset.from_bio_sae(
+        pooled_run, pooled_bundle, pooled_seqs,
+        feed="pooled", n_proteins=2, sae_k=4,
+        tokenizer_id=_tiny_host_model_id,
+    )
+    residue_ds = CapabilityDataset.from_bio_sae(
+        residue_run, residue_bundle, residue_seqs,
+        feed="residue", n_proteins=2, sae_k=4,
+        tokenizer_id=_tiny_host_model_id,
+    )
+
+    output_dir = tmp_path / "sweep_both_feeds"
+    sweep_pareto_capability(
+        sae_checkpoint=pooled_run / "sae.pt",
+        host_model_id=_tiny_host_model_id,
+        dataset=pooled_ds, widths=[4],
+        output_dir=output_dir, cache_host=True, device="cpu",
+    )
+    sweep_pareto_capability(
+        sae_checkpoint=residue_run / "sae.pt",
+        host_model_id=_tiny_host_model_id,
+        dataset=residue_ds, widths=[4],
+        output_dir=output_dir, cache_host=True, device="cpu",
+    )
+    all_caches = sorted((output_dir / "host_cache").glob("host_*.safetensors"))
+    # Two distinct cache files SHALL exist — one per feed.
+    assert len(all_caches) >= 2, (
+        f"expected ≥2 cache files (pooled + residue); got {len(all_caches)}. "
+        f"Cache key likely doesn't include feed."
+    )
+
+
+def test_residue_feed_label_misalignment_raises(tmp_path: Path, _tiny_host_model_id):
+    """If sequences and labels disagree on residue count (e.g. user
+    passes a bundle built with a different max_seq_len), the sweep
+    SHALL raise loudly at the host-extraction step — not produce
+    nonsense AUCs."""
+    import numpy as np
+
+    from saeforge import sweep_pareto_capability
+    from saeforge.datasets import CapabilityDataset
+
+    sequences = ["MAKVITDR", "GLEPVAGR"]
+    run_dir, _, _, n_total = _build_bio_sae_residue_fixture(
+        tmp_path, sequences=sequences,
+    )
+    # Construct a dataset whose labels row count is correct per the
+    # frozen-dataclass check but wrong vs the actual sequences. Pad
+    # labels with extra dummy rows.
+    dataset = CapabilityDataset(
+        sequences=sequences,
+        labels=np.zeros((n_total + 5, 3), dtype=np.uint8),  # 5 too many
+        encoder=lambda x: x[:, :4],  # any callable; not exercised
+        tokenizer_id=_tiny_host_model_id,
+        feed="residue",
+    )
+    with pytest.raises(RuntimeError, match="residue rows"):
+        sweep_pareto_capability(
+            sae_checkpoint=run_dir / "sae.pt",
+            host_model_id=_tiny_host_model_id,
+            dataset=dataset, widths=[4],
+            output_dir=tmp_path / "sweep_misaligned",
+            cache_host=False, device="cpu",
+        )
