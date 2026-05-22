@@ -213,8 +213,36 @@ class CapabilityDataset:
             # callable (or 'encode_then_pool' followed by no pooling)
             # — this constructor surfaces the labels but doesn't
             # restructure them.
-            mask = bundle["residue_index"][:, 0] < n_proteins
+            protein_ids = bundle["residue_index"][:, 0]
+            mask = protein_ids < n_proteins
             labels = labels_full[mask]
+
+        # ---- Residues-per-protein vector (residue-feed only). ----
+        # The progressive sweep wrapper subsamples to fewer proteins
+        # across stages and needs to know each protein's residue
+        # count to align labels correctly. Bio-sae's bundles store
+        # this implicitly in residue_index[:, 0] (protein_id column).
+        residues_per_protein: list[int] | None = None
+        if feed == "residue":
+            kept_protein_ids = bundle["residue_index"][mask, 0].astype(int)
+            residues_per_protein = np.bincount(
+                kept_protein_ids, minlength=int(n_proteins),
+            ).tolist()
+
+        metadata = {
+            "source":          "bio_sae",
+            "run_dir":         str(run_dir),
+            "bundle_path":     str(bundle_path),
+            "sequences_path":  str(sequences_path),
+            "feed":            feed,
+            "n_proteins":      int(n_proteins),
+            "max_seq_len":     int(max_seq_len),
+            "sae_latent_width": int(latent_width),
+            "sae_variant":     sae_variant,
+            "sae_k":           int(sae_k),
+        }
+        if residues_per_protein is not None:
+            metadata["residues_per_protein"] = residues_per_protein
 
         return cls(
             sequences=sequences,
@@ -225,18 +253,7 @@ class CapabilityDataset:
             aggregator=aggregator,
             min_prevalence=min_prevalence,
             decode_via_basis=True,
-            metadata={
-                "source":          "bio_sae",
-                "run_dir":         str(run_dir),
-                "bundle_path":     str(bundle_path),
-                "sequences_path":  str(sequences_path),
-                "feed":            feed,
-                "n_proteins":      int(n_proteins),
-                "max_seq_len":     int(max_seq_len),
-                "sae_latent_width": int(latent_width),
-                "sae_variant":     sae_variant,
-                "sae_k":           int(sae_k),
-            },
+            metadata=metadata,
         )
 
 
