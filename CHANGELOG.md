@@ -5,6 +5,52 @@ their corresponding OpenSpec change is archived.
 
 ## [Unreleased]
 
+### Added (add-esm2-adapter)
+
+- **`Esm2Adapter` — first encoder-only host outside the audio
+  family.** Walks an HF `EsmModel` or `EsmForMaskedLM` (model_type
+  `esm`, position_embedding_type `rotary`) into the projected weight
+  dict + native config that drive forging. Surfaces the protein-LM
+  side of polygram's downstream substrate matrix
+  (sm-sae / econ-sae / bio-sae). Validated by an identity-basis
+  byte-equivalence test: with `W_dec = I`, the forged `ForgedEsm2`
+  reproduces HF's `EsmModel.last_hidden_state` exactly (max abs diff
+  == 0.0 on `esm2_t6_8M`-shaped configs).
+  - `saeforge/adapters/esm2.py` — adapter + `ForgedEsm2` nn.Module.
+    Bidirectional attention (no causal mask), RoPE shared with
+    `_positional/rope.py`, ESM-specific GELU + query-scaling-
+    before-RoPE order, pre-LN inside both attention and FFN
+    sublayers, final `emb_layer_norm_after`. Emits a `basis_encode`
+    buffer alongside the projected weights so under-complete-basis
+    cosine eval can project host states into basis space (same
+    contract as `WhisperEncoderAdapter`).
+  - `saeforge/eval/targets/token_cosine.py` — new
+    `TokenCosineTarget`. Per-residue cosine on encoder hidden states,
+    stripping CLS / EOS positions to match bio-sae's `EsmExtractor`.
+    Default faithfulness target for `esm2` (parallel to
+    `CosineTarget` for `whisper_encoder`).
+  - `saeforge/model.py` — `_SUPPORTED_FAMILIES` adds `esm2`;
+    `_ENCODER_STATES_FAMILIES = {whisper_encoder, esm2}`. The
+    `encoder_states` validator splits family-specific vocab_size
+    rules: `whisper_encoder` requires `vocab_size == 0` (no
+    embeddings); `esm2` requires `vocab_size > 0` (sizes the
+    amino-acid embedding table).
+  - `saeforge/utils/host_loader.py` — new
+    `load_host_for_forge(host_model_id)` dispatcher. Tries
+    `AutoModelForCausalLM` first (the historical default for GPT-2 /
+    Llama / Gemma-2 / Qwen) and falls back to `AutoModelForMaskedLM`
+    when the config is unrecognised (ESM-2's path). Back-compat with
+    every existing test that mocks `AutoModelForCausalLM.from_pretrained`.
+  - `saeforge/forge.py` — `_run_real_imperative` and `_run_real_fsm`
+    use the new dispatcher; `_resolve_positional_encoding` returns
+    `"rotary"` for `esm2`.
+  - **`tests/test_esm2_adapter.py`** — 8 new tests: adapter
+    registration (EsmModel + EsmForMaskedLM), non-rotary rejection,
+    native_config invariants (MHA, theta=10000, encoder_states,
+    vocab_size > 0), the byte-identity load-bearing test, walk-key
+    coverage, default target dispatch, and TokenCosineTarget under
+    identity basis.
+
 ### Added (add-concept-anchored-finetune)
 
 - **Opt-in supervised concept-anchoring loss term in `run_finetune`.**

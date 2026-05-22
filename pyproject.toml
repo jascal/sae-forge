@@ -104,7 +104,13 @@ intel = ["torch==2.2.2", "transformers>=4.46,<4.50", "numpy<2"]
 # Polygram 0.10.0 promotes `EpochReport.redundancy_ratio` /
 # `n_features_input` (schema v2, v1 forward-compat shim) and the
 # `BlockView` public surface on `ClusteredDictionary`.
-polygram = ["polygram>=0.12.0"]
+# Polygram 0.15.0 adds the masked-LM host dispatcher
+# (`polygram.behavioural.runtime._load_host_model`) that lets
+# EpochCompressor / Regrower / BehaviouralValidator flow ESM-2 (and
+# other encoder-only sequence models) through the AutoModelForMaskedLM
+# fallback. The ESM-2 adapter (this release) needs that polygram floor
+# for the full polygram → sae-forge chain to work end-to-end.
+polygram = ["polygram>=0.15.0"]
 # orca-runtime-python — the classical orca-lang FSM runtime that drives
 # the v0.1 forge-outer-loop-fsm orchestrator. Required only for the
 # `--fsm` opt-in path; the default imperative ForgePipeline does not
@@ -127,7 +133,7 @@ all = [
     "jupyter",
     "torch>=2.2",
     "transformers>=4.46",
-    "polygram>=0.12.0",
+    "polygram>=0.15.0",
     "orca-runtime-python>=0.1.27",
     "datasets>=2.16",
     "librosa>=0.10",

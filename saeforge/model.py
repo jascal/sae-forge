@@ -37,7 +37,14 @@ _SUPPORTED_FAMILIES = (
     "qwen3",
     "qwen3_moe",
     "whisper_encoder",
+    "esm2",
 )
+
+# Families whose forged module returns encoder-state hidden vectors
+# (output_kind="encoder_states") rather than vocab logits. The
+# NativeModelConfig validator allows ``vocab_size`` to be informative
+# (for token-embedding sizing) but rejects a logits head.
+_ENCODER_STATES_FAMILIES = frozenset({"whisper_encoder", "esm2"})
 
 
 def _supported_families() -> tuple[str, ...]:
@@ -175,13 +182,23 @@ class NativeModelConfig:
                 f"got {self.output_kind!r}"
             )
         # Cross-constraints between family / output_kind / vocab_size.
-        # whisper_encoder is the only encoder-states family in v0.4; LM
-        # families require a vocab head.
+        # Encoder-states families (whisper_encoder, esm2) emit per-token
+        # hidden states instead of vocab logits; LM families require a
+        # vocab head. Within encoder-states, whisper has no word
+        # embeddings (conv-stem input) and pins vocab_size to 0; esm2
+        # has a word-embedding table sized to the amino-acid vocab.
         if self.family == "whisper_encoder":
             if self.output_kind != "encoder_states":
                 raise ValueError(
                     f"family='whisper_encoder' requires "
                     f"output_kind='encoder_states'; got {self.output_kind!r}"
+                )
+        if self.family == "esm2":
+            if self.output_kind != "encoder_states":
+                raise ValueError(
+                    f"family='esm2' requires output_kind='encoder_states' "
+                    f"in v1; got {self.output_kind!r}. Logit-space forging "
+                    f"on the MLM head is a future extension."
                 )
         if self.output_kind == "logits" and self.vocab_size <= 0:
             raise ValueError(
@@ -189,15 +206,22 @@ class NativeModelConfig:
                 f"got vocab_size={self.vocab_size}"
             )
         if self.output_kind == "encoder_states":
-            if self.vocab_size != 0:
-                raise ValueError(
-                    f"output_kind='encoder_states' requires vocab_size == 0; "
-                    f"got vocab_size={self.vocab_size}"
-                )
-            if self.family != "whisper_encoder":
+            if self.family not in _ENCODER_STATES_FAMILIES:
                 raise ValueError(
                     f"output_kind='encoder_states' is only valid for "
-                    f"family='whisper_encoder'; got family={self.family!r}"
+                    f"families {sorted(_ENCODER_STATES_FAMILIES)!r}; "
+                    f"got family={self.family!r}"
+                )
+            if self.family == "whisper_encoder" and self.vocab_size != 0:
+                raise ValueError(
+                    f"family='whisper_encoder' requires vocab_size == 0 "
+                    f"(no word-embedding table — input is mel features); "
+                    f"got vocab_size={self.vocab_size}"
+                )
+            if self.family == "esm2" and self.vocab_size <= 0:
+                raise ValueError(
+                    f"family='esm2' requires vocab_size > 0 (sizes the "
+                    f"word-embedding table); got vocab_size={self.vocab_size}"
                 )
         if self.attention_width not in ("host", "feature_native"):
             raise ValueError(
@@ -378,12 +402,17 @@ class NativeModel:
         ``openspec/changes/add-host-wrapped-forge-fallback`` for the
         falsifiable acceptance gate.
         """
-        transformers = require_extra("transformers", "torch")
+        # Surface the missing-[torch] message early — load_host_for_forge
+        # also lazy-imports transformers but the helper's ImportError
+        # comes from a deeper stack, so an upfront require_extra call
+        # gives a cleaner failure for users without the extra.
+        require_extra("transformers", "torch")
 
         from saeforge.adapters import adapter_for
         from saeforge.forward_mode import resolve_forward_mode
+        from saeforge.utils.host_loader import load_host_for_forge
 
-        host = transformers.AutoModelForCausalLM.from_pretrained(host_model_id).eval()
+        host = load_host_for_forge(host_model_id)
         adapter = adapter_for(host)
         resolved = resolve_forward_mode(projector.basis, forward_mode)
 
