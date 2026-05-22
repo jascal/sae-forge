@@ -102,6 +102,24 @@ parts match exactly), gradients primarily correct the nonlinear
 mismatches, leading to faster convergence and better retention of
 original capabilities than generic distillation.
 
+**Faithfulness probe choice matters.** The error terms above are
+defined in the host's residual-stream coordinates — cosine /
+`faithfulness_kl` measure how close the forged stream is to that.
+But bio-sae's 2026-05-22 empirical work showed those metrics
+systematically misrank forges for *downstream-task* users: cosine
+goes negative under rank-deficient projection (algorithm.md's
+expected behaviour), but the same forge can preserve 100 %+ of a
+downstream SAE's per-feature AUC against ground-truth labels. The
+amplification of `ε_attn` + `ε_nonlin` is *invisible* to cosine when
+the rank deficit is in non-information-bearing directions; *visible*
+to a capability metric that asks "does the forged model still
+discriminate the GT labels the host did?". When downstream-task
+fidelity matters, use
+:class:`saeforge.eval.targets.DownstreamCapabilityTarget` and the
+`sae-forge sweep-capability` Pareto sweep
+(`add-downstream-capability-target`); cosine / KL stay the right
+default for "is the residual stream numerically close" questions.
+
 ## 6. FSM orchestration
 
 ```mermaid

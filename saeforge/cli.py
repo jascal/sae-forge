@@ -613,11 +613,13 @@ def _build_parser() -> argparse.ArgumentParser:
         required=True,
         metavar="PATH",
         help=(
-            "YAML config describing the capability dataset (encoder "
-            "checkpoint, sequences parquet, labels safetensors, "
-            "aggregator, min_prevalence, sae_variant, sae_k). See "
-            "openspec/changes/add-downstream-capability-target/"
-            "proposal.md §5 for the schema."
+            "YAML config describing the capability dataset. Required "
+            "keys: encoder_checkpoint, sequences_path, labels_path. "
+            "Optional: feed (pooled|residue), tokenizer_id, "
+            "aggregator (pool_then_encode|encode_then_pool), "
+            "min_prevalence, sae_variant (topk|jumprelu|l1), sae_k. "
+            "See openspec/changes/add-downstream-capability-target/"
+            "proposal.md §5 for a complete example."
         ),
     )
     cap.add_argument(
@@ -1628,6 +1630,11 @@ def _parse_recommend_predicate(expr: str) -> tuple[str, str, float]:
     replace ``-`` with ``_``. Special case: bare ``retained-mauc``
     resolves to ``retained_mauc_vs_host`` (the common shorthand);
     same for ``retained-cov95``.
+
+    Resolved field name SHALL be a real attribute on
+    :class:`saeforge.sweep.ParetoFrontierRow`. Unknown fields raise
+    ``ValueError`` at parse time (early failure) rather than silently
+    skipping every row at predicate-application time.
     """
     op_used = None
     op_idx = -1
@@ -1655,6 +1662,21 @@ def _parse_recommend_predicate(expr: str) -> tuple[str, str, float]:
         "retained_cov95": "retained_cov95_vs_host",
     }
     field = aliases.get(field, field)
+    # Validate the field exists on ParetoFrontierRow now — surfaces
+    # typos at parse time rather than during the predicate loop where
+    # the error would be indistinguishable from "every row's field
+    # value is None".
+    from saeforge.sweep import ParetoFrontierRow
+
+    known_fields = {f.name for f in ParetoFrontierRow.__dataclass_fields__.values()}
+    if field not in known_fields:
+        raise ValueError(
+            f"sae-forge recommend: predicate {expr!r} references unknown "
+            f"field {field!r}. Available capability fields: "
+            f"retained-mauc, retained-cov95, host-baseline-mauc, "
+            f"forge-mauc, forge-cov95, gap-median, gap-p25, gap-p75, "
+            f"gap-p95, n-features-gap-above-0-1, n-features-negative-gap."
+        )
     return field, op_used, float(value_raw)
 
 

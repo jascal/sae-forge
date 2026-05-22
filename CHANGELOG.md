@@ -5,6 +5,79 @@ their corresponding OpenSpec change is archived.
 
 ## [Unreleased]
 
+### Added (add-downstream-capability-target)
+
+- **`DownstreamCapabilityTarget`** — new
+  `saeforge.eval.faithfulness.FaithfulnessTarget` that scores per-
+  feature × per-label AUC through a caller-supplied downstream task
+  encoder. Answers "does the forge retain the downstream task?"
+  instead of "are the forged hidden states numerically close to
+  host?". Bio-sae's empirical work showed those two questions yield
+  different Pareto-optimal widths — cosine recommends n=256,
+  capability recommends n=16, on the same ESM-2 / bio-sae substrate
+  (16× discrepancy). Three-path `W_dec` recovery precedence
+  (`ctx["basis"]` → `forged_module.basis_decode` →
+  `pinv(basis_encode)`). Aggregator dispatch:
+  `pool_then_encode` / `encode_then_pool` / callable. Silenceable
+  pinv warning via `warn_on_pinv=False`. Never family-defaulted —
+  opt-in via `ForgePipeline(faithfulness=...)`.
+- **`CapabilityDataset`** — frozen dataclass at
+  `saeforge.datasets.CapabilityDataset`. Bundles sequences + labels
+  + encoder + aggregator + tokenizer_id + metadata.
+  `from_bio_sae(...)` constructor parses a bio-sae bundle (sae.pt +
+  bundle safetensors + sequences parquet) without importing biosae.
+  Sm-sae / econ-sae will register their own `from_<repo>`
+  constructors in their respective repos.
+- **`basis_decode` buffer** — emitted alongside `basis_encode` by
+  encoder-only adapters (`Esm2Adapter`, `WhisperEncoderAdapter`).
+  Shape `(n_features, d_model)`; carries `W_dec` directly. Removes
+  the `pinv(basis_encode)` roundtrip for the bundled families and
+  makes the capability target's path (b) the default decode route
+  when `ctx["basis"]` isn't piped through.
+- **`sweep_pareto_capability(...)`** — new wrapper over
+  `sweep_pareto`'s machinery that uses `DownstreamCapabilityTarget`
+  as the metric. Drives the (encoding × width × scale_boost) cube;
+  emits `frontier.jsonl` with optional capability fields populated
+  on each row. Host-extraction cache enabled by default
+  (`<output-dir>/host_cache/`, opt-out via `cache_host=False`);
+  content-addressed key over `(host_model_id, sequences_hash,
+  aggregator, max_seq_len)`.
+- **`ParetoFrontierRow` capability fields** — 14 new optional
+  fields: `host_baseline_mauc`, `forge_mauc`,
+  `retained_mauc_vs_host`, `retained_cov95_vs_host`, `gap_median`,
+  `gap_p25` / `gap_p75` / `gap_p95`, `n_features_gap_above_0_1`,
+  `n_features_negative_gap`, `capability_aggregator`,
+  `capability_min_prevalence`, etc. All `Optional[…]` defaulting to
+  `None`. `to_json_dict()` omits the capability block when no field
+  is populated — v0.7 frontier files stay byte-equivalent for
+  non-capability rows. `from_json_dict()` loads pre-change rows
+  unchanged.
+- **`ForgeResult.basis` piping into `ctx["basis"]`** — both
+  imperative and synthetic score paths now populate
+  `ctx["basis"] = self.basis`. Resolves the capability target's
+  three-path decode precedence to path (a) "exact W_dec from
+  explicit basis" by default when the pipeline drives the target.
+  Zero-cost for targets that don't read this key.
+- **CLI subcommands** —
+  `sae-forge sweep-capability --dataset-config CONFIG.yaml --host
+  HOST_ID --widths W1,W2,...` invokes the capability sweep.
+  `sae-forge recommend --frontier frontier.jsonl --target
+  retained-mauc>=0.95` filters survivors by AND-combined predicates
+  and picks the smallest `target_n_features_kept`. Predicate parser
+  accepts kebab-case / snake_case + shorthand aliases for the
+  load-bearing capability fields. Tabular default + `--json` mode.
+- **README** — new "Capability-aware forge tuning" section under
+  `## Components` with the end-to-end CLI example.
+- **`docs/algorithm.md` §5** — cross-reference from "Error sources"
+  to the capability target. The amplification of `ε_attn` +
+  `ε_nonlin` is invisible to cosine when the rank deficit is in
+  non-information-bearing directions; visible to a capability
+  metric that asks whether the downstream task is preserved.
+- Test surface: 16 new capability-eval tests (target + dataset),
+  11 new sweep tests (row schema + cache + end-to-end), 5 new
+  acceptance-gate tests (synthetic substrate × structural plumbing).
+  Total +32 tests; existing surface unchanged.
+
 ### Added (add-esm2-adapter)
 
 - **`Esm2Adapter` — first encoder-only host outside the audio
