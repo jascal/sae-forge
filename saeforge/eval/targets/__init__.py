@@ -20,12 +20,14 @@ from __future__ import annotations
 
 from saeforge.eval.faithfulness import FaithfulnessTarget
 from saeforge.eval.targets.cosine import CosineTarget
+from saeforge.eval.targets.downstream_capability import DownstreamCapabilityTarget
 from saeforge.eval.targets.gt_alignment import GroundTruthTarget
 from saeforge.eval.targets.kl import KLTarget
 from saeforge.eval.targets.token_cosine import TokenCosineTarget
 
 __all__ = [
     "CosineTarget",
+    "DownstreamCapabilityTarget",
     "GroundTruthTarget",
     "KLTarget",
     "TokenCosineTarget",

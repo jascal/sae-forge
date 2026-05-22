@@ -44,6 +44,10 @@ def _expected_keys(num_layers: int) -> set[str]:
         "layer_norm.bias",
         # d → f projection bridge; loaded into a non-parameter buffer.
         "basis_encode",
+        # f → d projection bridge for downstream-capability eval
+        # (add-downstream-capability-target). Same buffer-not-parameter
+        # contract as basis_encode.
+        "basis_decode",
     }
     for i in range(num_layers):
         prefix = f"layers.{i}"

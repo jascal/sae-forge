@@ -194,6 +194,16 @@ class Esm2Adapter(ArchitectureAdapter):
         # contract as the Whisper adapter's ``basis_encode``.
         out["basis_encode"] = projector.basis.pseudoinverse() * projector.scale_boost
 
+        # f → d buffer for downstream-capability eval (add-downstream-
+        # capability-target). Carries the exact ``W_dec`` the projector
+        # used to compute ``basis_encode`` above. Lets
+        # ``DownstreamCapabilityTarget`` decode forged hidden states
+        # back to host coords without inverting ``basis_encode``
+        # numerically — the matrix is already on disk in the basis the
+        # adapter walked. Shape ``(n_features, d_model)``; matches the
+        # ``ForgedEsm2.basis_decode`` buffer registered below.
+        out["basis_decode"] = projector.basis.W_dec.copy()
+
         return out
 
     def build_native_config(
@@ -476,6 +486,18 @@ def _get_forged_esm2_class():
             self.register_buffer(
                 "basis_encode",
                 torch.zeros(d, cfg.hidden_size),
+            )
+            # f → d projection buffer, carrying ``W_dec`` directly.
+            # Populated by ``from_projected_weights`` from the walk's
+            # ``basis_decode`` entry. Used by
+            # ``DownstreamCapabilityTarget`` (add-downstream-capability-
+            # target) to decode forged hidden states back to host
+            # ``d_model`` coords without inverting ``basis_encode``
+            # numerically. Survives ``state_dict()`` round-trip; not a
+            # parameter; never consulted by the forged ``forward()``.
+            self.register_buffer(
+                "basis_decode",
+                torch.zeros(cfg.hidden_size, d),
             )
 
         def forward(self, input_ids):
