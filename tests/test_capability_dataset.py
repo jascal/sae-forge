@@ -100,7 +100,58 @@ def test_from_bio_sae_residue_feed(tmp_path):
     # Residue-feed labels: 5 proteins × 5 residues = 25 rows in the
     # fixture, 6 label columns.
     assert ds.labels.shape == (25, 6)
+    # feed is now a load-bearing dataclass field, not just metadata.
+    assert ds.feed == "residue"
     assert ds.metadata["feed"] == "residue"
+
+
+def test_dataset_rejects_invalid_feed():
+    """Construction-time validation rejects bad feed values."""
+    import numpy as np
+
+    from saeforge.datasets import CapabilityDataset
+
+    with pytest.raises(ValueError, match="feed"):
+        CapabilityDataset(
+            sequences=["A"],
+            labels=np.zeros((1, 1), dtype=np.uint8),
+            encoder=lambda x: x,
+            tokenizer_id="x",
+            feed="invalid",
+        )
+
+
+def test_dataset_pooled_label_alignment_check():
+    """Under feed='pooled', labels.shape[0] MUST equal len(sequences)."""
+    import numpy as np
+
+    from saeforge.datasets import CapabilityDataset
+
+    with pytest.raises(ValueError, match="must equal len\\(sequences\\)"):
+        CapabilityDataset(
+            sequences=["A", "B", "C"],  # 3 proteins
+            labels=np.zeros((5, 2), dtype=np.uint8),  # 5 rows — mismatch
+            encoder=lambda x: x,
+            tokenizer_id="x",
+            feed="pooled",
+        )
+
+
+def test_dataset_residue_label_floor_check():
+    """Under feed='residue', labels.shape[0] MUST be >= len(sequences)
+    (each protein contributes at least one residue row)."""
+    import numpy as np
+
+    from saeforge.datasets import CapabilityDataset
+
+    with pytest.raises(ValueError, match="must be >= len\\(sequences\\)"):
+        CapabilityDataset(
+            sequences=["A", "B", "C"],  # 3 proteins
+            labels=np.zeros((2, 4), dtype=np.uint8),  # 2 rows — too few
+            encoder=lambda x: x,
+            tokenizer_id="x",
+            feed="residue",
+        )
 
 
 def test_encoder_is_topk_with_correct_k(tmp_path):

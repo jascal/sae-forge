@@ -5,6 +5,38 @@ their corresponding OpenSpec change is archived.
 
 ## [Unreleased]
 
+### Added (add-downstream-capability-target — residue-feed support)
+
+- **`feed="residue"` on `CapabilityDataset` + `sweep_pareto_capability`.**
+  Previously the sweep wrapper unconditionally mean-pooled per
+  protein, which made it incompatible with substrate-level
+  evaluation (residue-scope GT labels). New `feed` field is a
+  load-bearing dataclass field (default `"pooled"` for back-compat)
+  with construction-time validation that `labels.shape[0]` matches
+  the feed: `== len(sequences)` for pooled, `>= len(sequences)` for
+  residue.
+- **`_extract_host_activations` / `_extract_forged_activations`
+  honor feed.** Under residue feed, the extractors skip the mean-
+  pool and concatenate per-residue states across proteins
+  (protein-major ordering matching bio-sae's `residue_index`).
+- **Runtime alignment check.** Under residue feed, the sweep wrapper
+  verifies `host_X.shape[0] == dataset.labels.shape[0]` after
+  extraction and raises a clear `RuntimeError` on mismatch (usually
+  caused by `max_seq_len` drift between bundle build time and read
+  time). Pre-change residue-feed users would have silently produced
+  nonsense AUCs.
+- **`HostCacheKey.feed` field.** Cache key now includes the feed
+  string; pooled and residue runs over the same sequences produce
+  distinct cache files instead of colliding.
+- Closes the follow-up filed by bio-sae's acceptance gate
+  (`bio-sae/tests/test_forge_capability_acceptance.py` module
+  docstring). The n=16 prediction on bio-sae's residue SAE +
+  residue feed becomes directly testable upstream.
+- Test surface: +6 new tests (3 dataset validation, 3 sweep-side
+  residue-feed end-to-end including pooled-vs-residue cache
+  isolation + label-alignment failure mode). Total focused suite
+  38 passing; full suite 744 passing.
+
 ## [0.8.0] — 2026-05-22
 
 The 0.8.0 release ships two coordinated capabilities: the **ESM-2

@@ -118,12 +118,23 @@ def sweep_pareto_capability(
         scale_boosts = [1.0]
 
     # Validate dataset shape early (catches bad fixtures before we
-    # pay any forge cost).
+    # pay any forge cost). Under pooled feed, each sequence yields
+    # one labelled item. Under residue feed, each sequence yields
+    # multiple labelled rows; the strict per-residue count is verified
+    # post-extraction once we know what the tokenizer actually emits.
     n_items = dataset.labels.shape[0]
-    if len(dataset.sequences) != n_items:
+    if dataset.feed == "pooled" and len(dataset.sequences) != n_items:
         raise ValueError(
-            f"sweep_pareto_capability: dataset.sequences ({len(dataset.sequences)}) "
-            f"and dataset.labels ({n_items} rows) must align"
+            f"sweep_pareto_capability(feed='pooled'): dataset.sequences "
+            f"({len(dataset.sequences)}) and dataset.labels ({n_items} "
+            f"rows) must align"
+        )
+    if dataset.feed == "residue" and n_items < len(dataset.sequences):
+        raise ValueError(
+            f"sweep_pareto_capability(feed='residue'): dataset.labels "
+            f"({n_items} rows) must be >= len(sequences) "
+            f"({len(dataset.sequences)}) — each protein contributes "
+            f">=1 residue row."
         )
 
     # ---- Stage 1: host-extraction cache + once-per-sweep host load. ----
@@ -136,6 +147,7 @@ def sweep_pareto_capability(
         sequences=list(dataset.sequences),
         aggregator=dataset.aggregator,
         max_seq_len=max_seq_len,
+        feed=dataset.feed,
     )
 
     host_X: torch.Tensor | None = None
@@ -159,8 +171,22 @@ def sweep_pareto_capability(
             aggregator=dataset.aggregator,
             max_seq_len=max_seq_len,
             device=device,
+            feed=dataset.feed,
         )
         cache.save(key, host_X)
+
+    # Under residue feed, host_X rows MUST align with dataset.labels
+    # rows (each row = one residue, protein-major). Misalignment
+    # surfaces silently as nonsense AUCs downstream; check loudly here.
+    if dataset.feed == "residue" and host_X.shape[0] != dataset.labels.shape[0]:
+        raise RuntimeError(
+            f"sweep_pareto_capability(feed='residue'): host extraction "
+            f"yielded {host_X.shape[0]} residue rows but dataset.labels "
+            f"has {dataset.labels.shape[0]} rows. Mismatch usually means "
+            f"the dataset's max_seq_len doesn't match the bundle's "
+            f"build-time max_seq_len, or sequences contain non-canonical "
+            f"residues the tokenizer maps differently than expected."
+        )
 
     Y = _filter_labels(dataset.labels, dataset.min_prevalence)
     with torch.no_grad():
@@ -274,6 +300,7 @@ def _run_capability_cell(
         device=device,
         aggregator=dataset.aggregator,
         max_seq_len=512,
+        feed=dataset.feed,
     )
     W_dec_t = torch.from_numpy(W_dec_slice.astype(np.float32))
     forged_d = forged_h @ W_dec_t
@@ -382,16 +409,26 @@ def _extract_host_activations(
     aggregator: "str | Any",
     max_seq_len: int,
     device: str,
+    *,
+    feed: str = "pooled",
 ):
-    """Run host ESM-2 over sequences; return per-protein activations
-    aggregated according to ``aggregator``.
+    """Run host ESM-2 over sequences; return activations shaped per
+    ``feed``.
 
-    Only ``pool_then_encode`` and ``encode_then_pool`` are honored at
-    the host-extraction step (the encoder runs downstream in
-    ``sweep_pareto_capability`` regardless of aggregator). Returns
-    shape ``(n_proteins, d_model)`` in both cases — the encoder + pool
-    composition difference manifests at score time, not at host
-    extraction.
+    - ``feed="pooled"`` (default): mean-pool per protein. Returns
+      ``(n_proteins, d_model)``.
+    - ``feed="residue"``: keep per-residue states (CLS / EOS stripped),
+      concatenated across proteins. Returns
+      ``(n_total_residues, d_model)``. The protein-major ordering
+      matches what bio-sae's bundle's ``labels_residue_Y`` carries
+      (``residue_index[:, 0]`` ascending; positions monotone within
+      each protein).
+
+    Aggregator is consumed downstream by the encoder + scoring step;
+    this helper is feed-only. The two pool orders
+    (``pool_then_encode`` / ``encode_then_pool``) produce identical
+    host activations at this step under ``feed="pooled"`` — the
+    composition difference manifests at score time.
     """
     import torch
     from transformers import AutoTokenizer
@@ -408,8 +445,11 @@ def _extract_host_activations(
             enc = tokenizer(seq[:max_seq_len], return_tensors="pt").to(device)
             out = inner(input_ids=enc["input_ids"])
             h = out.last_hidden_state[0, 1:-1, :].cpu().float()
-            chunks.append(h.mean(dim=0, keepdim=True))
-    return torch.cat(chunks, dim=0)  # (n_proteins, d_model)
+            if feed == "pooled":
+                chunks.append(h.mean(dim=0, keepdim=True))
+            else:  # feed == "residue"
+                chunks.append(h)  # (L_i, d_model), no pooling
+    return torch.cat(chunks, dim=0)
 
 
 def _extract_forged_activations(
@@ -420,8 +460,12 @@ def _extract_forged_activations(
     device: str,
     aggregator: "str | Any",
     max_seq_len: int,
+    feed: str = "pooled",
 ):
-    """Run forged module over sequences; mean-pool per protein."""
+    """Run forged module over sequences; shape output per ``feed``.
+
+    Mirrors :func:`_extract_host_activations`'s shape contract.
+    """
     import torch
     from transformers import AutoTokenizer
 
@@ -436,5 +480,8 @@ def _extract_forged_activations(
         for seq in sequences:
             enc = tokenizer(seq[:max_seq_len], return_tensors="pt").to(device)
             h = forged_module(enc["input_ids"])[0, 1:-1, :].cpu().float()
-            chunks.append(h.mean(dim=0, keepdim=True))
+            if feed == "pooled":
+                chunks.append(h.mean(dim=0, keepdim=True))
+            else:  # feed == "residue"
+                chunks.append(h)
     return torch.cat(chunks, dim=0)
