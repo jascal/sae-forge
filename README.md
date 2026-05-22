@@ -770,19 +770,34 @@ Single-shot frontiers (no `stage` field) bypass the check entirely
 **Empirical reference points** (bio-sae's
 `bio-sae/runs/forge/` measurements against `facebook/esm2_t6_8M_UR50D`):
 
-| fixture | feed | schedule | recommendation | converged | wall time CPU |
-|---|---|---|---|---|---|
-| `uniref50_small/residue` | residue | [10, 50, 100] | n=48, retained_mauc ≈ 1.04 | ✓ in 3 stages | ~45 s |
-| `uniref50_n5000/pooled_w1024_k64` | pooled | [200, 500] | n=256, retained_mauc ≈ 0.92 | ✗ (plateau argmin shifted n=384→n=256) | ~5 min |
-| same fixture | pooled | [200] | n=256, retained_mauc ≈ 0.93 | ✓ (single-shot via progressive surface) | ~2 min |
+| fixture | feed | schedule | host_mauc | rec_n | retained_mauc | converged | wall time CPU |
+|---|---|---|---|---|---|---|---|
+| `uniref50_small/residue` | residue | [10, 50, 100] | 0.946 | 48 | 1.04 | ✓ in 3 stages | ~45 s |
+| `uniref50_n5000/pooled_w1024_k64` | pooled | [200, 500] | 0.765 | 256 | 0.92 | ✗ (argmin shift n=384→n=256) | ~5 min |
+| same fixture | pooled | [200] | 0.765 | 256 | 0.93 | ✓ (single-shot via progressive surface) | ~2 min |
+| same fixture | pooled | [1000, 5000] | 0.765→0.795 | 256 (stable) | 0.92→0.90 (drops) | ✗ (retained_mauc variance > 0.005) | ~45 min |
 
 The pooled regime's failure to converge under default strictness is
-the expected outcome: writeup §3.2 measured the **peak** position as
-stable (n=512 across data scales), but the wrapper's argmin-of-
-plateau contract picks the plateau's **left edge**, which shifts
-because the plateau membership contracts as the AUC estimate
-tightens. `convergence_n_stages=1` is the documented opt-out for
-that exact shape.
+the expected outcome BUT for two distinct reasons at different data
+scales:
+
+- **At small protein counts ([200, 500])**: the plateau's argmin
+  position shifts (n=384→n=256) because the plateau membership
+  contracts as the AUC estimate tightens with more data.
+- **At larger protein counts ([1000, 5000])**: the argmin position
+  is stable (n=256 across both stages) but `retained_mauc` itself
+  drifts because **the host's AUC grows faster than the forge's**
+  as more discriminating labels surface. Writeup §3.2 measured 0.93
+  at n=500 proteins; the same fixture under the wrapper drops to
+  0.90 at n=5000. The "uniform tax" framing held at the writeup's
+  measurement scale but widens at 10× the data.
+
+`convergence_n_stages=1` is the documented opt-out for both shapes.
+The deeper question — why the forge's discriminative power
+doesn't track the host's as data scale grows — is a substrate-
+specific follow-up; see
+`bio-sae/docs/forge-capability-bottleneck.md` §4 for the structural-
+tax-on-spread-regimes characterisation.
 
 ### Inspect
 
