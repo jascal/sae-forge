@@ -120,6 +120,22 @@ fidelity matters, use
 (`add-downstream-capability-target`); cosine / KL stay the right
 default for "is the residual stream numerically close" questions.
 
+**Data-scale-robust width selection.** Single-shot
+`sweep-capability` picks the argmax retained_mauc on whatever eval
+sample is in scope. Bio-sae's residue-feed work showed that
+argmax position drifts with data scale (n=16 at 10 proteins → n=48
+at 100 proteins, both at retained_mauc ≈ 1.03). The peak value is
+data-scale-stable; *which* width is the argmax isn't. For a
+recommendation that survives more proteins arriving, use
+:func:`saeforge.sweep_pareto_capability_progressive` (or the
+`sae-forge sweep-capability-progressive` CLI). The wrapper drives
+the sweep across an increasing-protein schedule and converges only
+when the *smallest plateau-member* stops shifting across stages —
+**Occam's razor at the forge layer** (among widths that explain the
+labels equally well across data scales, pick the simplest). See
+`add-progressive-capability-sweep` for the empirical motivation +
+the connection to classical model selection (BIC / AIC / MDL).
+
 ## 6. FSM orchestration
 
 ```mermaid
