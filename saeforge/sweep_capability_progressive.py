@@ -31,7 +31,7 @@ Pipeline per stage:
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -65,7 +65,17 @@ class ConvergenceTrajectoryEntry:
 
 @dataclass(frozen=True)
 class ProgressiveStageResult:
-    """One stage's outcome inside a progressive sweep."""
+    """One stage's outcome inside a progressive sweep.
+
+    Single-encoding sweeps populate ``plateau_widths`` (the legacy
+    single-tuple shape) and leave ``per_encoding_plateau_widths`` empty.
+
+    Multi-encoding sweeps populate ``per_encoding_plateau_widths`` (one
+    entry per encoding label); ``plateau_widths`` carries the
+    plateau of the winning encoding (per the recommendation
+    tiebreaker) for back-compat consumers that read the legacy
+    field.
+    """
 
     stage: int
     n_proteins: int
@@ -74,6 +84,7 @@ class ProgressiveStageResult:
     plateau_widths: tuple[int, ...]
     peak_n: int
     peak_retained_mauc: float
+    per_encoding_plateau_widths: dict[str, tuple[int, ...]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -84,7 +95,9 @@ class ProgressiveRecommendation:
     ----------
     target_n_features_kept:
         The smallest stable-plateau width. Pareto-optimal on
-        (capability, parameter-cost).
+        (capability, parameter-cost). For multi-encoding sweeps,
+        this belongs to the winning encoding per the tiebreaker
+        (see ``per_encoding_recommendations``).
     retained_mauc_vs_host:
         The converged width's retained_mauc on the LAST stage.
     stages_converged:
@@ -97,12 +110,27 @@ class ProgressiveRecommendation:
         carries a warning.
     rationale:
         Human-readable explanation of why this width was picked.
+        For multi-encoding sweeps, names the winning encoding and
+        the tiebreaker that selected it.
     convergence_trajectory:
-        Per-stage record (stage, n_proteins, argmin_plateau_width,
-        argmin_retained_mauc, plateau_size, neighbours_added,
-        shifted_from_prev_stage). On disk in
-        ``progressive_summary.json`` — external benchmarking can
-        count un-converged ratios without in-library telemetry.
+        Per-stage record. On disk in ``progressive_summary.json`` —
+        external benchmarking can count un-converged ratios without
+        in-library telemetry.
+    per_encoding_recommendations:
+        For multi-encoding sweeps, a dict mapping encoding label to
+        the per-encoding ``ProgressiveRecommendation``. None for
+        single-encoding sweeps (back-compat preserved).
+
+        The top-level recommendation belongs to the winning
+        encoding per the tiebreaker chain:
+          1. Among encodings whose recommendation converged.
+          2. Pick smallest stable n at retained_mauc >=
+             cross-encoding median of converged retained_mauc.
+          3. Ties broken by lowest argmin-retained-mauc variance.
+          4. Final tiebreak by encoding-list order.
+
+        If NO encoding converged, top-level falls back to the
+        encoding with lowest variance + names this in rationale.
     """
 
     target_n_features_kept: int
@@ -111,6 +139,8 @@ class ProgressiveRecommendation:
     converged: bool
     rationale: str
     convergence_trajectory: tuple[ConvergenceTrajectoryEntry, ...]
+    per_encoding_recommendations: dict[str, "ProgressiveRecommendation"] | None = None
+    winning_encoding: str | None = None
 
 
 @dataclass(frozen=True)
@@ -123,25 +153,13 @@ class ProgressiveHistory:
     def to_json_dict(self) -> dict[str, Any]:
         """JSON-serialisable summary written to
         ``progressive_summary.json``."""
-        return {
-            "stages": [
-                {
-                    "stage": s.stage,
-                    "n_proteins": s.n_proteins,
-                    "active_widths": list(s.active_widths),
-                    "plateau_widths": list(s.plateau_widths),
-                    "peak_n": s.peak_n,
-                    "peak_retained_mauc": s.peak_retained_mauc,
-                    "n_rows": len(s.rows),
-                }
-                for s in self.stages
-            ],
-            "recommendation": {
-                "target_n_features_kept": self.recommendation.target_n_features_kept,
-                "retained_mauc_vs_host": self.recommendation.retained_mauc_vs_host,
-                "stages_converged": self.recommendation.stages_converged,
-                "converged": self.recommendation.converged,
-                "rationale": self.recommendation.rationale,
+        def _rec_to_dict(rec: ProgressiveRecommendation) -> dict[str, Any]:
+            d = {
+                "target_n_features_kept": rec.target_n_features_kept,
+                "retained_mauc_vs_host": rec.retained_mauc_vs_host,
+                "stages_converged": rec.stages_converged,
+                "converged": rec.converged,
+                "rationale": rec.rationale,
                 "convergence_trajectory": [
                     {
                         "stage": e.stage,
@@ -152,9 +170,42 @@ class ProgressiveHistory:
                         "neighbours_added": e.neighbours_added,
                         "shifted_from_prev_stage": e.shifted_from_prev_stage,
                     }
-                    for e in self.recommendation.convergence_trajectory
+                    for e in rec.convergence_trajectory
                 ],
-            },
+            }
+            if rec.winning_encoding is not None:
+                d["winning_encoding"] = rec.winning_encoding
+            return d
+
+        top_level_rec = _rec_to_dict(self.recommendation)
+        if self.recommendation.per_encoding_recommendations is not None:
+            top_level_rec["per_encoding_recommendations"] = {
+                label: _rec_to_dict(per_rec)
+                for label, per_rec in
+                self.recommendation.per_encoding_recommendations.items()
+            }
+
+        stage_dicts: list[dict[str, Any]] = []
+        for s in self.stages:
+            d = {
+                "stage": s.stage,
+                "n_proteins": s.n_proteins,
+                "active_widths": list(s.active_widths),
+                "plateau_widths": list(s.plateau_widths),
+                "peak_n": s.peak_n,
+                "peak_retained_mauc": s.peak_retained_mauc,
+                "n_rows": len(s.rows),
+            }
+            if s.per_encoding_plateau_widths:
+                d["per_encoding_plateau_widths"] = {
+                    label: list(widths)
+                    for label, widths in s.per_encoding_plateau_widths.items()
+                }
+            stage_dicts.append(d)
+
+        return {
+            "stages": stage_dicts,
+            "recommendation": top_level_rec,
         }
 
 
@@ -290,14 +341,14 @@ def _trailing_stable(
 
 
 def sweep_pareto_capability_progressive(
-    sae_checkpoint: "str | Path",
-    host_model_id: str,
-    dataset: Any,  # CapabilityDataset
+    sae_checkpoint: "str | Path | None" = None,
+    host_model_id: str | None = None,
+    dataset: Any = None,  # CapabilityDataset
     *,
     candidate_widths: Sequence[int],
     n_proteins_schedule: Sequence[int],
     output_dir: "str | Path",
-    encodings: list[str] | None = None,
+    encodings: "list[tuple[str, str | Path]] | list[str] | None" = None,
     scale_boosts: list["float | str"] | None = None,
     retained_mauc_tolerance: float = 0.005,
     plateau_tolerance: float = 0.01,
@@ -412,21 +463,71 @@ def sweep_pareto_capability_progressive(
             "fixture."
         )
 
-    if encodings is None or not encodings:
-        encodings = ["raw_slice"]
     if scale_boosts is None or not scale_boosts:
         scale_boosts = [1.0]
 
+    # ---- Encoding-list normalization ----
+    # Two input shapes:
+    #   (a) legacy single-encoding: encodings=None + sae_checkpoint=PATH,
+    #       or encodings=['label_a', 'label_b'] (informational labels
+    #       — v0.8.x back-compat).
+    #   (b) multi-encoding: encodings=[(label, path), ...] (new shape).
+    #
+    # Internally, we always model state per-encoding-label. Single-
+    # encoding sweeps have one entry in the per-encoding state dict;
+    # multi-encoding sweeps have one entry per encoding label.
+    is_multi_encoding = (
+        encodings is not None
+        and len(encodings) > 0
+        and not isinstance(encodings[0], str)
+    )
+    if is_multi_encoding:
+        # Multi-encoding mode — encodings is list[tuple[str, path]].
+        if sae_checkpoint is not None:
+            raise ValueError(
+                "sweep_pareto_capability_progressive: pass either "
+                "`encodings=[(label, path), ...]` (multi-encoding) OR "
+                "`sae_checkpoint=PATH` (single-encoding), not both."
+            )
+        encoding_labels = [str(label) for label, _ in encodings]
+        # Validate uniqueness — same as sweep_pareto_capability.
+        if len(set(encoding_labels)) != len(encoding_labels):
+            raise ValueError(
+                f"sweep_pareto_capability_progressive: duplicate encoding "
+                f"label in encodings. Labels SHALL be unique; got "
+                f"{encoding_labels!r}."
+            )
+        encodings_arg_for_sweep = encodings  # tuple list passes through
+    else:
+        # Single-encoding mode (legacy informational labels OR
+        # sae_checkpoint).
+        if encodings is None or not encodings:
+            encoding_labels = ["raw_slice"]
+            encodings_arg_for_sweep = None
+        else:
+            # Legacy informational labels.
+            encoding_labels = [str(e) for e in encodings]
+            encodings_arg_for_sweep = list(encoding_labels)
+
     # ---- Per-stage loop ----
-    active = tuple(sorted(set(int(w) for w in candidate_widths)))
+    # Per-encoding state tracked across stages.
+    initial_active = tuple(sorted(set(int(w) for w in candidate_widths)))
+    per_encoding_active: dict[str, tuple[int, ...]] = {
+        label: initial_active for label in encoding_labels
+    }
+    per_encoding_trajectory: dict[str, list[ConvergenceTrajectoryEntry]] = {
+        label: [] for label in encoding_labels
+    }
+    per_encoding_prev_argmin: dict[str, int | None] = {
+        label: None for label in encoding_labels
+    }
+    per_encoding_converged: dict[str, bool] = {
+        label: False for label in encoding_labels
+    }
     stage_results: list[ProgressiveStageResult] = []
-    trajectory: list[ConvergenceTrajectoryEntry] = []
     aggregated_frontier_path = output_dir / "frontier.jsonl"
     if aggregated_frontier_path.exists():
         aggregated_frontier_path.unlink()
-
-    prev_argmin: int | None = None
-    converged_now = False
 
     for stage_idx, n_proteins in enumerate(schedule):
         stage_dir = output_dir / f"stage_{stage_idx}"
@@ -447,12 +548,18 @@ def sweep_pareto_capability_progressive(
             metadata={**dataset.metadata, "stage": stage_idx,
                       "n_proteins_in_stage": n_proteins},
         )
+        # Union of all encodings' active widths for this stage. Each
+        # encoding's own plateau-based active set is a subset of this
+        # union; we sweep the union and then partition rows by encoding.
+        stage_active_union = sorted(
+            set().union(*per_encoding_active.values())
+        )
         rows = sweep_pareto_capability(
-            sae_checkpoint=sae_checkpoint,
+            sae_checkpoint=sae_checkpoint if not is_multi_encoding else None,
             host_model_id=host_model_id,
             dataset=stage_dataset,
-            widths=list(active),
-            encodings=encodings,
+            widths=list(stage_active_union),
+            encodings=encodings_arg_for_sweep,
             scale_boosts=scale_boosts,
             output_dir=stage_dir,
             cache_host=cache_host,
@@ -467,103 +574,177 @@ def sweep_pareto_capability_progressive(
             for r in stamped_rows:
                 fh.write(json.dumps(r.to_json_dict()) + "\n")
 
-        # Plateau + neighbours.
-        plateau, peak_retained, peak_n = _identify_plateau(
-            stamped_rows,
-            plateau_tolerance=plateau_tolerance,
-            min_plateau_widths=min_plateau_widths,
-        )
-        if not plateau:
-            # Stage produced no successful rows; abort with an
-            # informative trajectory entry.
-            trajectory.append(ConvergenceTrajectoryEntry(
-                stage=stage_idx,
-                n_proteins=n_proteins,
-                argmin_plateau_width=-1,
-                argmin_retained_mauc=float("nan"),
-                plateau_size=0,
-                neighbours_added=0,
-                shifted_from_prev_stage=False,
-            ))
-            stage_results.append(ProgressiveStageResult(
-                stage=stage_idx, n_proteins=n_proteins,
-                active_widths=active, rows=stamped_rows,
-                plateau_widths=(), peak_n=-1,
-                peak_retained_mauc=float("nan"),
-            ))
-            break
+        # Per-encoding plateau identification + trajectory update.
+        per_encoding_plateau_widths_this_stage: dict[str, tuple[int, ...]] = {}
+        any_encoding_succeeded = False
+        for label in encoding_labels:
+            # Filter to this encoding's active widths AND this
+            # encoding's rows.
+            enc_active = per_encoding_active[label]
+            enc_rows = tuple(
+                r for r in stamped_rows
+                if r.encoding_label == label
+                and r.target_n_features_kept in enc_active
+            )
+            plateau, peak_retained, peak_n = _identify_plateau(
+                enc_rows,
+                plateau_tolerance=plateau_tolerance,
+                min_plateau_widths=min_plateau_widths,
+            )
+            if not plateau:
+                # This encoding produced no successful rows at this
+                # stage; record a degenerate trajectory entry but
+                # don't abort other encodings.
+                per_encoding_trajectory[label].append(
+                    ConvergenceTrajectoryEntry(
+                        stage=stage_idx, n_proteins=n_proteins,
+                        argmin_plateau_width=-1,
+                        argmin_retained_mauc=float("nan"),
+                        plateau_size=0, neighbours_added=0,
+                        shifted_from_prev_stage=False,
+                    )
+                )
+                per_encoding_plateau_widths_this_stage[label] = ()
+                continue
+            any_encoding_succeeded = True
+            argmin_width = min(plateau)
+            argmin_row = next(
+                r for r in enc_rows
+                if r.target_n_features_kept == argmin_width
+            )
+            argmin_retained = float(argmin_row.retained_mauc_vs_host)
+            prev = per_encoding_prev_argmin[label]
+            shifted = (prev is not None and argmin_width != prev)
+            next_active = _expand_neighbours(plateau, candidate_widths)
+            neighbours_added = len(set(next_active) - set(plateau))
+            per_encoding_trajectory[label].append(
+                ConvergenceTrajectoryEntry(
+                    stage=stage_idx, n_proteins=n_proteins,
+                    argmin_plateau_width=argmin_width,
+                    argmin_retained_mauc=argmin_retained,
+                    plateau_size=len(plateau),
+                    neighbours_added=neighbours_added,
+                    shifted_from_prev_stage=shifted,
+                )
+            )
+            per_encoding_plateau_widths_this_stage[label] = plateau
+            # Advance per-encoding state for next stage.
+            per_encoding_active[label] = next_active
+            per_encoding_prev_argmin[label] = argmin_width
 
-        argmin_width = min(plateau)
-        argmin_row = next(r for r in stamped_rows
-                          if r.target_n_features_kept == argmin_width)
-        argmin_retained = float(argmin_row.retained_mauc_vs_host)
-        shifted = (prev_argmin is not None and argmin_width != prev_argmin)
-        next_active = _expand_neighbours(plateau, candidate_widths)
-        neighbours_added = len(set(next_active) - set(plateau))
+        # Top-level (winning-encoding) plateau for ProgressiveStageResult.
+        # Pick the encoding with the largest plateau at this stage as the
+        # representative for the legacy plateau_widths field — back-compat
+        # for single-encoding consumers. (Single-encoding sweeps have one
+        # entry; this picks that entry.)
+        if per_encoding_plateau_widths_this_stage:
+            top_label = max(
+                per_encoding_plateau_widths_this_stage.keys(),
+                key=lambda L: len(per_encoding_plateau_widths_this_stage[L]),
+            )
+            top_plateau = per_encoding_plateau_widths_this_stage[top_label]
+            top_traj = per_encoding_trajectory[top_label][-1]
+            top_peak_n = top_traj.argmin_plateau_width
+            top_peak_retained = top_traj.argmin_retained_mauc
+        else:
+            top_plateau = ()
+            top_peak_n = -1
+            top_peak_retained = float("nan")
 
-        trajectory.append(ConvergenceTrajectoryEntry(
-            stage=stage_idx,
-            n_proteins=n_proteins,
-            argmin_plateau_width=argmin_width,
-            argmin_retained_mauc=argmin_retained,
-            plateau_size=len(plateau),
-            neighbours_added=neighbours_added,
-            shifted_from_prev_stage=shifted,
-        ))
         stage_results.append(ProgressiveStageResult(
             stage=stage_idx, n_proteins=n_proteins,
-            active_widths=active, rows=stamped_rows,
-            plateau_widths=plateau, peak_n=peak_n,
-            peak_retained_mauc=peak_retained,
+            active_widths=tuple(stage_active_union),
+            rows=stamped_rows,
+            plateau_widths=top_plateau,
+            peak_n=top_peak_n,
+            peak_retained_mauc=top_peak_retained,
+            per_encoding_plateau_widths=per_encoding_plateau_widths_this_stage,
         ))
 
-        # Single-element schedule: degenerate single-shot mode.
+        if not any_encoding_succeeded:
+            break
+
+        # Single-element schedule: degenerate single-shot mode for
+        # all encodings.
         if len(schedule) == 1:
-            converged_now = True
+            for label in encoding_labels:
+                per_encoding_converged[label] = True
             break
 
-        # Convergence check.
-        converged_now, _ = _detect_convergence(
-            trajectory,
-            convergence_n_stages=convergence_n_stages,
-            retained_mauc_tolerance=retained_mauc_tolerance,
-        )
-        if converged_now:
+        # Per-encoding convergence detection. Loop exits when ALL
+        # encodings have converged.
+        for label in encoding_labels:
+            if per_encoding_converged[label]:
+                continue
+            converged, _ = _detect_convergence(
+                per_encoding_trajectory[label],
+                convergence_n_stages=convergence_n_stages,
+                retained_mauc_tolerance=retained_mauc_tolerance,
+            )
+            per_encoding_converged[label] = converged
+        if all(per_encoding_converged[label] for label in encoding_labels):
             break
 
-        active = next_active
-        prev_argmin = argmin_width
+    # ---- Build per-encoding recommendations ----
+    per_encoding_recs: dict[str, ProgressiveRecommendation] = {}
+    for label in encoding_labels:
+        trajectory = per_encoding_trajectory[label]
+        converged = per_encoding_converged[label]
+        if trajectory and trajectory[-1].argmin_plateau_width >= 0:
+            last = trajectory[-1]
+            _, stages_converged = _detect_convergence(
+                trajectory,
+                convergence_n_stages=convergence_n_stages,
+                retained_mauc_tolerance=retained_mauc_tolerance,
+            )
+            rationale = _build_rationale(
+                trajectory, converged,
+                convergence_n_stages=convergence_n_stages,
+                retained_mauc_tolerance=retained_mauc_tolerance,
+            )
+            per_encoding_recs[label] = ProgressiveRecommendation(
+                target_n_features_kept=last.argmin_plateau_width,
+                retained_mauc_vs_host=last.argmin_retained_mauc,
+                stages_converged=stages_converged,
+                converged=converged,
+                rationale=rationale,
+                convergence_trajectory=tuple(trajectory),
+            )
+        else:
+            per_encoding_recs[label] = ProgressiveRecommendation(
+                target_n_features_kept=-1,
+                retained_mauc_vs_host=float("nan"),
+                stages_converged=0,
+                converged=False,
+                rationale=(
+                    f"Encoding {label!r}: all stages failed to produce a "
+                    f"non-empty plateau."
+                ),
+                convergence_trajectory=tuple(trajectory),
+            )
 
-    # ---- Build recommendation ----
-    if trajectory and trajectory[-1].argmin_plateau_width >= 0:
-        last = trajectory[-1]
-        _, stages_converged = _detect_convergence(
-            trajectory,
-            convergence_n_stages=convergence_n_stages,
-            retained_mauc_tolerance=retained_mauc_tolerance,
+    # ---- Pick winning encoding + build top-level recommendation ----
+    if is_multi_encoding:
+        winning_label, winner_rationale = _pick_winning_encoding(
+            per_encoding_recs,
+            encoding_order=encoding_labels,
         )
-        rationale = _build_rationale(
-            trajectory, converged_now,
-            convergence_n_stages=convergence_n_stages,
-            retained_mauc_tolerance=retained_mauc_tolerance,
-        )
+        winning_rec = per_encoding_recs[winning_label]
         recommendation = ProgressiveRecommendation(
-            target_n_features_kept=last.argmin_plateau_width,
-            retained_mauc_vs_host=last.argmin_retained_mauc,
-            stages_converged=stages_converged,
-            converged=converged_now,
-            rationale=rationale,
-            convergence_trajectory=tuple(trajectory),
+            target_n_features_kept=winning_rec.target_n_features_kept,
+            retained_mauc_vs_host=winning_rec.retained_mauc_vs_host,
+            stages_converged=winning_rec.stages_converged,
+            converged=winning_rec.converged,
+            rationale=f"Winning encoding {winning_label!r}: {winner_rationale}",
+            convergence_trajectory=winning_rec.convergence_trajectory,
+            per_encoding_recommendations=per_encoding_recs,
+            winning_encoding=winning_label,
         )
     else:
-        recommendation = ProgressiveRecommendation(
-            target_n_features_kept=-1,
-            retained_mauc_vs_host=float("nan"),
-            stages_converged=0,
-            converged=False,
-            rationale="All stages failed to produce a non-empty plateau.",
-            convergence_trajectory=tuple(trajectory),
-        )
+        # Single-encoding sweep — just use the only recommendation,
+        # leaving per_encoding_recommendations=None for back-compat.
+        only_label = encoding_labels[0]
+        recommendation = per_encoding_recs[only_label]
 
     history = ProgressiveHistory(
         stages=tuple(stage_results),
@@ -658,6 +839,101 @@ def _row_with_stage(row: ParetoFrontierRow, stage: int) -> ParetoFrontierRow:
     from dataclasses import replace
 
     return replace(row, stage=stage)
+
+
+def _pick_winning_encoding(
+    per_encoding_recs: dict[str, ProgressiveRecommendation],
+    *,
+    encoding_order: list[str],
+) -> tuple[str, str]:
+    """Pick the winning encoding from per-encoding recommendations.
+
+    Tiebreaker chain per spec
+    ``add-multi-encoding-capability-sweep/specs/pareto-sweep/spec.md``
+    "ProgressiveRecommendation.per_encoding_recommendations"
+    (design.md Decision 4 — see openspec for the full rationale):
+
+    1. Filter to encodings whose recommendation converged.
+    2. Among those, pick smallest ``target_n_features_kept`` at
+       ``retained_mauc >= cross-encoding median`` of converged
+       encodings' retained_mauc values.
+    3. Tiebreak by lowest argmin-retained-mauc variance across stages.
+    4. Final tiebreak by ``encoding_order`` index (CLI flag order /
+       Python encodings list order — explicit user-supplied
+       priority).
+
+    If NO encoding converged, fall back to encoding with lowest
+    argmin-retained-mauc variance (most data-scale-stable, even if
+    non-converged); ``rationale`` names the fallback explicitly.
+
+    Returns ``(winning_label, rationale_string)``.
+    """
+    converged = {
+        label: rec for label, rec in per_encoding_recs.items()
+        if rec.converged
+    }
+    if converged:
+        # Pick smallest n at retained_mauc >= median(converged retained_mauc).
+        retained_values = [
+            rec.retained_mauc_vs_host for rec in converged.values()
+        ]
+        # numpy median; use sorted-pick to avoid the dep here.
+        sorted_retained = sorted(retained_values)
+        n = len(sorted_retained)
+        median = (
+            sorted_retained[n // 2] if n % 2 == 1
+            else (sorted_retained[n // 2 - 1] + sorted_retained[n // 2]) / 2
+        )
+        eligible = {
+            label: rec for label, rec in converged.items()
+            if rec.retained_mauc_vs_host >= median
+        }
+        # Tiebreak chain.
+        def _variance(rec: ProgressiveRecommendation) -> float:
+            return _trajectory_variance(rec.convergence_trajectory)
+        def _order_idx(label: str) -> int:
+            return encoding_order.index(label)
+        winner = min(
+            eligible.keys(),
+            key=lambda L: (
+                eligible[L].target_n_features_kept,
+                _variance(eligible[L]),
+                _order_idx(L),
+            ),
+        )
+        winner_rec = eligible[winner]
+        rationale = (
+            f"smallest stable n={winner_rec.target_n_features_kept} at "
+            f"retained_mauc={winner_rec.retained_mauc_vs_host:.4f} "
+            f">= cross-encoding median ({median:.4f}); converged with "
+            f"trajectory variance {_variance(winner_rec):.4f}. "
+            f"Other converged encodings: "
+            f"{[k for k in converged if k != winner]!r}."
+        )
+        return winner, rationale
+
+    # No encoding converged. Fall back to lowest-variance.
+    def _variance(rec: ProgressiveRecommendation) -> float:
+        return _trajectory_variance(rec.convergence_trajectory)
+    def _order_idx(label: str) -> int:
+        return encoding_order.index(label)
+    winner = min(
+        per_encoding_recs.keys(),
+        key=lambda L: (
+            _variance(per_encoding_recs[L]),
+            _order_idx(L),
+        ),
+    )
+    winner_rec = per_encoding_recs[winner]
+    rationale = (
+        f"NO encoding converged; fell back to lowest-variance encoding "
+        f"(trajectory variance {_variance(winner_rec):.4f}). Top-level "
+        f"recommendation is NOT data-scale-robust. Consider "
+        f"--accept-unconverged, a longer schedule, or "
+        f"convergence_n_stages=1 (see add-progressive-capability-sweep "
+        f"design.md Decision 6)."
+    )
+    return winner, rationale
 
 
 def _build_rationale(
