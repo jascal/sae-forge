@@ -68,9 +68,9 @@ class ProgressiveStageResult:
     """One stage's outcome inside a progressive sweep.
 
     Single-encoding sweeps populate ``plateau_widths`` (the legacy
-    single-tuple shape) and leave ``per_encoding_plateaus`` empty.
+    single-tuple shape) and leave ``per_encoding_plateau_widths`` empty.
 
-    Multi-encoding sweeps populate ``per_encoding_plateaus`` (one
+    Multi-encoding sweeps populate ``per_encoding_plateau_widths`` (one
     entry per encoding label); ``plateau_widths`` carries the
     plateau of the winning encoding (per the recommendation
     tiebreaker) for back-compat consumers that read the legacy
@@ -84,7 +84,7 @@ class ProgressiveStageResult:
     plateau_widths: tuple[int, ...]
     peak_n: int
     peak_retained_mauc: float
-    per_encoding_plateaus: dict[str, tuple[int, ...]] = field(default_factory=dict)
+    per_encoding_plateau_widths: dict[str, tuple[int, ...]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -196,10 +196,10 @@ class ProgressiveHistory:
                 "peak_retained_mauc": s.peak_retained_mauc,
                 "n_rows": len(s.rows),
             }
-            if s.per_encoding_plateaus:
-                d["per_encoding_plateaus"] = {
+            if s.per_encoding_plateau_widths:
+                d["per_encoding_plateau_widths"] = {
                     label: list(widths)
-                    for label, widths in s.per_encoding_plateaus.items()
+                    for label, widths in s.per_encoding_plateau_widths.items()
                 }
             stage_dicts.append(d)
 
@@ -575,7 +575,7 @@ def sweep_pareto_capability_progressive(
                 fh.write(json.dumps(r.to_json_dict()) + "\n")
 
         # Per-encoding plateau identification + trajectory update.
-        per_encoding_plateaus_this_stage: dict[str, tuple[int, ...]] = {}
+        per_encoding_plateau_widths_this_stage: dict[str, tuple[int, ...]] = {}
         any_encoding_succeeded = False
         for label in encoding_labels:
             # Filter to this encoding's active widths AND this
@@ -604,7 +604,7 @@ def sweep_pareto_capability_progressive(
                         shifted_from_prev_stage=False,
                     )
                 )
-                per_encoding_plateaus_this_stage[label] = ()
+                per_encoding_plateau_widths_this_stage[label] = ()
                 continue
             any_encoding_succeeded = True
             argmin_width = min(plateau)
@@ -627,7 +627,7 @@ def sweep_pareto_capability_progressive(
                     shifted_from_prev_stage=shifted,
                 )
             )
-            per_encoding_plateaus_this_stage[label] = plateau
+            per_encoding_plateau_widths_this_stage[label] = plateau
             # Advance per-encoding state for next stage.
             per_encoding_active[label] = next_active
             per_encoding_prev_argmin[label] = argmin_width
@@ -637,12 +637,12 @@ def sweep_pareto_capability_progressive(
         # representative for the legacy plateau_widths field — back-compat
         # for single-encoding consumers. (Single-encoding sweeps have one
         # entry; this picks that entry.)
-        if per_encoding_plateaus_this_stage:
+        if per_encoding_plateau_widths_this_stage:
             top_label = max(
-                per_encoding_plateaus_this_stage.keys(),
-                key=lambda L: len(per_encoding_plateaus_this_stage[L]),
+                per_encoding_plateau_widths_this_stage.keys(),
+                key=lambda L: len(per_encoding_plateau_widths_this_stage[L]),
             )
-            top_plateau = per_encoding_plateaus_this_stage[top_label]
+            top_plateau = per_encoding_plateau_widths_this_stage[top_label]
             top_traj = per_encoding_trajectory[top_label][-1]
             top_peak_n = top_traj.argmin_plateau_width
             top_peak_retained = top_traj.argmin_retained_mauc
@@ -658,7 +658,7 @@ def sweep_pareto_capability_progressive(
             plateau_widths=top_plateau,
             peak_n=top_peak_n,
             peak_retained_mauc=top_peak_retained,
-            per_encoding_plateaus=per_encoding_plateaus_this_stage,
+            per_encoding_plateau_widths=per_encoding_plateau_widths_this_stage,
         ))
 
         if not any_encoding_succeeded:
@@ -849,14 +849,18 @@ def _pick_winning_encoding(
     """Pick the winning encoding from per-encoding recommendations.
 
     Tiebreaker chain per spec
-    ``add-multi-encoding-capability-sweep/specs/pareto-sweep/spec.md``:
+    ``add-multi-encoding-capability-sweep/specs/pareto-sweep/spec.md``
+    "ProgressiveRecommendation.per_encoding_recommendations"
+    (design.md Decision 4 — see openspec for the full rationale):
 
     1. Filter to encodings whose recommendation converged.
     2. Among those, pick smallest ``target_n_features_kept`` at
        ``retained_mauc >= cross-encoding median`` of converged
        encodings' retained_mauc values.
     3. Tiebreak by lowest argmin-retained-mauc variance across stages.
-    4. Final tiebreak by ``encoding_order`` index.
+    4. Final tiebreak by ``encoding_order`` index (CLI flag order /
+       Python encodings list order — explicit user-supplied
+       priority).
 
     If NO encoding converged, fall back to encoding with lowest
     argmin-retained-mauc variance (most data-scale-stable, even if
