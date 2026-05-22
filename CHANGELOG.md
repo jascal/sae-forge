@@ -5,6 +5,55 @@ their corresponding OpenSpec change is archived.
 
 ## [Unreleased]
 
+### Added (add-partition-encoding-capability-validation)
+
+- **Partition-aware basis builder** (PR #89). `sweep_pareto_capability` and
+  `sweep_pareto_capability_progressive` now honour an optional
+  `partition_block_ids` tensor in the SAE state dict; when present,
+  the per-cell basis builder slices per-tier proportionally (with
+  largest-fractional-remainder rounding) instead of flat-by-row-norm.
+  Absent: current row-norm slicing preserved byte-equivalently.
+- **`_slice_partition_aware` helper** in `saeforge.sweep_capability`
+  (private; not in `__all__`). Pure function; testable in isolation.
+- **7 new tests** under `tests/test_sweep_pareto_capability.py`
+  "Suite 5: partition-aware basis slicing". Covers proportional
+  allocation, largest-residual tiebreak, within-tier top-K,
+  exceeds-total ValueError, fallback-when-absent, used-when-present
+  end-to-end, shape-mismatch raises.
+
+### Validated (add-partition-encoding-capability-validation)
+
+The validation experiment ran on bio-sae's pooled fixture
+(`uniref50_n5000/pooled_w1024_k64`) at the [1000, 5000] progressive
+schedule. Result: **`PARTITION_PARTIAL_WIN`** per the openspec's
+decision-tree:
+
+- Partition trajectory variance: **0.0018** (vs raw_slice 0.0235 —
+  13× lower).
+- Partition recommendation: `target_n_features_kept = n=128` (vs
+  raw_slice n=256 — half the parameters at comparable retained_mauc
+  0.9096 vs 0.8975).
+- Both regimes `converged=False` at default strictness, but for
+  different reasons (raw_slice's retained_mauc drifts; partition's
+  argmin shifts).
+- Per-cell deltas mixed: 6 partition wins, 5 raw_slice wins, 2 ties
+  out of 14 cells. Partition's biggest wins at small-n cells;
+  raw_slice's biggest wins at mid-n cells.
+
+**Wave C resolved.** Polygram's partition encoding (shipped at
+polygram v0.14.0 in 2026-05-21) was filed as "unproven" because its
+`forge_kl` A/B showed 0 % improvement vs raw_slice. Under the
+capability framework + progressive wrapper, the same partition
+delivers a 13× variance reduction + half-the-parameters Pareto
+improvement. **`forge_kl` was the wrong metric**; the partition's
+forge-side payoff materialised under capability scoring as
+predicted by the original Wave C proposal — it just wasn't visible
+from KL.
+
+Full writeup at `bio-sae/docs/forge-capability-bottleneck.md` §5.5
+(per-cell delta table, reproduction recipe, per-cell-pattern
+interpretation).
+
 ### Added (add-progressive-capability-sweep)
 
 - **`sweep_pareto_capability_progressive(...)`** — new top-level
