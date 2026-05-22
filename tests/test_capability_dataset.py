@@ -13,6 +13,11 @@ import numpy as np
 import pytest
 
 torch = pytest.importorskip("torch")
+# CapabilityDataset.from_bio_sae uses pandas to read the sequences
+# parquet (bio-sae's canonical format). Skip these tests cleanly
+# when sae-forge is installed without the [labels] / [recipe] extra
+# that drags pandas in.
+pytest.importorskip("pandas")
 
 
 def _build_bio_sae_fixture(tmp_path: Path, *, n_proteins=8, d_model=32, sae_width=64):

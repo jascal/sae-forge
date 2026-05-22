@@ -110,9 +110,22 @@ class CapabilityDataset:
         ``_ReferenceSAE`` shape needs a matching update here.
         """
         import numpy as np
-        import pandas as pd
         import torch
         from safetensors.numpy import load_file
+
+        # pandas is an optional dependency — only needed by this
+        # constructor (parses bio-sae's sequences parquet). Surface a
+        # clear ImportError pointing to the install rather than a bare
+        # ModuleNotFoundError from deep inside the read call.
+        try:
+            import pandas as pd
+        except ImportError as exc:
+            raise ImportError(
+                "CapabilityDataset.from_bio_sae requires pandas to read "
+                "the sequences parquet. Install with `pip install pandas` "
+                "or `pip install bio-sae[labels]` (pulls pandas + the "
+                "label-side stack)."
+            ) from exc
 
         run_dir = Path(run_dir)
         bundle_path = Path(bundle_path)
