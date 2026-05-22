@@ -934,6 +934,10 @@ class ForgePipeline:
             "_eval_audio_features": self.eval_audio_features,
             "_eval_encoder_states": self.eval_encoder_states,
             "device": self.device,
+            # Exact W_dec rows for basis-aware targets
+            # (DownstreamCapabilityTarget etc.) — zero-cost for
+            # targets that don't read this key.
+            "basis": self.basis,
         }
         score, _ = self.faithfulness.score(forged=model, host=host_model, ctx=ctx)
         return float(score), self.faithfulness.name
@@ -948,6 +952,11 @@ class ForgePipeline:
             "device": self.device,
             "_eval_audio_features": self.eval_audio_features,
             "_eval_encoder_states": self.eval_encoder_states,
+            # Exact W_dec rows for basis-aware targets
+            # (DownstreamCapabilityTarget etc.). Path (a) of the
+            # decode precedence; zero-cost for targets that don't
+            # read this key.
+            "basis": self.basis,
         }
         if self.eval_prompts:
             tokenizer = transformers.AutoTokenizer.from_pretrained(self.host_model_id)

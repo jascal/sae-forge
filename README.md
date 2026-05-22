@@ -627,6 +627,68 @@ positives. When the compression report is missing (sweeping against
 a non-polygram-compressed SAE), all four polygram fields are
 populated with `None` and the sweep proceeds normally.
 
+### Capability-aware forge tuning
+
+`sae-forge sweep-capability` + `sae-forge recommend` answer the
+question **"does the forged model retain the downstream task?"** — in
+contrast to `sweep-pareto`'s cosine / KL faithfulness metrics, which
+ask "are the forged hidden states numerically close to host?".
+Bio-sae's empirical investigation found those two Pareto frontiers
+disagree by up to 16× on optimal width
+([openspec/changes/add-downstream-capability-target](openspec/changes/add-downstream-capability-target)).
+
+Workflow:
+
+```bash
+# 1. Describe the dataset (encoder = a trained SAE; labels = GT binary matrix).
+cat > bio-residue.yaml <<'YAML'
+encoder_checkpoint: runs/uniref50_n5000/pooled_w1024_k64/sae.pt
+sequences_path:    data/uniref50_sample__n5000_seed0.parquet
+labels_path:       data/bio_bundle_uniref50.safetensors
+feed:              pooled
+tokenizer_id:      facebook/esm2_t6_8M_UR50D
+aggregator:        pool_then_encode
+min_prevalence:    10
+sae_variant:       topk
+sae_k:             64
+YAML
+
+# 2. Sweep — Pareto over (encoding × width × scale_boost) in retained-AUC space.
+sae-forge sweep-capability \
+    --dataset-config bio-residue.yaml \
+    --host facebook/esm2_t6_8M_UR50D \
+    --widths 16,64,128,256,512,1024 \
+    --scale-boosts 1.0,auto \
+    --output-dir runs/capability_sweep/
+
+# 3. Recommend the smallest config meeting a retention target.
+sae-forge recommend \
+    --frontier runs/capability_sweep/frontier.jsonl \
+    --target retained-mauc>=0.85 \
+    --target gap-p95<=0.08
+```
+
+The `recommend` predicate parser accepts kebab-case
+(`retained-mauc`) or snake_case (`retained_mauc_vs_host`); multiple
+`--target` flags AND together; `--json` emits the picked row as
+machine-readable JSON.
+
+**Host-extraction cache.** First sweep cell populates a content-
+addressed safetensors cache under `<output-dir>/host_cache/`; all
+subsequent cells (and re-runs with the same inputs) skip the host
+forward entirely. Opt-out via `--no-host-cache` for non-deterministic
+hosts or scarce disk.
+
+**Frontier schema.** `frontier.jsonl` rows are
+`saeforge.ParetoFrontierRow` (the same dataclass `sweep-pareto`
+emits) with optional capability fields populated:
+`host_baseline_mauc`, `forge_mauc`, `retained_mauc_vs_host`,
+`gap_median` / `gap_p25` / `gap_p75` / `gap_p95`,
+`n_features_gap_above_0_1`, `n_features_negative_gap`,
+`capability_aggregator`, `capability_min_prevalence`.
+Pre-change frontier files load unchanged (back-compat); rows lacking
+these fields default them to `None`.
+
 ### Inspect
 
 `sae-forge inspect` is the no-torch triage command: it loads the basis,
