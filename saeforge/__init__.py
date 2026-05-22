@@ -20,6 +20,13 @@ from saeforge.polygram_diagnostics import (
 from saeforge.projector import SubspaceProjector
 from saeforge.sweep import ParetoFrontierRow, sweep_pareto
 from saeforge.sweep_capability import sweep_pareto_capability
+from saeforge.sweep_capability_progressive import (
+    ConvergenceTrajectoryEntry,
+    ProgressiveHistory,
+    ProgressiveRecommendation,
+    ProgressiveStageResult,
+    sweep_pareto_capability_progressive,
+)
 from saeforge.training.concept_anchor import (
     LABEL_SOURCE_REGISTRY,
     LabelSource,
@@ -32,6 +39,7 @@ __version__ = "0.8.1"
 
 __all__ = [
     "ANOMALOUS_TOKEN_IDS",
+    "ConvergenceTrajectoryEntry",
     "FeatureBasis",
     "ForgeFailed",
     "ForgePipeline",
@@ -40,6 +48,9 @@ __all__ = [
     "LabelSource",
     "NativeModel",
     "ParetoFrontierRow",
+    "ProgressiveHistory",
+    "ProgressiveRecommendation",
+    "ProgressiveStageResult",
     "QualityThresholds",
     "QualityTier",
     "RegrowController",
@@ -57,5 +68,6 @@ __all__ = [
     "resolve_encoding_capacity",
     "sweep_pareto",
     "sweep_pareto_capability",
+    "sweep_pareto_capability_progressive",
     "top1_is_anomalous",
 ]
