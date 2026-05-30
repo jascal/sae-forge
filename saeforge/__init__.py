@@ -11,6 +11,14 @@ from saeforge.calibration import (
 )
 from saeforge.forge import ForgeFailed, ForgePipeline, ForgeResult
 from saeforge.forge_quality import QualityThresholds, QualityTier
+from saeforge.isf import (
+    Recipe,
+    best_auc_per_label,
+    capability_pareto,
+    ensemble_route,
+    recipe_auc_matrix,
+    salience_headroom,
+)
 from saeforge.model import NativeModel
 from saeforge.polygram_diagnostics import (
     compute_redundancy_ratio,
@@ -53,19 +61,25 @@ __all__ = [
     "ProgressiveStageResult",
     "QualityThresholds",
     "QualityTier",
+    "Recipe",
     "RegrowController",
     "SubspaceProjector",
     "WorldModel",
     "__version__",
+    "best_auc_per_label",
+    "capability_pareto",
     "compute_forged_logit_std",
     "compute_host_logit_std",
     "compute_redundancy_ratio",
+    "ensemble_route",
     "focal_bce_loss",
     "load_calibration_corpus",
     "load_host_unembed",
     "load_polygram_report",
+    "recipe_auc_matrix",
     "register_label_source",
     "resolve_encoding_capacity",
+    "salience_headroom",
     "sweep_pareto",
     "sweep_pareto_capability",
     "sweep_pareto_capability_progressive",
