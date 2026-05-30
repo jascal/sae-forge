@@ -190,3 +190,90 @@ def capability_pareto(points: Sequence[tuple]) -> list[tuple]:
             frontier.append((params, retained))
             best_r = retained
     return frontier
+
+
+def _rankdata(x: np.ndarray) -> np.ndarray:
+    """Average ranks (1..n), ties shared — scipy-free Spearman support."""
+    x = np.asarray(x, dtype=np.float64)
+    order = x.argsort()
+    ranks = np.empty(len(x), dtype=np.float64)
+    ranks[order] = np.arange(1, len(x) + 1, dtype=np.float64)
+    # average tied ranks
+    _, inv, counts = np.unique(x, return_inverse=True, return_counts=True)
+    sums = np.zeros(len(counts))
+    np.add.at(sums, inv, ranks)
+    return (sums / counts)[inv]
+
+
+def _corr(x: np.ndarray, y: np.ndarray) -> float:
+    x = np.asarray(x, dtype=np.float64)
+    y = np.asarray(y, dtype=np.float64)
+    m = ~(np.isnan(x) | np.isnan(y))
+    x, y = x[m], y[m]
+    if len(x) < 3 or x.std() < 1e-12 or y.std() < 1e-12:
+        return float("nan")
+    return float(np.corrcoef(x, y)[0, 1])
+
+
+def headroom_lift_analysis(recipe_auc, host: int = 0, headroom_floor: float = 0.02) -> dict:
+    """Quantify — honestly — whether ``salience_headroom`` predicts routing lift.
+
+    For each label ``v``: ``host_auc = recipe_auc[host, v]``,
+    ``ensemble_best = max_m recipe_auc[m, v]``,
+    ``headroom = 1 − host_auc``, ``lift = ensemble_best − host_auc``, and
+    ``frac_capture = lift / headroom``.
+
+    **The confound this function exists to expose.** ``lift ≤ headroom``
+    *mechanically* (``ensemble_best ≤ 1``), so a positive headroom→lift
+    correlation is partly a ceiling artifact, not evidence the heuristic
+    predicts anything. ``frac_capture`` removes the ceiling — "of the room
+    available, what fraction did a specialist actually capture?" — so the
+    honest test of the salience heuristic is the **headroom → frac_capture**
+    relationship:
+
+    - rises with headroom  → the heuristic has predictive content beyond the
+      ceiling (high-headroom concepts are genuinely more specialist-recoverable);
+    - flat                 → headroom predicts lift *only* through the ceiling;
+      "specialise where headroom is high" reduces to the trivial bound;
+    - falls                → the heuristic is anti-predictive in part of the
+      range (cf. econ-sae's conjunctive tier: low headroom, high capture).
+
+    ``frac_capture`` is computed only over labels with ``headroom ≥
+    headroom_floor`` (the ratio is unstable as the denominator → 0). Returns
+    per-label arrays plus Pearson/Spearman for both relationships and the
+    fraction of lift that is "ceiling-explained".
+    """
+    A = np.asarray(recipe_auc, dtype=np.float64)
+    if A.ndim != 2:
+        raise ValueError(f"recipe_auc must be 2-D (R, V), got {A.shape}")
+    host_auc = A[host]
+    ensemble_best = np.nanmax(A, axis=0)
+    keep = ~(np.isnan(host_auc) | np.isnan(ensemble_best))
+    host_auc, ensemble_best = host_auc[keep], ensemble_best[keep]
+    headroom = 1.0 - host_auc
+    lift = ensemble_best - host_auc
+
+    hi = headroom >= headroom_floor
+    frac_capture = np.full_like(lift, np.nan)
+    frac_capture[hi] = lift[hi] / headroom[hi]
+
+    return {
+        "n_labels": int(keep.sum()),
+        "n_labels_headroom_above_floor": int(hi.sum()),
+        "headroom_floor": headroom_floor,
+        "mean_headroom": float(headroom.mean()),
+        "mean_lift": float(lift.mean()),
+        "mean_frac_capture": float(np.nanmean(frac_capture)) if hi.any() else float("nan"),
+        # raw (ceiling-confounded) relationship
+        "pearson_headroom_lift": _corr(headroom, lift),
+        "spearman_headroom_lift": _corr(_rankdata(headroom), _rankdata(lift)),
+        # de-confounded relationship — the honest test
+        "pearson_headroom_fraccapture": _corr(headroom[hi], frac_capture[hi]),
+        "spearman_headroom_fraccapture": _corr(_rankdata(headroom[hi]), _rankdata(frac_capture[hi])),
+        "per_label": {
+            "host_auc": host_auc.tolist(),
+            "headroom": headroom.tolist(),
+            "lift": lift.tolist(),
+            "frac_capture": frac_capture.tolist(),
+        },
+    }
