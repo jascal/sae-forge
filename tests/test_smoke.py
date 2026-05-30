@@ -69,6 +69,16 @@ def test_public_surface_is_frozen() -> None:
         "LabelSource",
         "focal_bce_loss",
         "register_label_source",
+        # ISF per-label routing primitives (concise-via-routing) added by the
+        # isf-routing / headroom-lift-analysis changes. See
+        # docs/concise-via-routing.md.
+        "Recipe",
+        "best_auc_per_label",
+        "capability_pareto",
+        "ensemble_route",
+        "headroom_lift_analysis",
+        "recipe_auc_matrix",
+        "salience_headroom",
     }
     assert set(saeforge.__all__) == expected
 
