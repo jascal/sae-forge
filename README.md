@@ -893,7 +893,7 @@ A large SAE is a **substrate, not a dictionary.** `saeforge.isf` builds a
 small, faithful interpretability model by *routing* each concept to the
 specialist that reads it best, instead of pruning one monolithic SAE — see
 [`docs/concise-via-routing.md`](docs/concise-via-routing.md) for the thesis,
-the **salience law**, and the cross-fixture validation protocol.
+the **salience heuristic** (a rule of thumb), and the cross-fixture validation protocol.
 
 ```python
 from saeforge import recipe_auc_matrix, ensemble_route, salience_headroom

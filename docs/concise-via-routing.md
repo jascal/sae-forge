@@ -23,23 +23,33 @@ motifs, same split throughout):
 | **Metric is part of the experiment** | per-residue vs occurrence scoring of the *same* latents | 0 % → 0.998 |
 | **Concision = routing** | best single recipe vs per-label routed ensemble | +0.021 lift, retained 1.035, 63 % beat host |
 
-## The conditional — the salience law (this is the load-bearing part)
+## The conditional — the salience heuristic (a rule of thumb, not a law)
 
-Specialisation's value scales **inversely with target salience.** On large,
-reconstruction-salient concepts a plain SAE already wins and a specialist adds
-nothing (bio-sae's real-UniRef50 check: the unsupervised control matched
-supervision 9/10 on large domains). So the methodology is **not** "specialise
-everything" — it's:
+A useful **rule of thumb** (observed across ≈2 fixtures so far — *not* a proven
+law): specialisation's value tends to scale **inversely with target salience.**
+On large, reconstruction-salient concepts a plain SAE already wins and a
+specialist adds little (bio-sae's real-UniRef50 check: the unsupervised control
+matched supervision 9/10 on large domains). So the methodology is **not**
+"specialise everything" — it's:
 
-> **diagnose salience → spend specialist budget only where the host fails →
+> **diagnose salience → spend specialist budget where the host looks weak →
 > route per concept.**
 
 `saeforge.isf.salience_headroom(host_auc) = 1 − host_auc` is the cheap,
-no-training diagnostic that predicts where a specialist pays off. Empirically
-the routed lift tracks it almost exactly: bio-sae motif tier (host 0.893,
-headroom 0.107) got **+0.105**; the salient categorical tier (host 0.951,
-headroom 0.049) got **+0.015**. The diagnostic *is* what keeps the ensemble
-concise.
+no-training diagnostic for *where to look*. Within bio-sae the routed lift
+tracks it (motif tier host 0.893, headroom 0.107 → **+0.105**; salient
+categorical host 0.951, headroom 0.049 → **+0.015**).
+
+**Honest caveat — headroom is a prior, not a predictor.** The rule of thumb is
+rough and already has a within-fixture exception: on econ-sae the *conjunctive*
+tier had **low** headroom (0.072, host 0.928) yet got the **biggest** routing
+lift (+0.033), because an objective-aligned specialist can beat the substrate
+even where the substrate isn't weak. So a low headroom flags "the substrate
+likely already encodes this" — it does **not** prove a specialist is useless.
+Treat `salience_headroom` as a cheap *triage* signal, not a guarantee. What
+would upgrade this from heuristic to law is a derivation (readout-capacity vs.
+feature geometry) or a pre-registered cross-fixture fit predicting lift
+out-of-sample — neither exists yet.
 
 ## The methodology (recipe-agnostic, in `saeforge.isf`)
 
@@ -68,11 +78,12 @@ The thesis is a property of *reading concepts out of representations*, not of an
 domain — so it must hold across the three substrate fixtures (sm-sae gauge
 symmetries / econ-sae double-entry / bio-sae biophysical), which already share a
 ground-truth scoring convention. Run the same four steps on each fixture's hard
-tier; **the falsification (sm-sae) matters more than the confirmations.**
+tier; the cases that *stress* the heuristic (low-headroom-but-helps, or
+high-headroom-but-doesn't) teach more than the confirmations.
 
-| fixture | hard-tier analogue | salience-law prediction (falsifiable) |
+| fixture | hard-tier analogue | salience-heuristic prediction (falsifiable) |
 |---|---|---|
-| **sm-sae** | factorial particle features — salient | **near-null lift** — the key negative control. A large lift here breaks the law. |
+| **sm-sae** | factorial particle features — salient | **low headroom expected** — conserved-quantity features sit at ~0 headroom (the substrate encodes them); probes the low-headroom end of the heuristic. |
 | **econ-sae** | conjunctive-trap + regime tiers (has a regime-supervised Family G) | **strong lift, routed to the regime/conjunctive specialist** — direct analogue of bio-sae motifs. |
 | **bio-sae** | planted motifs | **+0.105, 6/6** (done). |
 
@@ -82,9 +93,11 @@ Step 2 — train one aligned specialist on the *strong* substrate at the tier's
 natural granularity. Step 3 — `recipe_auc_matrix` + `ensemble_route`. Step 4 —
 check the lift lands on the high-headroom tier and is ~null on the salient one.
 
-A win on econ-sae's conjunctive tier **and** a deliberate null on sm-sae's
-factorial tier together are far stronger evidence than three wins — the null is
-what makes this a law rather than a trick.
+Status so far: bio-sae (anchor) + econ-sae (routing lift on the low-salience
+tiers) support the rule of thumb; sm-sae shows the conserved-quantity features
+sit at ~0 headroom (the predicted low end). The econ conjunctive tier is the
+honest counterexample (low headroom, big lift) that keeps this a **heuristic**,
+not a law.
 
 ## Tool division
 
