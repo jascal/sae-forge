@@ -887,6 +887,29 @@ against.
 
 ## Components
 
+### `saeforge.isf` — concise interpretability via routing
+
+A large SAE is a **substrate, not a dictionary.** `saeforge.isf` builds a
+small, faithful interpretability model by *routing* each concept to the
+specialist that reads it best, instead of pruning one monolithic SAE — see
+[`docs/concise-via-routing.md`](docs/concise-via-routing.md) for the thesis,
+the **salience law**, and the cross-fixture validation protocol.
+
+```python
+from saeforge import recipe_auc_matrix, ensemble_route, salience_headroom
+
+A = recipe_auc_matrix([r.encode(X) for r in recipes], Y)   # (R, V) per-label AUC
+route = ensemble_route(A, [r.name for r in recipes], host=0)
+route["ensemble_lift"]   # > 0 ⇔ the routed ensemble beats every single recipe
+route["retained"]        # ensemble mAUC / host mAUC
+salience_headroom(A[0])  # 1 − host_auc — where a specialist will pay off
+```
+
+`Recipe` is anything with `name` + `encode(X) -> (N, d)`: a raw host, a
+supervised specialist, a Polygram-tier slice. Validated on bio-sae (6/6
+synthetic motifs, +0.105 tier lift) and econ-sae (ensemble 0.812, lift
+concentrated on the low-salience regime/conjunctive tiers).
+
 ### `FeatureBasis`
 
 Loads a Polygram compressed checkpoint (`.safetensors` + companion

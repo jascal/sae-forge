@@ -84,16 +84,37 @@ def ensemble_route(
 ) -> dict:
     """Per-label router over a recipe × label AUC matrix (the ISF mechanism).
 
-    ``recipe_auc`` is ``(R, V)``. Implements ``R[v] = argmax_m AUC[m, v]``:
-    every label is routed to the recipe that discriminates it best, and the
-    ensemble takes that best AUC. NaN-safe — a label scorable by at least one
-    recipe is kept; a label no recipe can score is dropped (and counted).
+    Implements ``R[v] = argmax_m AUC[m, v]``: every label is routed to the
+    recipe that discriminates it best, and the ensemble takes that best AUC.
+    NaN-safe — a label scorable by at least one recipe is kept; a label no
+    recipe can score is dropped (and counted in ``n_labels_dropped``).
 
-    Returns the per-label ``router`` (+ ``router_names``), per-recipe and
+    Parameters
+    ----------
+    recipe_auc : array-like ``(R, V)``
+        Recipe ``r``'s best-latent AUC on label ``v`` (e.g. from
+        :func:`recipe_auc_matrix`). ``NaN`` marks a label a recipe cannot
+        score (no positives/negatives).
+    recipe_names : sequence of str, optional
+        One name per recipe row, used in the returned router / composition.
+        Defaults to ``recipe_0 … recipe_{R-1}``.
+    host : int, default 0
+        Index of the **baseline recipe** the ensemble is measured against —
+        typically the raw host SAE / activations (recipe row 0). It defines
+        ``retained`` (= ``ensemble_mauc / host_mauc``) and ``frac_beats_host``
+        (computed only over labels the host itself can score). It does *not*
+        affect routing — every recipe, host included, competes per label.
+    eps : float, default 1e-9
+        Strict-improvement margin for ``frac_beats_host``.
+
+    Returns
+    -------
+    dict with the per-label ``router`` (+ ``router_names``), per-recipe and
     ensemble mean AUC, the **ensemble lift** over the best *single* recipe (the
     H-ISF headline: diversity only helps if the routed ensemble beats every
-    individual recipe), ``retained`` vs the host recipe, the fraction of labels
-    where the ensemble strictly beats host, and the router composition.
+    individual recipe), ``retained`` and ``frac_beats_host`` vs the host, the
+    ``router_composition`` (labels won per recipe), and the scored/dropped
+    label counts.
     """
     A = np.asarray(recipe_auc, dtype=np.float64)
     if A.ndim != 2:
