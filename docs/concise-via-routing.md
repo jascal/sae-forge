@@ -46,10 +46,36 @@ tier had **low** headroom (0.072, host 0.928) yet got the **biggest** routing
 lift (+0.033), because an objective-aligned specialist can beat the substrate
 even where the substrate isn't weak. So a low headroom flags "the substrate
 likely already encodes this" — it does **not** prove a specialist is useless.
-Treat `salience_headroom` as a cheap *triage* signal, not a guarantee. What
-would upgrade this from heuristic to law is a derivation (readout-capacity vs.
-feature geometry) or a pre-registered cross-fixture fit predicting lift
-out-of-sample — neither exists yet.
+Treat `salience_headroom` as a cheap *triage* signal, not a guarantee.
+
+### Quantified — and it's weaker than it looked (`headroom_lift_analysis`)
+
+We tried to upgrade the rule of thumb by measuring it. The result demotes it.
+The trap: **`lift ≤ headroom` mechanically** (`ensemble_best ≤ 1`), so a raw
+headroom→lift correlation is partly a ceiling artifact, not evidence of
+prediction. `headroom_lift_analysis` de-confounds it with *fractional capture*
+= `lift / headroom` ("of the room available, how much did a specialist
+actually take?"):
+
+| relationship | bio-sae (n=23) | econ-sae (n=32) | pooled (n=55) |
+|---|---|---|---|
+| **raw** headroom → lift (Pearson) | +0.59 | +0.01 | — |
+| **de-confounded** headroom → frac-capture (Pearson) | +0.02 | **−0.49** | **−0.48** |
+
+bio-sae's apparently-supportive +0.59 is **almost entirely the ceiling**: once
+removed, the signal is **flat** (+0.02). In econ-sae it **inverts** (−0.49) —
+specialists captured a *larger* fraction of the available room on *low*-headroom
+labels. The reason is a confound inside `headroom` itself: high headroom (host
+AUC near chance) often means **the concept is intrinsically hard**, not that an
+easy specialist win is waiting — so even a specialist captures little of it.
+
+**The defensible statement, then, is narrow:** `salience_headroom` is a valid
+**necessary** condition (zero headroom ⇒ zero possible lift ⇒ don't bother) and
+bounds the *maximum* achievable lift — but it is **not a sufficient predictor**
+of *realized* lift, and high headroom can even signal "don't expect much."
+"Specialise where headroom is high" survives only as "don't specialise where
+headroom is zero." (Caveats: n is small and the bio/econ sign flip means this is
+domain-dependent, not universal — itself a reason it's no law.)
 
 ## The methodology (recipe-agnostic, in `saeforge.isf`)
 

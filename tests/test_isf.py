@@ -106,3 +106,41 @@ def test_best_auc_per_label_matches_sweep_kernel():
     auc = best_auc_per_label(z, Y)
     assert auc.shape == (1,)
     assert auc[0] > 0.99
+
+
+# ---------------------------------------------------------------------------
+# headroom_lift_analysis — the de-confounded heuristic quantifier
+# ---------------------------------------------------------------------------
+from saeforge import headroom_lift_analysis  # noqa: E402
+
+
+def test_headroom_lift_analysis_recovers_known_fractional_capture():
+    # host_auc varied; specialist captures a KNOWN fraction of headroom that
+    # rises with headroom -> frac_capture should rise with headroom.
+    host = np.array([0.90, 0.80, 0.70, 0.60, 0.50])
+    headroom = 1 - host
+    frac = np.array([0.2, 0.4, 0.6, 0.8, 0.9])         # rises with headroom
+    ensemble_best = host + frac * headroom
+    A = np.vstack([host, ensemble_best])                # row 0 = host
+    out = headroom_lift_analysis(A, host=0)
+    # frac_capture recovered per label
+    np.testing.assert_allclose(out["per_label"]["frac_capture"], frac, atol=1e-9)
+    # the de-confounded signal is strongly positive here (by construction)
+    assert out["pearson_headroom_fraccapture"] > 0.95
+    # lift never exceeds headroom (the mechanical ceiling)
+    lift = np.array(out["per_label"]["lift"])
+    head = np.array(out["per_label"]["headroom"])
+    assert np.all(lift <= head + 1e-9)
+
+
+def test_headroom_lift_analysis_flat_capture_is_ceiling_only():
+    # constant fractional capture -> headroom predicts lift ONLY via the ceiling
+    host = np.array([0.90, 0.80, 0.70, 0.60])
+    headroom = 1 - host
+    ensemble_best = host + 0.5 * headroom              # frac_capture == 0.5 everywhere
+    A = np.vstack([host, ensemble_best])
+    out = headroom_lift_analysis(A, host=0)
+    # raw headroom->lift is positive (mechanical), but frac_capture is constant
+    assert out["pearson_headroom_lift"] > 0.9
+    assert np.isnan(out["pearson_headroom_fraccapture"])   # no variance to correlate
+    assert abs(out["mean_frac_capture"] - 0.5) < 1e-9

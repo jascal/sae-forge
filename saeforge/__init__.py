@@ -16,6 +16,7 @@ from saeforge.isf import (
     best_auc_per_label,
     capability_pareto,
     ensemble_route,
+    headroom_lift_analysis,
     recipe_auc_matrix,
     salience_headroom,
 )
@@ -73,6 +74,7 @@ __all__ = [
     "compute_redundancy_ratio",
     "ensemble_route",
     "focal_bce_loss",
+    "headroom_lift_analysis",
     "load_calibration_corpus",
     "load_host_unembed",
     "load_polygram_report",
