@@ -153,9 +153,6 @@ path = "saeforge/__init__.py"
 [tool.hatch.build.targets.wheel]
 packages = ["saeforge"]
 
-[tool.hatch.build.targets.wheel.shared-data]
-"saeforge/machines/sae_forge.orca.md" = "saeforge/machines/sae_forge.orca.md"
-
 [tool.ruff]
 line-length = 100
 

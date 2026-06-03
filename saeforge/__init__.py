@@ -41,7 +41,6 @@ from saeforge.training.concept_anchor import (
     LabelSource,
     register_label_source,
 )
-from saeforge.training.heads import focal_bce_loss
 from saeforge.world_model import WorldModel
 
 __version__ = "0.10.0"
@@ -87,3 +86,19 @@ __all__ = [
     "sweep_pareto_capability_progressive",
     "top1_is_anomalous",
 ]
+
+
+def __getattr__(name: str):
+    # focal_bce_loss lives in saeforge.training.heads, which imports torch at
+    # module load. Keep it out of the eager import graph (PEP 562) so a bare
+    # `pip install sae-forge` — numpy / scipy / safetensors only, no torch —
+    # can still `import saeforge` and run the CLI. The symbol resolves lazily
+    # on first access, by which point the caller has opted into the [torch]
+    # extra. heads.py is the only module in the package that forces torch at
+    # import time, so this single lazy hop keeps the whole public surface
+    # importable torch-free.
+    if name == "focal_bce_loss":
+        from saeforge.training.heads import focal_bce_loss
+
+        return focal_bce_loss
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
