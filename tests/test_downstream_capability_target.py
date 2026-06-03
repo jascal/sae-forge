@@ -1,9 +1,14 @@
 """Tests for DownstreamCapabilityTarget.
 
 The identity-basis test is load-bearing: forge identity-W_dec, the
-target decodes back via basis_decode, the encoder produces the same
-latents host would on the same activations, so AUC should be 1.0
-across all label columns.
+target decodes back via basis_decode, the encoder produces the *same
+latents host would* on the same activations. The version-independent
+invariant is therefore "forge reproduces host" — forge's per-label AUC
+must equal the host-reference AUC computed by ``_host_reference_pf_auc``,
+bit-for-bit. (It is *not* "AUC == 1.0": whether the fixture's random
+labels are linearly separable by the random encoder directions depends
+on the exact ESM activations, which drift between torch/transformers
+builds — so a hardcoded 1.0 is a flaky proxy for the real invariant.)
 """
 
 from __future__ import annotations
@@ -81,18 +86,70 @@ def _make_target(d, latent_width=8, n_labels=4, seed=0):
     return DownstreamCapabilityTarget(encoder=encoder, labels=labels), encoder
 
 
+def _host_reference_pf_auc(host, input_ids, encoder, labels,
+                           aggregator="pool_then_encode"):
+    """Per-label best-feature AUC computed straight from the *host* model.
+
+    Mirrors ``DownstreamCapabilityTarget.score``'s pipeline on an
+    identity basis — where the host's last_hidden_state *is* the basis
+    coordinate, so no decode step is needed. This is the
+    version-independent reference the forge must reproduce exactly: on an
+    identity basis the whole forge construction (walk → native config →
+    forward → W_dec decode) is a no-op, so forge's per-label AUC must
+    equal this array regardless of whether the random labels happen to be
+    linearly separable in a given torch/transformers build.
+    """
+    from saeforge.eval.targets.downstream_capability import _best_auc_per_feature
+
+    rows = []
+    host.eval()
+    with torch.no_grad():
+        for i in range(int(input_ids.shape[0])):
+            h = host(input_ids[i:i + 1]).last_hidden_state[0, 1:-1, :].float()
+            if aggregator == "pool_then_encode":
+                z = encoder(h.mean(dim=0, keepdim=True)).squeeze(0)
+            else:  # encode_then_pool
+                z = encoder(h).mean(dim=0)
+            rows.append(z.detach().cpu())
+    Z = torch.stack(rows, dim=0).numpy()
+    return _best_auc_per_feature(Z, labels)
+
+
 def test_identity_basis_yields_perfect_score():
-    """W_dec = I + same encoder on host and forge → all AUCs == 1.0."""
+    """W_dec = I + same encoder on host and forge → the forge is an exact
+    no-op: its reconstructed activations equal host's last_hidden_state
+    bit-for-bit, so the reported per-label AUC and score match the host
+    reference. (Replaces the flaky ``score == 1.0`` — see module docstring.)
+    """
     model, host, input_ids, d = _identity_forge()
-    target, _ = _make_target(d)
+    target, encoder = _make_target(d)
     score, perp = target.score(
         forged=model, host=host,
         ctx={"_eval_input_ids": input_ids, "device": "cpu"},
     )
-    assert score == pytest.approx(1.0, abs=1e-5)
-    assert perp == pytest.approx(0.0, abs=1e-5)
+
+    # Primary, full-teeth invariant: on an identity basis the forge
+    # reconstructs host activations exactly. Any forge divergence shows up
+    # here, whereas the coarse 5-point AUC summary can mask it.
+    fm = model.torch_module.eval()
+    host.eval()
+    with torch.no_grad():
+        for i in range(int(input_ids.shape[0])):
+            row = input_ids[i:i + 1]
+            forge_act = fm(row)[0, 1:-1, :].float().numpy()
+            host_act = host(row).last_hidden_state[0, 1:-1, :].float().numpy()
+            np.testing.assert_allclose(
+                forge_act, host_act, atol=1e-6,
+                err_msg=f"forge must reproduce host activations (row {i})",
+            )
+
+    # Scorer-path coverage: the reported AUC/score equal the host reference.
+    host_ref = _host_reference_pf_auc(host, input_ids, encoder, target.labels)
     assert target.forge_pf_auc is not None
     assert target.forge_pf_auc.shape == (4,)
+    np.testing.assert_allclose(target.forge_pf_auc, host_ref, atol=1e-6)
+    assert score == pytest.approx(float(np.nanmean(host_ref)), abs=1e-6)
+    assert perp == pytest.approx(max(0.0, 1.0 - score), abs=1e-6)
 
 
 def test_path_b_default_no_pinv_warning():
@@ -174,7 +231,7 @@ def test_path_a_explicit_basis_in_ctx_wins():
         merged_norms=np.ones(d, dtype=np.float64),
         original_norms=np.ones(d, dtype=np.float64),
     )
-    target, _ = _make_target(d)
+    target, encoder = _make_target(d)
     with warnings.catch_warnings(record=True) as w_list:
         warnings.simplefilter("always")
         score, _ = target.score(
@@ -183,7 +240,10 @@ def test_path_a_explicit_basis_in_ctx_wins():
         )
     pinv_msgs = [str(w.message) for w in w_list if "pinv" in str(w.message).lower()]
     assert not pinv_msgs, "ctx['basis'] should prevent pinv fallback"
-    assert score == pytest.approx(1.0, abs=1e-5)
+    # ctx['basis'] (identity) decodes to the same coords as host → forge
+    # reproduces the host-reference score exactly (not necessarily 1.0).
+    host_ref = _host_reference_pf_auc(host, input_ids, encoder, target.labels)
+    assert score == pytest.approx(float(np.nanmean(host_ref)), abs=1e-6)
 
 
 def test_aggregator_dispatch():
