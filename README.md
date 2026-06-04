@@ -1002,6 +1002,27 @@ selector, a non-Polygram SAE format), hand-roll a dict matching
 `FeatureBasis`'s fields and call `FeatureBasis(**fields)` directly — the
 loader is one entry point among several.
 
+> **⚠️ SAE hook point vs `--layer`: mind the `resid_pre`/`resid_post`
+> off-by-one.** sae-forge and Polygram both interpret `layer=N` as the
+> **input** to transformer block N — i.e. `blocks.N.hook_resid_pre`
+> (Polygram registers a `forward_pre_hook` on `layers[N]`; sae-forge's
+> calibration reads `hidden_states[N]`, the same point). Match it to where
+> your SAE was *trained*:
+>
+> - SAE trained on **`blocks.N.hook_resid_pre`** → use `--layer N`.
+> - SAE trained on **`blocks.N.hook_resid_post`** → use `--layer N+1` (a
+>   block's `resid_post` *is* the next block's `resid_pre`).
+>
+> Getting this wrong is **silent** — the forge still runs, but the basis is
+> measured a different block from the SAE's activations and faithfulness
+> degrades (empirically ~2× worse KL on a 24-layer host). Published SAEs
+> vary: `jbloom/GPT2-Small-SAEs-Reformatted` is `resid_pre` (use
+> `--layer N`), while `chanind/sae-qwen2-0.5b-res` is `resid_post` (use
+> `--layer N+1`). Check the SAE's `cfg.json` `hook_name`. sae-forge emits a
+> `UserWarning` (via `saeforge.utils.sae_layer.check_sae_layer_alignment`)
+> when it can read the hook point and the layer looks off, but it never
+> auto-corrects — an intentional probe of a different layer stays valid.
+
 ### Polygram tuning passthrough
 
 `ForgePipeline` exposes three typed polygram-tuning fields:
