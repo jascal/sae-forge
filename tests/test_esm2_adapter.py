@@ -297,3 +297,73 @@ def test_token_cosine_score_at_identity_basis():
     )
     assert cosine == pytest.approx(1.0, abs=1e-5)
     assert perplexity == pytest.approx(0.0, abs=1e-5)
+
+
+def _undercomplete_basis(d: int, n_features: int, seed: int = 0):
+    """A width-mismatched basis (``n_features < d``) so TokenCosineTarget
+    must project the host hidden state through ``basis_encode`` — exercises
+    the ``host_hidden.shape != forged_hidden.shape`` branch."""
+    from saeforge.basis import FeatureBasis
+
+    rng = np.random.default_rng(seed)
+    W_dec = rng.standard_normal((n_features, d)).astype(np.float64)
+    norms = np.linalg.norm(W_dec, axis=1)
+    return FeatureBasis(
+        kept_ids=np.arange(n_features, dtype=np.int64),
+        W_dec=W_dec,
+        merged_norms=norms,
+        original_norms=norms,
+    )
+
+
+def _forge_undercomplete(seed: int = 21):
+    from saeforge.adapters import adapter_for
+    from saeforge.model import NativeModel
+    from saeforge.projector import SubspaceProjector
+
+    host, cfg = _build_tiny_esm_model(seed=seed)
+    n_features = cfg.hidden_size // 2  # width mismatch → basis_encode path
+    basis = _undercomplete_basis(cfg.hidden_size, n_features, seed=seed)
+    projector = SubspaceProjector(basis=basis)
+    adapter = adapter_for(host)
+    weights = adapter.walk(host, projector)
+    native_cfg = adapter.build_native_config(host, n_features=n_features)
+    model = NativeModel.from_projected_weights(native_cfg, weights)
+    return host, model, adapter
+
+
+def test_token_cosine_width_mismatch_runs_on_cpu():
+    """The basis_encode projection path is device-safe on CPU: host and
+    forged stay on cpu, score returns a finite cosine. Pins the same-width
+    sibling of the GPU regression below so the device-alignment fix can't
+    silently break the all-CPU path."""
+    host, model, adapter = _forge_undercomplete()
+    input_ids = torch.tensor([[0, 4, 5, 6, 7, 8, 9, 10, 2]], dtype=torch.long)
+    cosine, perplexity = adapter.default_faithfulness_target().score(
+        forged=model, host=host,
+        ctx={"_eval_input_ids": input_ids, "device": "cpu"},
+    )
+    assert -1.0 - 1e-6 <= cosine <= 1.0 + 1e-6
+    assert perplexity == pytest.approx(max(0.0, 1.0 - cosine), abs=1e-6)
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available(), reason="needs CUDA for the device-mismatch repro"
+)
+def test_token_cosine_score_gpu_host_on_cpu():
+    """Regression for fix-token-cosine-gpu-device-mismatch: forge on GPU
+    while the host stays on CPU. Before the fix, ``host_hidden`` was cast to
+    the forged dtype but not the forged device, so ``host_hidden @
+    basis_encode`` mixed a CPU operand with a CUDA basis and raised
+    ``RuntimeError: Expected all tensors to be on the same device``. The
+    fix aligns the host hidden state (and basis_encode) onto the forged
+    device, so this completes and returns a finite cosine."""
+    host, model, adapter = _forge_undercomplete()  # host on cpu
+    model.torch_module.to("cuda")                    # forged module on cuda
+    input_ids = torch.tensor([[0, 4, 5, 6, 7, 8, 9, 10, 2]], dtype=torch.long)
+    cosine, perplexity = adapter.default_faithfulness_target().score(
+        forged=model, host=host,
+        ctx={"_eval_input_ids": input_ids, "device": "cuda"},
+    )
+    assert -1.0 - 1e-6 <= cosine <= 1.0 + 1e-6
+    assert perplexity == pytest.approx(max(0.0, 1.0 - cosine), abs=1e-6)

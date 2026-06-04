@@ -81,7 +81,15 @@ class TokenCosineTarget:
         # Strip CLS (position 0) and EOS (last position) — ESM-2's
         # bookkeeping tokens. Bio-sae's EsmExtractor does the same so the
         # cosine matches what real downstream consumers see.
-        host_hidden = host_hidden[:, 1:-1, :].to(forged_hidden.dtype)
+        #
+        # Align onto the forged/eval device, not just dtype: the host model
+        # may stay on CPU while the forged module runs on GPU (the default
+        # for ``ForgePipeline(device="cuda", …)`` driving an encoder host),
+        # so a dtype-only cast would leave ``host_hidden`` on CPU and the
+        # downstream ``@ basis_encode`` / cosine would mix devices.
+        host_hidden = host_hidden[:, 1:-1, :].to(
+            device=forged_hidden.device, dtype=forged_hidden.dtype
+        )
         forged_hidden = forged_hidden[:, 1:-1, :]
 
         # Under-complete basis case: forged residual width
@@ -101,7 +109,11 @@ class TokenCosineTarget:
                     f"``basis_encode`` buffer in its walk (currently "
                     f"esm2 / whisper_encoder)."
                 )
-            basis_encode = forged_module.basis_encode.to(forged_hidden.dtype)
+            # Defensively pin device too — keeps the matmul single-device
+            # even if the host-hidden device path changes later.
+            basis_encode = forged_module.basis_encode.to(
+                device=forged_hidden.device, dtype=forged_hidden.dtype
+            )
             host_hidden = host_hidden @ basis_encode
 
         # Per-residue cosine, then mean.
