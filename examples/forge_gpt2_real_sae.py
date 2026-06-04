@@ -117,6 +117,17 @@ def main(
     slice_sae_to_features(sae_path, sliced_path, list(range(n_features)))
     print(f"      wrote {sliced_path}")
 
+    # Sanity-check LAYER against the SAE's hook point. polygram interprets
+    # ``layer=N`` as resid_pre of block N (it hooks the *input* to that
+    # block), so a ``blocks.N.hook_resid_pre`` SAE uses ``layer = N`` while a
+    # ``blocks.N.hook_resid_post`` SAE needs ``layer = N + 1``. This SAE is
+    # ``blocks.8.hook_resid_PRE`` (see SAE_FILE), so LAYER == 8 is correct.
+    # The check only warns — a mismatch silently degrades faithfulness rather
+    # than erroring.
+    from saeforge.utils.sae_layer import check_sae_layer_alignment, resolve_hook_name
+
+    check_sae_layer_alignment(resolve_hook_name(sae_path), LAYER, sae_label=SAE_FILE)
+
     # ---- Stage 3: run polygram EpochCompressor ---------------------
     print(f"[3/5] polygram EpochCompressor on {n_features} features, "
           f"{len(VALIDATE_PROMPTS)} prompts, layer {LAYER}, max_iter={max_iterations}")

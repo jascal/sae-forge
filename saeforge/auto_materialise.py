@@ -19,6 +19,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from saeforge.utils.sae_layer import check_sae_layer_alignment, resolve_hook_name
+
 # Encoding class registry — names map to polygram classes. Restricted to
 # the four classes whose `from_sae_lens` path returns a plain Dictionary
 # (not ClusteredDictionary, which BehaviouralValidator can't accept).
@@ -348,6 +350,16 @@ def _run_materialisation_chain(
 
     dictionary, _selection_report = from_sae_lens(
         records, slot_ids, **from_sae_lens_kwargs
+    )
+    # Warn (don't correct) if --layer doesn't match the SAE's hook point.
+    # polygram's BehaviouralValidator below hooks resid_pre of block
+    # ``layer``; a hook_resid_post SAE needs ``layer = block + 1``. Getting
+    # this wrong is silent — the run succeeds but faithfulness degrades.
+    check_sae_layer_alignment(
+        resolve_hook_name(spec.sae_checkpoint),
+        layer,
+        sae_label=str(spec.sae_checkpoint),
+        stacklevel=2,
     )
     validator = BehaviouralValidator(
         dictionary=dictionary,

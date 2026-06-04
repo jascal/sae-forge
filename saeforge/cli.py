@@ -84,8 +84,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--regrow-layer",
         type=int,
         help="transformer layer (>= 0) whose residual stream feeds the "
-        "regrower. Required when --regrow-count > 0; the polygram-side "
-        "GPT-2-specific layer=10 default was removed in 0.1.0.",
+        "regrower, interpreted as resid_pre of that block (a "
+        "blocks.N.hook_resid_post SAE needs layer = N+1). Required when "
+        "--regrow-count > 0; the polygram-side GPT-2-specific layer=10 "
+        "default was removed in 0.1.0.",
     )
     forge.add_argument(
         "--regrow-strategy",
@@ -370,7 +372,10 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "[--auto-materialise only] Transformer layer whose residual "
-            "stream the validator hooks (e.g. 8 for GPT-2 layer-8 SAEs)."
+            "stream the validator hooks. Interpreted as resid_pre of that "
+            "block: a blocks.N.hook_resid_pre SAE uses --layer N; a "
+            "blocks.N.hook_resid_post SAE uses --layer N+1. A mismatch only "
+            "warns (faithfulness silently degrades)."
         ),
     )
     sweep.add_argument(
