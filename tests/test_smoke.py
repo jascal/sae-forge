@@ -79,6 +79,12 @@ def test_public_surface_is_frozen() -> None:
         "headroom_lift_analysis",
         "recipe_auc_matrix",
         "salience_headroom",
+        # Routed mixture-of-experts forge added by add-sae-moe-forge.
+        # ForgedMoE/forge_to_moe resolve lazily via __getattr__ (moe.py
+        # imports torch at load), like focal_bce_loss.
+        "ForgedMoE",
+        "ForgedMoEConfig",
+        "forge_to_moe",
     }
     assert set(saeforge.__all__) == expected
 

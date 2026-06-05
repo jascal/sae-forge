@@ -52,6 +52,8 @@ __all__ = [
     "ForgeFailed",
     "ForgePipeline",
     "ForgeResult",
+    "ForgedMoE",
+    "ForgedMoEConfig",
     "LABEL_SOURCE_REGISTRY",
     "LabelSource",
     "NativeModel",
@@ -73,6 +75,7 @@ __all__ = [
     "compute_redundancy_ratio",
     "ensemble_route",
     "focal_bce_loss",
+    "forge_to_moe",
     "headroom_lift_analysis",
     "load_calibration_corpus",
     "load_host_unembed",
@@ -101,4 +104,11 @@ def __getattr__(name: str):
         from saeforge.training.heads import focal_bce_loss
 
         return focal_bce_loss
+    # sae-moe-forge: moe.py imports torch at load (ForgedMoE IS an
+    # nn.Module), so keep it off the eager graph for the same reason as
+    # focal_bce_loss — a torch-free `import saeforge` must stay cheap.
+    if name in ("ForgedMoE", "ForgedMoEConfig", "forge_to_moe"):
+        import saeforge.moe as _moe
+
+        return getattr(_moe, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
