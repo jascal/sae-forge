@@ -25,6 +25,37 @@ Three proposal revisions landed back into `proposal.md` and
    (median intra-cluster cosine + max) so users see the
    basis-quality signal up front.
 
+## Production landed 2026-06-04
+
+Critical-path implementation landed: `saeforge/_moe/sub_dictionary.py`,
+`saeforge/_moe/routers.py`, `saeforge/moe.py` (`ForgedMoEConfig`,
+`CoherenceDiagnostic`, `FaithfulnessReport`, `ForgedMoE`,
+`forge_to_moe`), `FeatureBasis.polygram_checkpoint_path` + `to_dict`/
+`from_dict`, lazy `__init__` exports, `tests/test_moe_forge.py` (25
+cases incl. Bands A/B/C-strict/D) + `tests/test_moe_forge_polygram_alignment.py`,
+`docs/moe-forge.md`, and the promoted `openspec/specs/sae-moe-forge/spec.md`.
+Full suite green (`841 passed, 17 skipped, 4 xfailed`); ruff clean.
+
+Two honest deviations from the task text above, both deliberate:
+
+1. **§6.2 encoder** — production uses the basis pseudo-inverse
+   `pinv(W_dec)` (the `SubspaceProjector` convention the 2026-05-19
+   acceptance prototype measured its bands against), *not* the SAE's
+   native `W_enc`/`b_enc`. Using the native encoder linearly would drop
+   its activation function and diverge from the validated gate; the
+   native-encoder path is the queued `add-moe-encoder-side` follow-up.
+2. **§11 save/load** — `save_pretrained`/`load_pretrained` are
+   self-contained (store the decoder slice + partition + encoder), so a
+   load needs no access to the original polygram checkpoint. The
+   "re-slice `W_dec` from `source_basis_checkpoint` on load" optimisation
+   in §11.1 (avoiding the duplicate) is left as a follow-up; robustness
+   over disk size was the v1 call.
+
+Still open: **§2.4** — a real clustered-SAE smoke fixture (needs an
+external download / on-box artifact this PR doesn't bundle). Band
+C-strict is currently validated against the synthetic clusterable
+fixture only.
+
 ## Cadence
 
 Same pattern as `add-host-wrapped-forge-fallback`:
@@ -42,7 +73,7 @@ the precedent.
 
 ## 1. Capability spec
 
-- [ ] 1.1 Create `openspec/specs/sae-moe-forge/spec.md` with the
+- [x] 1.1 Create `openspec/specs/sae-moe-forge/spec.md` with the
       requirements + scenarios from this change dir's
       `specs/sae-moe-forge/spec.md`. Same pattern as
       `forge-forward-mode`.
@@ -86,32 +117,32 @@ the precedent.
 
 ## 3. `FeatureBasis.polygram_checkpoint_path`
 
-- [ ] 3.1 Add `polygram_checkpoint_path: str | None = None` to
+- [x] 3.1 Add `polygram_checkpoint_path: str | None = None` to
       `FeatureBasis`. Populated by `from_polygram_checkpoint` from
       its `checkpoint_path` argument.
-- [ ] 3.2 `to_dict` / `from_dict` round-trip.
+- [x] 3.2 `to_dict` / `from_dict` round-trip.
 
 ## 4. `saeforge/_moe/sub_dictionary.py`
 
-- [ ] 4.1 `class SubDictionaryExpertSet(nn.Module)`. Stores
+- [x] 4.1 `class SubDictionaryExpertSet(nn.Module)`. Stores
       `(n_experts,)` parallel lists of:
       - `expert_feature_ids`: `(n_features_e,)` int64 tensor
         identifying which basis-feature rows belong to expert e.
       - `expert_W_dec`: `(n_features_e, d_model)` float32 tensor —
         the slice of `basis.W_dec` for this expert.
-- [ ] 4.2 `forward(features, top_k_experts) -> reconstruction`.
+- [x] 4.2 `forward(features, top_k_experts) -> reconstruction`.
       Vectorised across experts; uses index gathering rather than
       a per-expert python loop.
-- [ ] 4.3 Property `effective_decode_cost` returning the counted
+- [x] 4.3 Property `effective_decode_cost` returning the counted
       decoder-row touches per token. Used by the sparsity-gain
       acceptance test.
 
 ## 5. `saeforge/_moe/routers.py`
 
-- [ ] 5.1 `class PolygramHeuristicRouter`. Constructor accepts
+- [x] 5.1 `class PolygramHeuristicRouter`. Constructor accepts
       the `ExpertDictionary` and stores the `_feature_to_expert`
       map as a buffer. Stateless w.r.t. trainable params.
-- [ ] 5.2 `route(features, top_k) -> top_k_experts`. Implements
+- [x] 5.2 `route(features, top_k) -> top_k_experts`. Implements
       `ExpertDictionary.route` vectorised in torch (the polygram
       function is per-vector numpy; we want batched torch). Asserts
       it matches polygram's per-vector route for the same input
@@ -119,48 +150,48 @@ the precedent.
 
 ## 6. `saeforge/moe.py`
 
-- [ ] 6.1 `class ForgedMoEConfig` (frozen dataclass): `n_features`,
+- [x] 6.1 `class ForgedMoEConfig` (frozen dataclass): `n_features`,
       `d_model`, `n_experts`, `k_experts`, `expert_type`,
       `router_type`, `source_basis_checkpoint`. `to_dict` /
       `from_dict` round-trip.
-- [ ] 6.2 `class ForgedMoE(nn.Module)`. Constructor takes the
+- [x] 6.2 `class ForgedMoE(nn.Module)`. Constructor takes the
       `ExpertSet`, the `Router`, and the source basis's encoder
       (`W_enc`, `b_enc`) — kept as buffers in v1.
-- [ ] 6.3 `forward(residual, *, track_load=False) -> reconstruction`.
-- [ ] 6.4 `route(residual)` exposes the per-token routing without
+- [x] 6.3 `forward(residual, *, track_load=False) -> reconstruction`.
+- [x] 6.4 `route(residual)` exposes the per-token routing without
       decoding (diagnostic surface).
-- [ ] 6.5 `expert_load()` returns the most-recent forward's
+- [x] 6.5 `expert_load()` returns the most-recent forward's
       per-expert load (None when `track_load` was never set).
 
 ## 7. `forge_to_moe` entry point
 
-- [ ] 7.1 New module-level function in `saeforge/moe.py`:
+- [x] 7.1 New module-level function in `saeforge/moe.py`:
       `forge_to_moe(basis, expert_dictionary=None, *,
       k_experts=2, expert_type="sub_dictionary",
       router_type="polygram_heuristic", coherence_threshold=0.3,
       max_features_per_expert=None) -> ForgedMoE`.
-- [ ] 7.2 When `expert_dictionary is None`: reload polygram
+- [x] 7.2 When `expert_dictionary is None`: reload polygram
       `Dictionary` from `basis.polygram_checkpoint_path` via
       `polygram.load_sae_safetensors`, then call
       `polygram.cluster_experts`. Surface a clear error when the
       path is unavailable.
-- [ ] 7.3 Validate `expert_type` and `router_type` against the
+- [x] 7.3 Validate `expert_type` and `router_type` against the
       legal sets; raise `NotImplementedError` for queued values
       (`tiny_mlp`, `residual_block`, `linear`, `mlp`) pointing at
       the named follow-up proposals.
-- [ ] 7.4 Construct `SubDictionaryExpertSet` from the
+- [x] 7.4 Construct `SubDictionaryExpertSet` from the
       `ExpertDictionary` partition and `basis.W_dec`. Construct
       `PolygramHeuristicRouter` from `expert_dictionary`.
-- [ ] 7.5 Assemble `ForgedMoE` and return.
+- [x] 7.5 Assemble `ForgedMoE` and return.
 
 ## 8. `__init__.py` exports
 
-- [ ] 8.1 Export `ForgedMoE`, `ForgedMoEConfig`, `forge_to_moe`
+- [x] 8.1 Export `ForgedMoE`, `ForgedMoEConfig`, `forge_to_moe`
       from the package top-level.
 
 ## 9. Tests
 
-- [ ] 9.1 `tests/test_moe_forge.py` — covers:
+- [x] 9.1 `tests/test_moe_forge.py` — covers:
       - `forge_to_moe(basis)` constructs without `expert_dictionary`
         kwarg when basis has a checkpoint path (uses polygram
         clustering internally).
@@ -177,26 +208,26 @@ the precedent.
         `add-moe-trained-router`.
       - Round-trip `ForgedMoEConfig.to_dict()` →
         `ForgedMoEConfig.from_dict()`.
-- [ ] 9.2 `tests/test_moe_forge_polygram_alignment.py` — verifies
+- [x] 9.2 `tests/test_moe_forge_polygram_alignment.py` — verifies
       the torch router's vectorised result equals
       `ExpertDictionary.route(activations, top_k)` per-vector for
       the same input on a 32-token batch.
 
 ## 10. Docs
 
-- [ ] 10.1 Add `docs/moe-forge.md` (~150 lines): when to use
+- [x] 10.1 Add `docs/moe-forge.md` (~150 lines): when to use
       sae-moe-forge, the v1 scope, the expert/router types
       available, the follow-up roadmap. Cross-reference
       polygram's `experts.py` docstring for the architectural
       split.
-- [ ] 10.2 README addition: one paragraph under "Status" listing
+- [x] 10.2 README addition: one paragraph under "Status" listing
       `add-sae-moe-forge` as the new capability.
 
 ## 11. Out-of-band: ExpertSet → safetensors
 
-- [ ] 11.1 `ForgedMoE.save_pretrained(path)` writes config + the
+- [x] 11.1 `ForgedMoE.save_pretrained(path)` writes config + the
       expert_feature_ids partition + W_enc/b_enc buffers (not the
       full W_dec — that's re-sliced from `source_basis_checkpoint`
       on load).
-- [ ] 11.2 `ForgedMoE.load_pretrained(path)` round-trip; requires
+- [x] 11.2 `ForgedMoE.load_pretrained(path)` round-trip; requires
       `source_basis_checkpoint` to be reachable.

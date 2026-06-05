@@ -51,6 +51,14 @@ class FeatureBasis:
     W_enc: np.ndarray | None = None
     b_enc: np.ndarray | None = None
     b_dec: np.ndarray | None = None
+    # Path to the polygram checkpoint this basis was loaded from, when
+    # known. Populated by ``from_polygram_checkpoint``; ``None`` for bases
+    # built directly via ``FeatureBasis(...)``. Consumed by
+    # ``saeforge.forge_to_moe`` to reload the full polygram ``Dictionary``
+    # for expert clustering without an extra path-passing kwarg (see
+    # ``openspec/specs/sae-moe-forge``). Backward-compatible: existing
+    # callers that never set it keep ``None``.
+    polygram_checkpoint_path: str | None = None
 
     def __post_init__(self) -> None:
         if self.W_dec.ndim != 2:
@@ -203,6 +211,57 @@ class FeatureBasis:
             W_enc=W_enc_kept,
             b_enc=b_enc_kept,
             b_dec=b_dec_kept,
+            polygram_checkpoint_path=str(checkpoint_path),
+        )
+
+    def to_dict(self) -> dict:
+        """Serialize the basis to a JSON-round-trippable dict.
+
+        Arrays are stored as nested lists tagged with their dtype so
+        ``from_dict`` reconstructs them losslessly. Used by
+        ``sae-moe-forge`` so a forged module can persist the
+        ``polygram_checkpoint_path`` alongside the partition without
+        re-deriving the basis. Counterpart to :meth:`from_dict`.
+        """
+
+        def _arr(a: np.ndarray | None) -> dict | None:
+            if a is None:
+                return None
+            return {"data": a.tolist(), "dtype": str(a.dtype)}
+
+        return {
+            "kept_ids": _arr(self.kept_ids),
+            "W_dec": _arr(self.W_dec),
+            "merged_norms": _arr(self.merged_norms),
+            "original_norms": _arr(self.original_norms),
+            "scale_compression_ratio": float(self.scale_compression_ratio),
+            "metadata": self.metadata,
+            "W_enc": _arr(self.W_enc),
+            "b_enc": _arr(self.b_enc),
+            "b_dec": _arr(self.b_dec),
+            "polygram_checkpoint_path": self.polygram_checkpoint_path,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: dict) -> FeatureBasis:
+        """Reconstruct a basis from :meth:`to_dict` output."""
+
+        def _arr(entry: dict | None) -> np.ndarray | None:
+            if entry is None:
+                return None
+            return np.asarray(entry["data"], dtype=np.dtype(entry["dtype"]))
+
+        return cls(
+            kept_ids=_arr(payload["kept_ids"]),
+            W_dec=_arr(payload["W_dec"]),
+            merged_norms=_arr(payload["merged_norms"]),
+            original_norms=_arr(payload["original_norms"]),
+            scale_compression_ratio=float(payload.get("scale_compression_ratio", 1.0)),
+            metadata=dict(payload.get("metadata", {})),
+            W_enc=_arr(payload.get("W_enc")),
+            b_enc=_arr(payload.get("b_enc")),
+            b_dec=_arr(payload.get("b_dec")),
+            polygram_checkpoint_path=payload.get("polygram_checkpoint_path"),
         )
 
     def to_summary(self) -> dict:

@@ -38,6 +38,14 @@ Recent landed work:
   d → f boundary), `cosine_faithfulness` eval, family-aware
   `evaluate_faithfulness` dispatch. LM byte-equivalence net stays
   green. See [`docs/audio-forge.md`](docs/audio-forge.md).
+- **sae-moe-forge**: `forge_to_moe(basis)` projects a polygram-compressed
+  SAE into a routed mixture-of-experts (`ForgedMoE`) whose per-token
+  decode cost scales as `k_experts / n_experts` of the flat SAE. v1 is
+  inference-only with zero new parameters: each expert is a deterministic
+  slice of the SAE decoder (`sub_dictionary`) and routing wraps polygram's
+  summed-activation heuristic (`polygram_heuristic`). Faithfulness is
+  free on clusterable bases and advisory on isotropic ones (a reported
+  `coherence_diagnostic`). See [`docs/moe-forge.md`](docs/moe-forge.md).
 
 New work is staged through OpenSpec changes — see ``openspec/changes/``.
 
