@@ -61,7 +61,16 @@ _WEIGHTS_FILENAME = "forged_moe_buffers.safetensors"
 
 @dataclass(frozen=True)
 class ForgedMoEConfig:
-    """The v1 forged-MoE contract surface (frozen, JSON-round-trippable)."""
+    """The v1 forged-MoE contract surface (frozen, JSON-round-trippable).
+
+    There is deliberately no ``encoder_type`` field: v1 always uses the
+    basis pseudo-inverse ``pinv(W_dec)`` (the ``SubspaceProjector``
+    convention the acceptance prototype measured its bands against). The
+    SAE's native ``W_enc``/``b_enc`` encoder — which would add an
+    ``encoder_type`` knob here — is the queued ``add-moe-encoder-side``
+    follow-up; it is held out of the frozen v1 surface so the contract
+    stays small and falsifiable.
+    """
 
     n_features: int
     d_model: int
@@ -250,7 +259,14 @@ class ForgedMoE(nn.Module):
 
     @classmethod
     def load_pretrained(cls, path: str | Path) -> ForgedMoE:
-        """Reconstruct a :class:`ForgedMoE` written by :meth:`save_pretrained`."""
+        """Reconstruct a :class:`ForgedMoE` written by :meth:`save_pretrained`.
+
+        Buffers are saved on CPU and reload on CPU at their stored dtypes
+        (``encoder_weight`` / ``W_dec`` float32, ``feature_to_expert``
+        int64) — dtype round-trips exactly. The reloaded module always
+        lands on CPU regardless of the source module's device; call
+        ``.to(device)`` afterwards to move it, as with any nn.Module.
+        """
         import json
 
         from safetensors.torch import load_file

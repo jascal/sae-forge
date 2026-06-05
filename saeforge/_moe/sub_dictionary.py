@@ -139,6 +139,13 @@ class SubDictionaryExpertSet(nn.Module):
             )
         mask = self._active_feature_mask(top_k_experts).to(features.dtype)
         gated = features * mask
+        # NB: this dense masked matmul touches all n_features decoder rows,
+        # so it realises the *counted* sparsity gain (see
+        # effective_decode_cost) but NOT a wall-clock saving yet — the
+        # zeroed coordinates still flow through the matmul. The gather-based
+        # sparse kernel that converts the routed cost into real speedup is
+        # the queued follow-up; v1 prioritises correctness + the honest
+        # cost metric over the kernel.
         return gated @ self.W_dec.to(features.dtype)
 
     def effective_decode_cost(self, top_k_experts: torch.Tensor) -> int:

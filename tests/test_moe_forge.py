@@ -185,6 +185,34 @@ def test_band_d_save_load_byte_identical_forward(clusterable_768, tmp_path):
     assert torch.equal(reloaded(host), out)
 
 
+def test_save_load_round_trip_from_real_checkpoint(tmp_path):
+    """End-to-end: forge from an on-disk checkpoint, save, reload, forward-match.
+
+    Exercises the auto-cluster path AND the persistence round-trip on a
+    real (small) basis checkpoint — load → forward must reproduce the
+    pre-save reconstruction byte-for-byte, with dtypes preserved.
+    """
+    from safetensors.numpy import save_file
+
+    W = _clustered_W_dec(d_model=768, n_clusters=4, per=32, seed=5).astype(np.float32)
+    ckpt = tmp_path / "sae.safetensors"
+    save_file({"W_dec": W}, str(ckpt))
+
+    basis = FeatureBasis.from_polygram_checkpoint(ckpt)
+    moe = forge_to_moe(basis, k_experts=2, coherence_threshold=0.5)
+    host = torch.randn(2, 16, 768)
+    out = moe(host)
+
+    moe.save_pretrained(tmp_path / "forged")
+    reloaded = ForgedMoE.load_pretrained(tmp_path / "forged")
+
+    assert reloaded.config == moe.config
+    assert reloaded.config.source_basis_checkpoint == str(ckpt)
+    assert reloaded.encoder_weight.dtype == moe.encoder_weight.dtype
+    assert reloaded.experts.feature_to_expert.dtype == torch.int64
+    assert torch.equal(reloaded(host), out)
+
+
 # ---------------------------------------------------------------------------
 # Faithfulness (basis-split)
 # ---------------------------------------------------------------------------
