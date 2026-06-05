@@ -5,6 +5,62 @@ their corresponding OpenSpec change is archived.
 
 ## [Unreleased]
 
+## [0.12.0] — 2026-06-04
+
+**Routed mixture-of-experts forge release (`add-sae-moe-forge`).** Adds
+`forge_to_moe` / `ForgedMoE`: project a polygram-compressed SAE basis
+into a routed MoE whose per-token decode cost scales as
+`k_experts / n_experts` of the flat SAE. This promotes the runtime-MoE
+play that bio-sae's fine-tune ceiling sweep re-opened — the residual
+sharp-feature (cov95) tax the mAUC distillation arm could not close is a
+routed-expert target ("lossless at fixed runtime cost, not fixed param
+count"). v1 is inference-only with zero new parameters; the dispositive
+bio-sae sharp-vs-diffuse partition experiment this unblocks runs against
+this release.
+
+### Added (add-sae-moe-forge)
+
+- **`forge_to_moe(basis, expert_dictionary=None, *, k_experts=2, …)`** —
+  single public entry. Explicit-`ExpertDictionary` path or auto-cluster
+  from the basis's polygram checkpoint (`load_sae_safetensors` →
+  `from_sae_lens` → `cluster_experts`).
+- **`ForgedMoE`** (`torch.nn.Module`, buffers only — `.parameters()`
+  empty): `forward(track_load=…)`, `route`, `expert_load`,
+  `faithfulness_report`, `coherence_diagnostic`, and self-contained
+  `save_pretrained` / `load_pretrained`.
+- **`ForgedMoEConfig`** — frozen, JSON-round-trippable contract surface.
+- **`saeforge/_moe/`** — `SubDictionaryExpertSet` (each expert a
+  deterministic `W_dec` slice; vectorised masked-matmul decode;
+  `effective_decode_cost`) and `PolygramHeuristicRouter` (torch-batched
+  routing with bit-for-bit parity vs polygram's per-vector `route`).
+- **`FeatureBasis.polygram_checkpoint_path`** (+ `to_dict` / `from_dict`).
+- Lazy `__init__` exports (`ForgedMoE` / `ForgedMoEConfig` /
+  `forge_to_moe`) keep a torch-free `import saeforge` cheap.
+- Docs: `docs/moe-forge.md`; spec promoted to
+  `openspec/specs/sae-moe-forge/`.
+
+### Acceptance bands (all green)
+
+- **A — fidelity collapse**: `k = n_experts` reproduces the flat SAE
+  (MSE/coord ≤ 1e-5; measured 0.0).
+- **B — sparsity gain**: counted decode-cost ratio within `2/E ± 0.05`.
+- **C-strict — clusterable basis**: routed-vs-flat ≤ 0.5× flat-vs-host
+  (0.111 on the d=768 synthetic fixture, matching the prototype's 0.12);
+  **C-advisory** on isotropic bases via the reported
+  `coherence_diagnostic`.
+- **D — round-trip**: config + reloaded-module forward byte-identical.
+
+### Deferred (named follow-ups)
+
+- Native `W_enc` encoder (`add-moe-encoder-side`); v1 uses the
+  `pinv(W_dec)` `SubspaceProjector` encoder.
+- `tiny_mlp` / `residual_block` experts; `linear` / `mlp` trained routers
+  — all raise a clean `NotImplementedError` naming the proposal.
+- Gather/sparse decode kernel (wall-clock saving vs the counted gain),
+  matryoshka/steering surfaces, residual-stream-layer insertion.
+- A real clustered-SAE smoke fixture (tasks §2.4; Band C-strict is
+  validated against the synthetic fixture only).
+
 ## [0.10.0] — 2026-05-22
 
 **Multi-encoding capability sweep + partition-aware basis builder
