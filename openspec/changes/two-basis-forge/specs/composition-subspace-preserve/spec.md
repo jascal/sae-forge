@@ -63,12 +63,20 @@ exact on the preserved subspace.
 ### Requirement: augmented kept subspace stacks preserve-rows first
 
 `AugmentedBasis.kept_subspace(layer)` SHALL return
-`(W_dec_eff, preserve_mask)` where `W_dec_eff` is an orthonormalised
-stack of `[U_A ; U_C[layer] ; W_dec_remainder]` with the `U_A`/`U_C`
-rows orthonormalised **first** (so they are reproduced exactly), and
-`W_dec_remainder` is `basis.W_dec` with its `span(U_A ∪ U_C)` component
-removed. `preserve_mask` SHALL be `True` exactly on the `U_A ∪ U_C`
-rows. All three sources SHALL share `d_model`; a mismatch SHALL raise
+`(W_dec_eff, preserve_mask)` such that `U_A ∪ U_C[layer]` lie in
+`rowspace(W_dec_eff)` and are reproduced verbatim, with `W_dec_eff`
+keeping the SAME shape as `basis.W_dec` (`n_features` fixed) and the
+Polygram basis carrying the remainder. `preserve_mask` SHALL be `True`
+exactly on the `U_A ∪ U_C` rows.
+
+Implementation note: because a production Polygram basis is
+over-complete (`n_features > d_model`) and cannot be orthonormalised to
+`n_features` rows without changing shapes, the shipped construction keeps
+`n_features` fixed by **displacing the least-important (lowest decoder-norm)
+atoms** with the verbatim `U_A`/`U_C` rows (rather than the literal
+"orthonormalise the stack"). The contract — `U_A ∪ U_C ⊆ rowspace(W_dec_eff)`,
+reproduced verbatim, shapes unchanged — is identical and is what the
+projector guarantee relies on. All three sources SHALL share `d_model`; a mismatch SHALL raise
 `ValueError` naming the mismatched source and the two `d_model` values.
 
 #### Scenario: preserve mask marks exactly the verbatim rows

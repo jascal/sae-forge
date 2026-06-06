@@ -145,6 +145,10 @@ def extract_composition_subspace(
     out: dict[int, CompositionSubspace] = {}
     for ell in layers:
         R, W = _gpt2_layer_geometry(blocks[ell], n_head, heads, fold_ln1)
+        # magnitude of the (un-removed) ln_1 mean-subtraction direction in the read
+        # geometry: fraction of ||R|| lying along the all-ones residual direction.
+        ones = np.ones(R.shape[0]) / np.sqrt(R.shape[0])
+        ln_mag = float(np.linalg.norm(ones @ R) / (np.linalg.norm(R) + 1e-12))
         read_dirs, read_tail = _top_left_singular(R, rank, energy)
         write_dirs, write_tail = _top_left_singular(W, rank, energy)
         # orthonormalise the union (read dirs first so they are preferred under rank pressure)
@@ -162,6 +166,7 @@ def extract_composition_subspace(
             singular_tail=np.concatenate([read_tail, write_tail]),
             metadata={
                 "ln_meansub_approx": bool(fold_ln1),
+                "ln_meansub_magnitude": ln_mag,
                 "ln_meansub_note": "ln_1 gain folded; mean-subtraction (~rank-1) not removed",
                 "read_rank": int(read_dirs.shape[1]),
                 "write_rank": int(write_dirs.shape[1]),

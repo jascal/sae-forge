@@ -46,6 +46,25 @@ exactly on those directions: assertions stay monosemantic, and
 so the QK/OV macros — and the multi-head idioms composed from them —
 are faithful.
 
+## Implementation note: displacement, not orthonormalisation
+
+The contract above writes `S'` as `orthonormalise([U_A ; U_C ; W_dec_remainder])`.
+The **shipped impl deviates here for a necessary reason**: a production Polygram
+basis is *over-complete* (`n_features > d_model`), and an over-complete basis
+**cannot** be orthonormalised to `n_features` rows (you can't have more
+orthonormal vectors than dimensions), which would change the forged weight
+shapes and break byte-equivalence. So `AugmentedBasis.kept_subspace` keeps
+`n_features` **fixed** by **displacing the least-important (lowest decoder-norm)
+atoms** with the verbatim `U_A`/`U_C` rows; the Polygram basis carries the
+undisplaced remainder. The `kept_subspace → (W_dec_eff, preserve_mask)` contract
+and the algebraic guarantee are unchanged: `U_C` is inserted into the rowspace,
+so `pinv(W_dec_eff) @ W_dec_eff` (the encode∘decode map, up to `scale_boost`) is
+the orthogonal projector onto a rowspace containing `U_C` — identity on `U_C`,
+i.e. the forged QK/OV reproduce the host there. Verified to 1e-6/1e-9 in the
+tests. The "orthonormalise the stack" phrasing should be read as "guarantee
+`U_A ∪ U_C ⊆ rowspace(W_dec_eff)` with those rows reproduced verbatim", which the
+displacement construction satisfies for both under- and over-complete bases.
+
 ## Extracting `U_C` from host weights
 
 Per capture layer `ℓ`, the residual directions that affect attention

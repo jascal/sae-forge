@@ -869,14 +869,25 @@ class ForgePipeline:
         S, _ = np.linalg.qr(W_dec.T)  # (d, rank_S)
         report = {"d_model": d_model, "layers": {}}
         comp = augmented.composition or {}
+        budget_cap = 0.25  # soft: warn (not error) when the preserved budget is large
         for ell, cs in comp.items():
             # fraction of U_C already covered by S: ||S^T U_C||_F^2 / rank(U_C)
             overlap = float(np.linalg.norm(S.T @ cs.U) ** 2 / max(cs.rank, 1))
+            frac = augmented.preserved_fraction(ell)
             report["layers"][int(ell)] = {
                 "preserved_dim": augmented.preserved_dimension(ell),
-                "preserved_fraction": augmented.preserved_fraction(ell),
+                "preserved_fraction": frac,
                 "U_C_overlap_with_basis": overlap,
             }
+            if frac > budget_cap:
+                warnings.warn(
+                    f"ForgePipeline: two-basis preserved budget at layer {ell} is "
+                    f"{frac:.0%} of d_model (> {budget_cap:.0%}); the Polygram basis has "
+                    f"less capacity for residual reconstruction. Reduce composition_rank / "
+                    f"assertion_k if global KL regresses.",
+                    UserWarning,
+                    stacklevel=2,
+                )
         return report
 
     def _build_hybrid_bundle(self, host) -> "HybridBasisBundle | None":
