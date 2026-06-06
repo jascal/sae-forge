@@ -57,6 +57,7 @@ import numpy as np
 from saeforge.basis import FeatureBasis
 
 if TYPE_CHECKING:  # pragma: no cover — type-only import
+    from saeforge.augmented_basis import AugmentedBasis
     from saeforge.hybrid_basis import HybridBasisBundle
 
 
@@ -226,6 +227,7 @@ class SubspaceProjector:
         *,
         attention_width: str = "host",
         hybrid: "HybridBasisBundle | None" = None,
+        augmented: "AugmentedBasis | None" = None,
     ) -> dict[str, np.ndarray]:
         """Project every relevant host-model weight into the basis.
 
@@ -265,6 +267,11 @@ class SubspaceProjector:
         from saeforge.adapters import adapter_for
 
         adapter = adapter_for(host_model)
+        if hybrid is not None and augmented is not None:
+            raise ValueError(
+                "project_module: hybrid= and augmented= are independent v1 paths and "
+                "cannot be combined; pass at most one."
+            )
         if hybrid is not None:
             from saeforge.adapters._hybrid import walk_hybrid
 
@@ -273,6 +280,16 @@ class SubspaceProjector:
                 adapter,
                 self,
                 bundle=hybrid,
+                attention_width=attention_width,
+            )
+        if augmented is not None:
+            from saeforge.adapters._augmented import walk_augmented
+
+            return walk_augmented(
+                host_model,
+                adapter,
+                self,
+                augmented=augmented,
                 attention_width=attention_width,
             )
         return adapter.walk(host_model, self, attention_width=attention_width)

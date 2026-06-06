@@ -13,6 +13,7 @@ import numpy as np
 from saeforge.basis import FeatureBasis
 from saeforge.bridges import BridgeConfig
 from saeforge.eval.faithfulness import FaithfulnessTarget
+from saeforge.augmented_basis import AugmentedBasis
 from saeforge.hybrid_basis import HybridBasisBundle
 from saeforge.model import NativeModel, _config_from_host
 from saeforge.projector import SubspaceProjector
@@ -329,6 +330,17 @@ class ForgePipeline:
     basis_lm_head: FeatureBasis | None = None
     bridge_config: BridgeConfig = field(default_factory=BridgeConfig)
 
+    # two-basis-forge knobs. Default off → v0 single-basis behavior (byte-identical).
+    # Preserve two residual subspaces verbatim inside the projection: the assertion
+    # subspace U_A (sharp atoms → cov95) and the per-layer composition subspace U_C
+    # (host attention QK/OV geometry → circuits survive). See
+    # ``openspec/changes/two-basis-forge``.
+    composition_preserve: bool = False
+    assertion_preserve: bool = False
+    composition_rank: int | None = None
+    composition_heads: "list | str" = "all"
+    assertion_k: int = 0
+
     # v0.6 qwen3-moe-support knobs. Control how a Qwen3-MoE host is forged:
     # - "preserve" (default): per-expert projection; full fidelity
     # - "collapse": average experts into a single dense MLP per layer
@@ -493,6 +505,20 @@ class ForgePipeline:
             raise ValueError(
                 f"ForgePipeline: moe_strategy='top_n' requires moe_keep_n > 0; "
                 f"got moe_keep_n={self.moe_keep_n}"
+            )
+        if (self.composition_preserve or self.assertion_preserve) and self.hybrid_bridge:
+            raise ValueError(
+                "ForgePipeline: two-basis preserve (composition_preserve / assertion_preserve) "
+                "and hybrid_bridge are independent v1 paths; enable at most one."
+            )
+        if (
+            self.forward_mode == "host_wrapped"
+            and (self.composition_preserve or self.assertion_preserve)
+        ):
+            raise ValueError(
+                "ForgePipeline: forward_mode='host_wrapped' runs host's exact weights "
+                "and has no projected blocks for two-basis preserve to attach to; "
+                "use native_in_basis or disable composition_preserve/assertion_preserve."
             )
         if self.hybrid_bridge:
             if self.basis_embed is None or self.basis_lm_head is None:
@@ -780,6 +806,90 @@ class ForgePipeline:
             **forge_kwargs,
         )
 
+    def _build_augmented_basis(self, host) -> "AugmentedBasis | None":
+        """Return an AugmentedBasis when two-basis preserve is enabled, else None.
+
+        Composition (``U_C``) is extracted per layer from the host attention
+        geometry; assertion atoms (``U_A``) are the top-``assertion_k`` sharpest
+        (least Polygram-merged) basis atoms. Records the preserved-dimension
+        budget and the ``dim(U_C ∩ S)/dim(U_C)`` overlap on
+        ``self._last_augmented_report``.
+        """
+        if not (self.composition_preserve or self.assertion_preserve):
+            self._last_augmented_report = None
+            return None
+        from saeforge.augmented_basis import AugmentedBasis
+
+        composition = None
+        if self.composition_preserve:
+            from saeforge.composition_subspace import extract_composition_subspace
+
+            n_layer = getattr(host.config, "n_layer", None) or getattr(
+                host.config, "num_hidden_layers", None
+            )
+            if n_layer is None:
+                raise ValueError(
+                    f"ForgePipeline: cannot derive n_layer from {type(host).__name__}.config "
+                    "for composition_preserve"
+                )
+            composition = extract_composition_subspace(
+                host,
+                layers=list(range(int(n_layer))),
+                rank=self.composition_rank,
+                heads=self.composition_heads,
+            )
+        assertion_atoms = None
+        if self.assertion_preserve and self.assertion_k > 0:
+            assertion_atoms = self._select_assertion_atoms(self.assertion_k)
+        augmented = AugmentedBasis(
+            self.basis, assertion_atoms=assertion_atoms, composition=composition
+        )
+        self._last_augmented_report = self._augmented_report(augmented)
+        return augmented
+
+    def _select_assertion_atoms(self, k: int) -> np.ndarray:
+        """Top-``k`` sharpest (least Polygram-merged) basis atoms as verbatim rows.
+
+        Label-free proxy: atoms whose merged decoder norm is closest to their
+        original norm survived merging cleanly (the sharp monosemantic ones).
+        A label-driven selection (when a GroundTruthTarget oracle is available)
+        is the better path, deferred — see design.md.
+        """
+        b = self.basis
+        ratio = b.merged_norms / np.maximum(b.original_norms, 1e-12)
+        order = np.argsort(np.abs(ratio - 1.0))
+        sel = order[: min(k, b.W_dec.shape[0])]
+        return b.W_dec[sel]
+
+    def _augmented_report(self, augmented) -> dict:
+        """Preserved-dimension budget + composition∩basis overlap, per layer."""
+        d_model = self.basis.d_model
+        W_dec = self.basis.W_dec
+        # orthonormal basis of the (Polygram) kept subspace S = rowspace(W_dec)
+        S, _ = np.linalg.qr(W_dec.T)  # (d, rank_S)
+        report = {"d_model": d_model, "layers": {}}
+        comp = augmented.composition or {}
+        budget_cap = 0.25  # soft: warn (not error) when the preserved budget is large
+        for ell, cs in comp.items():
+            # fraction of U_C already covered by S: ||S^T U_C||_F^2 / rank(U_C)
+            overlap = float(np.linalg.norm(S.T @ cs.U) ** 2 / max(cs.rank, 1))
+            frac = augmented.preserved_fraction(ell)
+            report["layers"][int(ell)] = {
+                "preserved_dim": augmented.preserved_dimension(ell),
+                "preserved_fraction": frac,
+                "U_C_overlap_with_basis": overlap,
+            }
+            if frac > budget_cap:
+                warnings.warn(
+                    f"ForgePipeline: two-basis preserved budget at layer {ell} is "
+                    f"{frac:.0%} of d_model (> {budget_cap:.0%}); the Polygram basis has "
+                    f"less capacity for residual reconstruction. Reduce composition_rank / "
+                    f"assertion_k if global KL regresses.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+        return report
+
     def _build_hybrid_bundle(self, host) -> "HybridBasisBundle | None":
         """Return a hybrid bundle when enabled, else None. Enforces tied-embedding refusal.
 
@@ -1050,8 +1160,12 @@ class ForgePipeline:
             model = self._build_host_wrapped_model(host)
         else:
             bundle = self._build_hybrid_bundle(host)
+            augmented = self._build_augmented_basis(host)
             weights = self.projector.project_module(
-                host, attention_width=self.attention_width, hybrid=bundle
+                host,
+                attention_width=self.attention_width,
+                hybrid=bundle,
+                augmented=augmented,
             )
             config = _config_from_host(
                 host, self.basis.n_features, attention_width=self.attention_width
@@ -1238,7 +1352,9 @@ class ForgePipeline:
             model = self._build_host_wrapped_model(host_model)
         else:
             weights = self.projector.project_module(
-                host_model, attention_width=self.attention_width
+                host_model,
+                attention_width=self.attention_width,
+                augmented=self._build_augmented_basis(host_model),
             )
             config = _config_from_host(
                 host_model, self.basis.n_features,

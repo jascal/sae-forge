@@ -5,6 +5,24 @@ their corresponding OpenSpec change is archived.
 
 ## [Unreleased]
 
+### Added
+
+- **Two-basis forge (`two-basis-forge`).** Opt-in forge path that preserves two
+  residual subspaces verbatim inside the projection — the assertion subspace
+  `U_A` (sharp atoms → recovers `cov95`) and the per-layer composition subspace
+  `U_C` (host attention QK/OV read+write geometry → circuits survive forging),
+  with the Polygram basis carrying the orthogonal remainder. New
+  `saeforge.composition_subspace` (`extract_composition_subspace`),
+  `saeforge.augmented_basis` (`AugmentedBasis`), and
+  `saeforge.eval.circuit_faithfulness` (`circuit_kl`, `assertion_cov95`,
+  `induction_predictable`). `SubspaceProjector.project_module` gains an
+  `augmented=` arm (byte-identical when `None`); `ForgePipeline` gains
+  `composition_preserve` / `assertion_preserve` / `composition_rank` /
+  `composition_heads` / `assertion_k`; CLI gains the matching flags plus
+  `--circuit-faithfulness`. Default-off and byte-equivalent; orthogonal to
+  `hybrid-bridge-forge`. See `docs/two_basis_forge.md` and
+  `scripts/compare_single_vs_two_basis_gpt2.py`.
+
 ## [0.12.0] — 2026-06-04
 
 **Routed mixture-of-experts forge release (`add-sae-moe-forge`).** Adds

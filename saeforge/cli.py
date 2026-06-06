@@ -160,6 +160,43 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Disable the pre-LayerNorm in BridgeModule (default: enabled).",
     )
+    # two-basis-forge knobs. See openspec/specs/composition-subspace-preserve.
+    forge.add_argument(
+        "--composition-preserve",
+        action="store_true",
+        help=(
+            "Opt-in: preserve the host attention QK/OV read+write geometry (U_C) verbatim "
+            "inside the projection so the forged circuits stay faithful (default off)."
+        ),
+    )
+    forge.add_argument(
+        "--composition-rank",
+        type=int,
+        default=None,
+        help="Per-side rank cap for U_C (default: energy-knee).",
+    )
+    forge.add_argument(
+        "--composition-heads",
+        type=str,
+        default="all",
+        help="'all' (default) or a comma-separated head-index list to restrict U_C's source heads.",
+    )
+    forge.add_argument(
+        "--assertion-preserve",
+        action="store_true",
+        help="Opt-in: keep the top --assertion-k sharpest basis atoms verbatim (recovers cov95).",
+    )
+    forge.add_argument(
+        "--assertion-k",
+        type=int,
+        default=0,
+        help="Number of sharp atoms to preserve verbatim when --assertion-preserve is set.",
+    )
+    forge.add_argument(
+        "--circuit-faithfulness",
+        action="store_true",
+        help="Emit the two-basis preserved-dimension budget + U_C∩basis overlap report.",
+    )
     # Qwen3-MoE compression strategy. See openspec/specs/qwen3-moe-support.
     forge.add_argument(
         "--moe-strategy",
@@ -1096,6 +1133,21 @@ def _cmd_forge(args: argparse.Namespace) -> int:
             ),
         )
 
+    two_basis_kwargs: dict = {}
+    if args.composition_preserve or args.assertion_preserve:
+        heads = (
+            "all"
+            if args.composition_heads == "all"
+            else [int(x) for x in args.composition_heads.split(",") if x.strip()]
+        )
+        two_basis_kwargs = dict(
+            composition_preserve=args.composition_preserve,
+            assertion_preserve=args.assertion_preserve,
+            composition_rank=args.composition_rank,
+            composition_heads=heads,
+            assertion_k=args.assertion_k,
+        )
+
     pipeline = ForgePipeline(
         basis=basis,
         projector=projector,
@@ -1116,6 +1168,7 @@ def _cmd_forge(args: argparse.Namespace) -> int:
         eval_prompts=eval_prompts,
         eval_audio_features=eval_audio_features,
         **hybrid_kwargs,
+        **two_basis_kwargs,
     )
     result = pipeline.run(args.output_dir)
     print(f"forged: {result.output_dir} ({result.n_params} params)")
@@ -1129,6 +1182,18 @@ def _cmd_forge(args: argparse.Namespace) -> int:
     if result.faithfulness is not None:
         target = result.faithfulness_target_name or "faithfulness"
         print(f"{target}: {result.faithfulness:.4f}")
+    if args.circuit_faithfulness:
+        rep = getattr(pipeline, "_last_augmented_report", None)
+        if rep is None:
+            print("circuit-faithfulness: no two-basis preserve active")
+        else:
+            print(f"circuit-faithfulness (d_model={rep['d_model']}):")
+            for ell, lr in sorted(rep["layers"].items()):
+                print(
+                    f"  layer {ell}: preserved_dim={lr['preserved_dim']} "
+                    f"({lr['preserved_fraction']:.1%})  "
+                    f"U_C∩basis={lr['U_C_overlap_with_basis']:.2f}"
+                )
     return 0
 
 
