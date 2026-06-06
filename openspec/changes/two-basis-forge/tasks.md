@@ -18,11 +18,11 @@
 
 ## 3. Projector dispatch (`saeforge/projector.py`)
 
-- [ ] 3.1 Add optional `augmented: AugmentedBasis | None = None` kwarg to `SubspaceProjector.project_module`
-- [ ] 3.2 When `augmented is None`: existing single-basis dispatch unchanged (byte-equivalence)
-- [ ] 3.3 When provided: for each emitted weight, look up the weight's layer (adapter `layer_index_for`), project through `augmented.kept_subspace(layer)`, and write the preserve-mask rows verbatim from the host instead of through the merged decode
-- [ ] 3.4 Non-block weights (`wte`, `wpe`, `lm_head`, `ln_f`) use the basis with no composition augmentation (attention geometry is per-block); assertion atoms still apply
-- [ ] 3.5 Tests: `augmented=None` reproduces the committed single-basis reference dict for `tiny_gpt2` exactly (regression); augmented path reproduces host QK/OV action on `U_C` to tolerance
+- [x] 3.1 Add optional `augmented: AugmentedBasis | None = None` kwarg to `SubspaceProjector.project_module`
+- [x] 3.2 When `augmented is None`: existing single-basis dispatch unchanged (byte-equivalence)
+- [x] 3.3 When provided: for each emitted weight, look up the weight's layer (adapter `layer_index_for`), project through `augmented.kept_subspace(layer)`, and write the preserve-mask rows verbatim from the host instead of through the merged decode
+- [x] 3.4 Non-block weights (`wte`, `wpe`, `lm_head`, `ln_f`) use the basis with no composition augmentation (attention geometry is per-block); assertion atoms still apply
+- [x] 3.5 Tests: `augmented=None` reproduces the committed single-basis reference dict for `tiny_gpt2` exactly (regression); augmented path reproduces host QK/OV action on `U_C` to tolerance
 
 ## 4. Circuit-faithfulness metric (`saeforge/eval/circuit_faithfulness.py`)
 
