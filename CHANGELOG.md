@@ -7,8 +7,10 @@ their corresponding OpenSpec change is archived.
 
 ### Changed
 
-- **Retracted the writer-output `U_C` circuit-preservation claim from v0.14.0
-  (docs only; no code change).** The "−111% induction-tax removal" rested on
+- **Retracted the writer-output `U_C` circuit-preservation claim from v0.14.0.**
+  Enabling `composition_preserve` now emits a `UserWarning` that the feature is
+  experimental/unvalidated (the default-off / byte-identical path is unchanged
+  and silent). The "−111% induction-tax removal" rested on
   `excess = induction_kl − complement_kl`, a *gameable* metric (a subspace can
   lower it by damaging the complement rather than preserving the circuit). A
   compression-controlled re-validation (`lm-sae` PRs #7/#8/#9 — rank swept at

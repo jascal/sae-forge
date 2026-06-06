@@ -107,3 +107,21 @@ def test_preserve_and_hybrid_mutually_exclusive(tiny_synthetic_basis):
 def test_host_wrapped_rejects_preserve(tiny_synthetic_basis):
     with pytest.raises(ValueError, match="host_wrapped"):
         _pipeline(tiny_synthetic_basis, forward_mode="host_wrapped", composition_preserve=True)
+
+
+def test_composition_preserve_warns_experimental_unvalidated(tiny_synthetic_basis):
+    # the writer-output U_C circuit-preservation claim was retracted; opting into composition_preserve
+    # must warn that the feature is experimental/unvalidated (docs/two_basis_forge.md).
+    with pytest.warns(UserWarning, match="EXPERIMENTAL and UNVALIDATED"):
+        _pipeline(tiny_synthetic_basis, composition_preserve=True)
+
+
+def test_assertion_only_does_not_trigger_composition_warning(tiny_synthetic_basis, recwarn):
+    # assertion-preserve (cov95) is a separate, non-retracted claim — it must not emit the composition warning.
+    _pipeline(tiny_synthetic_basis, assertion_preserve=True, assertion_k=3)
+    assert not any("composition_preserve" in str(w.message) for w in recwarn.list)
+
+
+def test_default_pipeline_emits_no_composition_warning(tiny_synthetic_basis, recwarn):
+    _pipeline(tiny_synthetic_basis)  # both toggles off (the byte-identical default path)
+    assert not any("composition_preserve" in str(w.message) for w in recwarn.list)
