@@ -18,7 +18,9 @@ def test_two_basis_forge_end_to_end(tiny_gpt2, tiny_synthetic_basis, tmp_path):
     import torch
 
     eval_ids = torch.randint(0, tiny_gpt2.config.vocab_size, (2, 8))
-    pipe = _pipe(tiny_synthetic_basis, composition_preserve=True, composition_rank=2)
+    # legacy reader-geometry path
+    pipe = _pipe(tiny_synthetic_basis, composition_preserve=True, composition_rank=2,
+                 composition_heads="all")
     res = pipe.run_synthetic(tiny_gpt2, tmp_path / "tb", eval_input_ids=eval_ids)
 
     assert isinstance(res.model, NativeModel)
@@ -29,6 +31,26 @@ def test_two_basis_forge_end_to_end(tiny_gpt2, tiny_synthetic_basis, tmp_path):
     rep = pipe._last_augmented_report
     assert rep["layers"][0]["preserved_dim"] > 0
     assert 0.0 <= rep["layers"][0]["U_C_overlap_with_basis"] <= 1.0 + 1e-9
+
+
+def test_writer_output_forge_end_to_end_lists_writers(tiny_gpt2, tiny_synthetic_basis, tmp_path):
+    """End-to-end writer-output forge with explicit writers runs and the report lists them."""
+    pytest.importorskip("torch")
+    import torch
+
+    eval_ids = torch.randint(0, tiny_gpt2.config.vocab_size, (2, 8))
+    writers = [(0, 1), (1, 2)]
+    pipe = _pipe(tiny_synthetic_basis, composition_preserve=True, composition_rank=2,
+                 composition_heads=writers, composition_mode="writer-output")
+    res = pipe.run_synthetic(tiny_gpt2, tmp_path / "wo", eval_input_ids=eval_ids)
+
+    assert isinstance(res.model, NativeModel)
+    assert math.isfinite(res.faithfulness)
+    for p in res.model.torch_module.parameters():
+        assert torch.isfinite(p).all()
+    rep = pipe._last_augmented_report
+    assert rep["composition_mode"] == "writer-output"
+    assert rep["writer_heads"] == [[0, 1], [1, 2]]
 
 
 def test_two_basis_off_is_byte_identical_to_single_basis(tiny_gpt2, tiny_synthetic_basis, tmp_path):

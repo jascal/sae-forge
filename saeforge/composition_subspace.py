@@ -115,23 +115,73 @@ def _gpt2_layer_geometry(block, n_head: int, heads, fold_ln1: bool):
     return R, W
 
 
+def extract_writer_subspace(host, *, writer_heads, rank=None) -> CompositionSubspace:
+    """``U_C`` = orthonormalised union of the circuit WRITER heads' OV-OUTPUT row spaces.
+
+    For head ``(L, h)``, ``OV = W_V^h W_O^h`` and its written subspace is ``rowspace(OV)``. This is the
+    direction a forge must keep so the downstream circuit still reads what the writer wrote — validated to
+    eliminate the induction forge tax where the aggregate reader geometry does not (see
+    ``openspec/changes/two-basis-uc-writer-output``). Uniform union in v1.
+    """
+    cfg = host.config
+    if getattr(cfg, "model_type", "") not in ("gpt2",):
+        raise NotImplementedError(
+            f"extract_writer_subspace supports gpt2 hosts in v1; got model_type="
+            f"{getattr(cfg, 'model_type', '')!r}."
+        )
+    d = cfg.n_embd
+    H = cfg.n_head
+    hd = d // H
+    blocks = host.transformer.h
+    ovs = []
+    for (L, h) in writer_heads:
+        Wc = blocks[L].attn.c_attn.weight.detach().cpu().numpy().astype(np.float64)
+        Wo = blocks[L].attn.c_proj.weight.detach().cpu().numpy().astype(np.float64)
+        sl = slice(h * hd, (h + 1) * hd)
+        ovs.append(Wc[:, 2 * d:3 * d][:, sl] @ Wo[sl, :])          # (d, d) OV_A
+    Vt = np.linalg.svd(np.concatenate(ovs, 0), full_matrices=False)[2]   # right singular vecs = written dirs
+    r = min(rank or Vt.shape[0], Vt.shape[0], d)
+    return CompositionSubspace(
+        U=Vt[:r].T, layer=-1, rank=r, source_heads=[list(w) for w in writer_heads], d_model=d,
+        metadata={"mode": "writer-output", "writer_heads": [list(w) for w in writer_heads]},
+    )
+
+
 def extract_composition_subspace(
     host,
     *,
     layers,
     rank: int | None = None,
-    heads: list[int] | str = "all",
+    heads="all",
     fold_ln1: bool = True,
     energy: float = 0.99,
+    mode: str = "writer-output",
 ) -> dict[int, CompositionSubspace]:
     """Extract per-layer ``U_C`` from a host model's attention weights.
 
-    ``rank`` caps the per-side rank (read, write); ``None`` uses an
-    energy-knee. ``heads`` is ``"all"`` or an explicit head-index list. The
-    ``ln_1`` mean-subtraction is treated as ~rank-1 and not removed; this
-    approximation is recorded in each subspace's ``metadata`` under
-    ``ln_meansub_approx`` so it is explicit, not inferred.
+    ``mode="writer-output"`` (default, the VALIDATED circuit-preserve): ``heads`` must be a list of
+    ``(layer, head)`` writer tuples; the same writer OV-output subspace is preserved at each requested
+    layer (dispatches to :func:`extract_writer_subspace`).
+
+    ``mode="reader-geometry"`` (legacy/ablation): per-layer SVD of the aggregate ``[W_Q^h|W_K^h]`` read +
+    ``W_V^h W_O^h`` write geometry; ``heads`` is ``"all"`` or a head-index list. This mode does NOT protect
+    circuits (the fragile signal is the writers' OV output, not the readers' geometry) — kept for comparison.
+
+    ``rank`` caps the rank; ``None`` uses an energy-knee. The ``ln_1`` mean-subtraction is recorded in each
+    subspace's ``metadata`` (``ln_meansub_approx``).
     """
+    if mode == "writer-output":
+        if heads == "all" or not all(isinstance(h, (tuple, list)) and len(h) == 2 for h in heads):
+            raise ValueError(
+                "mode='writer-output' requires heads as a list of (layer, head) writer tuples; "
+                "got heads=%r. Use circuit_heads to identify them, or mode='reader-geometry'." % (heads,)
+            )
+        ws = extract_writer_subspace(host, writer_heads=heads, rank=rank)
+        return {int(L): CompositionSubspace(U=ws.U, layer=int(L), rank=ws.rank,
+                                            source_heads=ws.source_heads, d_model=ws.d_model,
+                                            metadata=dict(ws.metadata)) for L in layers}
+    if mode != "reader-geometry":
+        raise ValueError(f"mode must be 'writer-output' or 'reader-geometry'; got {mode!r}")
     cfg = host.config
     model_type = getattr(cfg, "model_type", "")
     if model_type not in ("gpt2",):

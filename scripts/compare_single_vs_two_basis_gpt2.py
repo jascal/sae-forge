@@ -1,17 +1,25 @@
 """Compare single-basis vs assertion / composition / two-basis forge on GPT-2.
 
-Decision artifact for ``two-basis-forge`` (task 7.2/7.3, NOT a pytest). Forges
-``gpt2`` four ways at matched ``n_features`` and seed, then reports, per config
-and over a ``composition_rank`` / ``assertion_k`` sweep:
+Decision artifact for ``two-basis-forge`` / ``two-basis-uc-writer-output`` (NOT
+a pytest). Forges ``gpt2`` several ways at matched ``n_features`` and seed, then
+reports, per config and over a ``composition_rank`` / ``assertion_k`` sweep:
 
   - global KL(host ‖ forged)
   - induction-predictable KL (the circuit-faithfulness target)
-  - assertion cov95 on the forged residual
   - preserved-dimension budget  +  dim(U_C ∩ basis) overlap
 
-and emits a Pareto plot (preserved-dim % vs the three metrics) so the budget
-knee is visible. Run on Intel/GPT-2; the numbers decide whether to default
-either toggle on (see openspec/changes/two-basis-forge/tasks.md §9.3).
+The composition rows cover BOTH ``U_C`` modes so the circuit-vs-global trade is
+visible: ``writer_r*`` = the validated writer-output ``U_C`` (prev-token writer
+heads, detected on the calib corpus), ``reader_r*`` = the legacy reader-geometry
+``U_C`` (the documented control that does NOT protect circuits). The third
+candidate — the attribution subspace (``∂loss/∂residual``) — is NOT a forge mode
+and is measured in lm-sae's single-layer alive forge (overlap 0.05 with the
+writers, +14% worse): loss-sensitivity ≠ circuit-mechanism.
+
+Caveat: the whole-model single-basis forge collapses toward uniform on 12-layer
+GPT-2, so the dispositive ``excess ≤ 0`` evidence is the lm-sae single-layer
+alive forge; this harness exercises the sae-forge API end-to-end. Emits a Pareto
+plot (preserved-dim % vs the metrics) so the budget knee is visible.
 
 Usage:
     python scripts/compare_single_vs_two_basis_gpt2.py --basis path/to/polygram.safetensors
@@ -88,9 +96,16 @@ def main(argv=None):
 
     H = host_logits()
 
-    def forge_and_score(label, **kw):
+    # writer-output detection needs a real calibration corpus; reuse the eval text so the
+    # prev-token preset finds GPT-2's actual predecessor-write heads (e.g. 4.11).
+    calib_prompt = tok.decode(chunks[0])
+
+    def forge_and_score(label, *, writer=False, **kw):
         basis = _build_basis(args, d_model)
-        pipe = ForgePipeline(basis=basis, projector=SubspaceProjector(basis, scale_boost=sb), **kw)
+        extra = {"eval_prompts": [calib_prompt]} if writer else {}
+        pipe = ForgePipeline(
+            basis=basis, projector=SubspaceProjector(basis, scale_boost=sb), **extra, **kw
+        )
         eval_ids = torch.tensor([chunks[0][:16]])
         res = pipe.run_synthetic(host, Path("/tmp") / f"forge_{label}", eval_input_ids=eval_ids)
         mod = res.model.torch_module.eval()
@@ -108,22 +123,38 @@ def main(argv=None):
             float(np.mean([v["U_C_overlap_with_basis"] for v in rep["layers"].values()])) if rep else 1.0
         )
         return {"label": label, "global_kl": ck["global_kl"], "induction_kl": ck["masked_kl"],
-                "preserved_fraction": budget, "U_C_overlap": overlap}
+                "preserved_fraction": budget, "U_C_overlap": overlap,
+                "mode": (rep or {}).get("composition_mode", "—"),
+                "writers": (rep or {}).get("writer_heads", [])}
 
     rows = [forge_and_score("single")]
     for r in [int(x) for x in args.ranks.split(",")]:
-        rows.append(forge_and_score(f"comp_r{r}", composition_preserve=True, composition_rank=r))
+        # the validated writer-output U_C (prev-token writers, detected on the calib corpus)
+        rows.append(forge_and_score(
+            f"writer_r{r}", writer=True, composition_preserve=True, composition_rank=r,
+            composition_heads="prev-token", composition_mode="writer-output"))
+        # the legacy reader-geometry U_C (documented as NOT protecting circuits) — the control
+        rows.append(forge_and_score(
+            f"reader_r{r}", composition_preserve=True, composition_rank=r,
+            composition_heads="all", composition_mode="reader-geometry"))
     rows.append(forge_and_score("assert", assertion_preserve=True, assertion_k=args.assertion_k))
     for r in [int(x) for x in args.ranks.split(",")]:
         rows.append(forge_and_score(
-            f"two_r{r}", composition_preserve=True, composition_rank=r,
+            f"two_r{r}", writer=True, composition_preserve=True, composition_rank=r,
+            composition_heads="prev-token", composition_mode="writer-output",
             assertion_preserve=True, assertion_k=args.assertion_k))
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps({"host": args.host, "rows": rows}, indent=2, default=float))
-    print(f"\n{'config':>10} {'global_kl':>10} {'induction_kl':>13} {'preserved%':>11} {'U_C∩basis':>10}")
+    # Attribution control (∂loss/∂residual): NOT a ForgePipeline mode. On the alive single-layer
+    # lm-sae forge it preserves the WRONG subspace (overlap 0.05 with writers, +14% worse) — the
+    # mechanism-vs-loss-sensitivity negative. It lives in lm-sae/scripts/two_basis_single_layer.py
+    # because the whole-model forge below cannot host the gradient-leaf injection; see docs.
+    print("\n[note] attribution control lives in lm-sae's single-layer alive forge (see docs).")
+    print(f"\n{'config':>11} {'mode':>15} {'global_kl':>10} {'induction_kl':>13} "
+          f"{'preserved%':>11} {'U_C∩basis':>10}")
     for r in rows:
-        print(f"{r['label']:>10} {r['global_kl']:>10.3f} {r['induction_kl']:>13.3f} "
+        print(f"{r['label']:>11} {r['mode']:>15} {r['global_kl']:>10.3f} {r['induction_kl']:>13.3f} "
               f"{r['preserved_fraction']:>10.1%} {r['U_C_overlap']:>10.2f}")
     single = rows[0]
     best = min((r for r in rows if r["label"].startswith("two")), key=lambda r: r["induction_kl"], default=single)
