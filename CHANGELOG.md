@@ -5,6 +5,19 @@ their corresponding OpenSpec change is archived.
 
 ## [Unreleased]
 
+## [0.14.0] — 2026-06-06
+
+**Writer-output `U_C` release (`two-basis-uc-writer-output`).** Redefines the
+two-basis composition subspace from the aggregate reader-layer geometry to the
+circuit WRITER heads' OV-output row spaces — the directions a downstream circuit
+actually reads. On an alive single-layer GPT-2 forge this removes the
+induction-predictable KL excess (−111%) where reader-geometry does not (−6%),
+and the label-free attribution subspace (`∂loss/∂residual`) is ~orthogonal to it
+(overlap 0.05) and fails (+14% worse): *loss-sensitivity ≠ circuit-mechanism*.
+New `saeforge.circuit_heads` detects writers behaviorally. Default-off and
+byte-identical when disabled (gate unchanged); the legacy reader-geometry path
+remains as a documented ablation.
+
 ### Changed
 
 - **`U_C` is now the circuit writers' OV-output (`two-basis-uc-writer-output`).**

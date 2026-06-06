@@ -43,7 +43,7 @@ from saeforge.training.concept_anchor import (
 )
 from saeforge.world_model import WorldModel
 
-__version__ = "0.13.0"
+__version__ = "0.14.0"
 
 __all__ = [
     "ANOMALOUS_TOKEN_IDS",
