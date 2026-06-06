@@ -124,6 +124,10 @@ contract, and the default-off posture are all unchanged.
 - **Attribution / gradient preservation.** Falsified for *circuit*
   fidelity here (overlap 0.05); retained only as the documented
   global-fidelity option, not implemented as a `U_C` source.
+- **Writer-head weighting.** v1 takes a uniform orthonormalised union of
+  the writer heads' OV-output. Weighting by attention mass or by each
+  writer's contribution to the circuit metric is deferred to
+  `writer-weighted-uc`.
 - **Whole-model GPT-2 forge.** Out of reach for single-basis (dies);
   needs `hybrid-bridge-forge` (multi-layer bases) composed with this —
   tracked as `hybrid-bridge-two-basis`.
