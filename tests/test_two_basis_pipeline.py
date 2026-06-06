@@ -62,6 +62,9 @@ def test_writer_output_preset_detects_heads(tiny_gpt2, tiny_synthetic_basis, mon
     p = _pipeline(tiny_synthetic_basis, composition_preserve=True, composition_rank=2,
                   composition_heads="prev-token", composition_mode="writer-output",
                   eval_prompts=["the cat sat on the mat and the cat ran"])
+    # stub the calibration corpus so the wiring test never hits the network (the real path loads
+    # the host's tokenizer via AutoTokenizer.from_pretrained); detection itself is monkeypatched.
+    monkeypatch.setattr(p, "_calibration_corpus", lambda host: list(range(16)))
     aug = p._build_augmented_basis(tiny_gpt2)
     assert aug is not None
     rep = p._last_augmented_report
