@@ -26,11 +26,11 @@
 
 ## 4. Circuit-faithfulness metric (`saeforge/eval/circuit_faithfulness.py`)
 
-- [ ] 4.1 New module. `induction_predictable(token_ids) -> np.ndarray` and `in_context_repeat(token_ids) -> np.ndarray` boolean masks (port from `lm-sae`)
-- [ ] 4.2 `circuit_kl(host_logits, forged_logits, *, mask) -> dict` returning `{"masked_kl", "complement_kl", "n_masked"}`
-- [ ] 4.3 `assertion_cov95(forged_residual, oracle) -> dict` reusing the existing oracle-probe to report monosemantic single-atom detector fraction on the forged residual
-- [ ] 4.4 Export from `saeforge/eval/__init__.py`
-- [ ] 4.5 Tests: masks match a hand-computed fixture; `circuit_kl` is `0` for `host==forged`; cov95 monotone under a controlled smear
+- [x] 4.1 New module. `induction_predictable(token_ids) -> np.ndarray` and `in_context_repeat(token_ids) -> np.ndarray` boolean masks (port from `lm-sae`)
+- [x] 4.2 `circuit_kl(host_logits, forged_logits, *, mask) -> dict` returning `{"masked_kl", "complement_kl", "n_masked"}`
+- [x] 4.3 `assertion_cov95(forged_residual, oracle) -> dict` reusing the existing oracle-probe to report monosemantic single-atom detector fraction on the forged residual
+- [x] 4.4 Export from `saeforge/eval/__init__.py`
+- [x] 4.5 Tests: masks match a hand-computed fixture; `circuit_kl` is `0` for `host==forged`; cov95 monotone under a controlled smear
 
 ## 5. ForgePipeline knobs + ctx wiring (`saeforge/forge.py`)
 
