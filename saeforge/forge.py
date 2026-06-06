@@ -527,7 +527,8 @@ class ForgePipeline:
         if self.composition_mode not in ("writer-output", "reader-geometry"):
             raise ValueError(
                 f"ForgePipeline: composition_mode={self.composition_mode!r} must be one of "
-                "'writer-output' (the validated circuit-preserve) | 'reader-geometry' (legacy/ablation)."
+                "'writer-output' (experimental/unvalidated — claim retracted, see docs) | "
+                "'reader-geometry' (legacy/ablation)."
             )
         # composition_heads: a preset string, "all" (legacy reader-geometry), or an explicit
         # [(layer, head), ...] writer list. Validate shape here so a bad selector fails at
@@ -550,6 +551,21 @@ class ForgePipeline:
                     f"ForgePipeline: composition_heads={ch!r} must be a list of (layer, head) int "
                     "tuples, a preset string, or 'all'."
                 )
+        # composition_preserve (U_C) circuit-preservation is EXPERIMENTAL/UNVALIDATED: the writer-output
+        # "−111% induction-tax removal" claim (v0.14.0) was retracted by a compression-controlled
+        # re-validation (no better than a random OV-output subspace; the 'excess' metric was gameable).
+        # The mechanism runs as documented; warn opt-in users so nobody relies on the retracted claim.
+        if self.composition_preserve:
+            warnings.warn(
+                "ForgePipeline: composition_preserve (U_C composition/circuit-preservation) is EXPERIMENTAL "
+                "and UNVALIDATED. The writer-output U_C '−111% induction-tax removal' claim (v0.14.0) was "
+                "RETRACTED — a compression-controlled re-validation found it no better than a random "
+                "OV-output subspace and never below the recon-only baseline (the original 'excess' metric "
+                "was gameable). The mechanism runs as documented but is NOT a validated circuit-preserve. "
+                "See docs/two_basis_forge.md.",
+                UserWarning,
+                stacklevel=2,
+            )
         if self.hybrid_bridge:
             if self.basis_embed is None or self.basis_lm_head is None:
                 raise ValueError(
