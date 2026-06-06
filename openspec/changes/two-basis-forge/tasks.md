@@ -42,23 +42,23 @@
 
 ## 6. CLI (`saeforge/cli.py`)
 
-- [ ] 6.1 New `forge` flags: `--composition-preserve`, `--composition-rank N`, `--composition-heads {all|comma-list}`, `--assertion-preserve`, `--assertion-k N`, `--circuit-faithfulness`
-- [ ] 6.2 `--circuit-faithfulness` emits the new metric block in the run report (masked vs complement KL, assertion cov95)
-- [ ] 6.3 Tests: flag parsing; mutually-consistent defaults (ranks ignored when the matching toggle is off, with a warn-log)
+- [x] 6.1 New `forge` flags: `--composition-preserve`, `--composition-rank N`, `--composition-heads {all|comma-list}`, `--assertion-preserve`, `--assertion-k N`, `--circuit-faithfulness`
+- [x] 6.2 `--circuit-faithfulness` emits the new metric block in the run report (masked vs complement KL, assertion cov95)
+- [x] 6.3 Tests: flag parsing; mutually-consistent defaults (ranks ignored when the matching toggle is off, with a warn-log)
 
 ## 7. Integration + comparison harness
 
-- [ ] 7.1 `tests/integration/test_two_basis_forge_gpt2.py`: end-to-end GPT-2 forge with `composition_preserve=True` — finite pre/post-FT KL, safetensors round-trip, and **induction-predictable KL(two-basis) ≤ single-basis** on matched bases/seed
-- [ ] 7.2 `scripts/compare_single_vs_two_basis_gpt2.py`: single / assertion-only / composition-only / two-basis on `gpt2`; emit table of global KL, induction-predictable KL, assertion cov95, preserved-dim budget, `U_C∩S` overlap. Also emit a **Pareto plot** (preserved-dim % vs. {induction-predictable KL, global KL, assertion cov95}) over a `composition_rank` / `assertion_k` sweep, so the budget knee is visible
+- [x] 7.1 `tests/integration/test_two_basis_forge_gpt2.py`: end-to-end GPT-2 forge with `composition_preserve=True` — finite pre/post-FT KL, safetensors round-trip, and **induction-predictable KL(two-basis) ≤ single-basis** on matched bases/seed
+- [x] 7.2 `scripts/compare_single_vs_two_basis_gpt2.py`: single / assertion-only / composition-only / two-basis on `gpt2`; emit table of global KL, induction-predictable KL, assertion cov95, preserved-dim budget, `U_C∩S` overlap. Also emit a **Pareto plot** (preserved-dim % vs. {induction-predictable KL, global KL, assertion cov95}) over a `composition_rank` / `assertion_k` sweep, so the budget knee is visible
 - [ ] 7.3 Run the harness on Intel/GPT-2; record numbers in `docs/two_basis_forge.md`; this is the defaults-decision artifact
 
 ## 8. Docs + changelog
 
-- [ ] 8.1 `docs/two_basis_forge.md`: two-kinds-of-content framing, the `U_A`/`U_C`/`S'` algebra, the metric, the `lm-sae` provenance and its caveats
-- [ ] 8.2 `CHANGELOG.md` `## [Unreleased]` `### Added`
+- [x] 8.1 `docs/two_basis_forge.md`: two-kinds-of-content framing, the `U_A`/`U_C`/`S'` algebra, the metric, the `lm-sae` provenance and its caveats
+- [x] 8.2 `CHANGELOG.md` `## [Unreleased]` `### Added`
 
 ## 9. Validation gate
 
-- [ ] 9.1 Byte-equivalence gate (`test_imperative_and_fsm_byte_equivalent`) passes unmodified
+- [x] 9.1 Byte-equivalence gate (`test_imperative_and_fsm_byte_equivalent`) passes unmodified
 - [ ] 9.2 `openspec validate two-basis-forge --strict` passes
 - [ ] 9.3 Decision: if two-basis fails to beat single-basis on induction-predictable KL at a non-regressing global KL with conservative defaults, keep both toggles off and record the negative result in `docs/two_basis_forge.md`
