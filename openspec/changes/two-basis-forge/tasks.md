@@ -34,11 +34,11 @@
 
 ## 5. ForgePipeline knobs + ctx wiring (`saeforge/forge.py`)
 
-- [ ] 5.1 Add optional fields: `composition_preserve: bool = False`, `assertion_preserve: bool = False`, `composition_rank: int | None = None`, `composition_heads: list[int] | str = "all"`, `assertion_k: int = 0`
-- [ ] 5.2 `__post_init__`: when any preserve toggle is on, build the `AugmentedBasis` (extract `U_C` for the capture layers, select top-`assertion_k` sharp atoms for `U_A`); when all off, `self.basis` is used unchanged and no extraction runs
-- [ ] 5.3 Thread the `AugmentedBasis` through the `project_to_subspace` action ctx (mirror the `hybrid` bundle wiring); no FSM state/guard/target change
-- [ ] 5.4 Run report includes preserved-dimension budget per layer and the `dim(U_C ∩ S)/dim(U_C)` overlap (how much the basis already covered)
-- [ ] 5.5 Tests: toggles-off run is byte-equivalent to v0; toggles-on run produces finite weights and a populated budget report
+- [x] 5.1 Add optional fields: `composition_preserve: bool = False`, `assertion_preserve: bool = False`, `composition_rank: int | None = None`, `composition_heads: list[int] | str = "all"`, `assertion_k: int = 0`
+- [x] 5.2 `__post_init__`: when any preserve toggle is on, build the `AugmentedBasis` (extract `U_C` for the capture layers, select top-`assertion_k` sharp atoms for `U_A`); when all off, `self.basis` is used unchanged and no extraction runs
+- [x] 5.3 Thread the `AugmentedBasis` through the `project_to_subspace` action ctx (mirror the `hybrid` bundle wiring); no FSM state/guard/target change
+- [x] 5.4 Run report includes preserved-dimension budget per layer and the `dim(U_C ∩ S)/dim(U_C)` overlap (how much the basis already covered)
+- [x] 5.5 Tests: toggles-off run is byte-equivalent to v0; toggles-on run produces finite weights and a populated budget report
 
 ## 6. CLI (`saeforge/cli.py`)
 
