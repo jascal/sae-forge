@@ -186,8 +186,14 @@ check.
   circuit-subspace bundles are tracked as `circuit-subspace-bundle`.
 - **Auto-selecting circuit heads.** v1 supports `heads="all"` (pool
   every head's geometry) or an explicit list. Behavioural
-  head-discovery (which heads are induction/copy) is an analysis
-  step, not a forge step; tracked as `circuit-head-autodetect`.
+  head-discovery (which heads are induction/copy, e.g. an
+  `heads="induction-like"` preset) is an analysis step, not a forge
+  step; tracked as `circuit-head-autodetect`.
+- **Per-layer assertion atoms.** `U_A` is **global** in v1 (the single
+  capture-layer basis's sharp atoms, applied at every layer, so it
+  stacks in the basis's own coordinate frame). Re-deriving a sharp-atom
+  set per block needs per-layer SAEs (the multi-anchor direction);
+  tracked as `per-layer-assertion-atoms`. `U_C` is per-layer in v1.
 
 ## Capabilities
 

@@ -2,7 +2,7 @@
 
 - [ ] 1.1 New module `saeforge/composition_subspace.py`. `CompositionSubspace` dataclass: `U: np.ndarray` (`d_model × r`, orthonormal), `layer: int`, `rank: int`, `source_heads: list[int] | str`, `singular_tail: np.ndarray` (logged for the rank choice), `d_model: int`
 - [ ] 1.2 `__post_init__` validates `U` is `d_model × r` with orthonormal columns (`||UᵀU − I||_F < 1e-5`) and `r <= d_model`
-- [ ] 1.3 `extract_composition_subspace(host, *, layers, rank=None, heads="all", fold_ln1=True) -> dict[int, CompositionSubspace]`. Per layer: build read geometry `R = [W_Q^h | W_K^h]` over `heads`, write geometry `Wo = [W_V^h W_O^h]`, fold `ln_1.weight` into the residual side when `fold_ln1`, SVD each, take top-`rank` (or singular-value-knee when `None`), orthonormalise the union
+- [ ] 1.3 `extract_composition_subspace(host, *, layers, rank=None, heads="all", fold_ln1=True) -> dict[int, CompositionSubspace]`. Per layer: build read geometry `R = [W_Q^h | W_K^h]` over `heads`, write geometry `Wo = [W_V^h W_O^h]`, fold `ln_1.weight` into the residual side when `fold_ln1`, SVD each, take top-`rank` (or singular-value-knee when `None`), orthonormalise the union. Record the `ln_1` mean-subtraction rank-1 approximation (`ln_meansub_approx` + dropped-rank magnitude) in `CompositionSubspace.metadata` for the run report
 - [ ] 1.4 Layer-index + head-slice extraction reuses the architecture adapter's `layer_index_for` / head geometry helpers so non-GPT-2 hosts plug in (GPT-2 `c_attn` Conv1D slicing handled in the adapter, not here)
 - [ ] 1.5 Budget reporting: `preserved_fraction(d_model)` = `r / d_model`; warn-log when any layer exceeds a configurable budget cap (default 0.25)
 - [ ] 1.6 Tests `tests/test_composition_subspace.py`: orthonormality; rank honoured; `heads` list restricts the source; the algebraic invariant — for a tiny GPT-2, `Uᵀ M_h U` (QK in the preserved subspace) matches the host `M_h` restricted to `U` to `1e-6`
@@ -49,7 +49,7 @@
 ## 7. Integration + comparison harness
 
 - [ ] 7.1 `tests/integration/test_two_basis_forge_gpt2.py`: end-to-end GPT-2 forge with `composition_preserve=True` — finite pre/post-FT KL, safetensors round-trip, and **induction-predictable KL(two-basis) ≤ single-basis** on matched bases/seed
-- [ ] 7.2 `scripts/compare_single_vs_two_basis_gpt2.py`: single / assertion-only / composition-only / two-basis on `gpt2`; emit table of global KL, induction-predictable KL, assertion cov95, preserved-dim budget, `U_C∩S` overlap
+- [ ] 7.2 `scripts/compare_single_vs_two_basis_gpt2.py`: single / assertion-only / composition-only / two-basis on `gpt2`; emit table of global KL, induction-predictable KL, assertion cov95, preserved-dim budget, `U_C∩S` overlap. Also emit a **Pareto plot** (preserved-dim % vs. {induction-predictable KL, global KL, assertion cov95}) over a `composition_rank` / `assertion_k` sweep, so the budget knee is visible
 - [ ] 7.3 Run the harness on Intel/GPT-2; record numbers in `docs/two_basis_forge.md`; this is the defaults-decision artifact
 
 ## 8. Docs + changelog

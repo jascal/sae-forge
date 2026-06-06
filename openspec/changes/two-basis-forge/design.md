@@ -113,7 +113,20 @@ detector fraction (the `lm-sae` `cov95`).
   geometry is strictly the row space of the projections *after* the LN
   gain fold. v1 folds `ln_1.weight` into `R_ℓ` before the SVD (the same
   fold the `lm-sae` probes use); the LN mean-subtraction is treated as
-  approximately rank-1 and not removed (logged as a known approximation).
+  approximately rank-1 and not removed. This approximation is **logged
+  explicitly per layer** — `extract_composition_subspace` records an
+  `ln_meansub_approx` flag (and the dropped-rank magnitude) in
+  `CompositionSubspace.metadata`, surfaced in the run report, so a
+  consumer can see the approximation is in force rather than inferring it.
+- **`U_A` scope: global vs per-layer.** v1 keeps `U_A` **global** — the
+  sharp atoms of the single capture-layer SAE, applied at every layer —
+  because the v0 basis is itself a single-capture-layer object and `U_A`
+  must live in the same coordinate frame to stack with it in
+  `kept_subspace`. `U_C` is genuinely **per-layer** (attention geometry
+  is per-block). Per-layer assertion atoms — re-deriving a sharp-atom set
+  at each block — are a plausible refinement but require per-layer SAEs
+  (the `hybrid-bridge` multi-anchor direction) and are deferred to
+  `per-layer-assertion-atoms`.
 - **Tied embeddings.** Unlike `hybrid-bridge-forge`, two-basis forge has
   no embed/lm-head basis split, so tied embeddings are *not* a problem
   — `U_C`/`U_A` are per-capture-layer subspaces of a single basis. No
