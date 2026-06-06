@@ -338,7 +338,11 @@ class ForgePipeline:
     composition_preserve: bool = False
     assertion_preserve: bool = False
     composition_rank: int | None = None
-    composition_heads: "list | str" = "all"
+    # writer-head selector for U_C: a preset ("prev-token" / "duplicate-token") detected on the eval
+    # corpus, an explicit list of (layer, head) writer tuples, or "all" (legacy reader-geometry, weaker).
+    # See openspec/changes/two-basis-uc-writer-output.
+    composition_heads: "list | str" = "prev-token"
+    composition_mode: str = "writer-output"   # or "reader-geometry" (legacy/ablation)
     assertion_k: int = 0
 
     # v0.6 qwen3-moe-support knobs. Control how a Qwen3-MoE host is forged:
@@ -520,6 +524,32 @@ class ForgePipeline:
                 "and has no projected blocks for two-basis preserve to attach to; "
                 "use native_in_basis or disable composition_preserve/assertion_preserve."
             )
+        if self.composition_mode not in ("writer-output", "reader-geometry"):
+            raise ValueError(
+                f"ForgePipeline: composition_mode={self.composition_mode!r} must be one of "
+                "'writer-output' (the validated circuit-preserve) | 'reader-geometry' (legacy/ablation)."
+            )
+        # composition_heads: a preset string, "all" (legacy reader-geometry), or an explicit
+        # [(layer, head), ...] writer list. Validate shape here so a bad selector fails at
+        # construction rather than deep inside _build_augmented_basis.
+        ch = self.composition_heads
+        if isinstance(ch, str):
+            if ch not in ("prev-token", "duplicate-token", "all"):
+                raise ValueError(
+                    f"ForgePipeline: composition_heads={ch!r} must be a preset "
+                    "('prev-token' / 'duplicate-token'), 'all' (legacy reader-geometry), or an explicit "
+                    "[(layer, head), ...] writer list."
+                )
+        else:
+            try:
+                ok = all(len(t) == 2 and all(isinstance(i, int) for i in t) for t in ch)
+            except TypeError:
+                ok = False
+            if not ok:
+                raise ValueError(
+                    f"ForgePipeline: composition_heads={ch!r} must be a list of (layer, head) int "
+                    "tuples, a preset string, or 'all'."
+                )
         if self.hybrid_bridge:
             if self.basis_embed is None or self.basis_lm_head is None:
                 raise ValueError(
@@ -806,6 +836,23 @@ class ForgePipeline:
             **forge_kwargs,
         )
 
+    def _calibration_corpus(self, host) -> list:
+        """Token ids from eval_prompts, used to behaviorally detect writer heads for a preset."""
+        if not getattr(self, "eval_prompts", None):
+            raise ValueError(
+                "ForgePipeline: composition_heads preset needs eval_prompts as a calibration corpus to "
+                "detect writer heads; pass eval_prompts, or give composition_heads an explicit "
+                "[(layer, head), ...] list."
+            )
+        from transformers import AutoTokenizer
+
+        name = getattr(host.config, "_name_or_path", None) or self.host_model_id or "gpt2"
+        tok = AutoTokenizer.from_pretrained(name)
+        ids: list = []
+        for p in self.eval_prompts:
+            ids += tok(p)["input_ids"]
+        return ids
+
     def _build_augmented_basis(self, host) -> "AugmentedBasis | None":
         """Return an AugmentedBasis when two-basis preserve is enabled, else None.
 
@@ -821,6 +868,7 @@ class ForgePipeline:
         from saeforge.augmented_basis import AugmentedBasis
 
         composition = None
+        self._last_writers = None
         if self.composition_preserve:
             from saeforge.composition_subspace import extract_composition_subspace
 
@@ -832,12 +880,31 @@ class ForgePipeline:
                     f"ForgePipeline: cannot derive n_layer from {type(host).__name__}.config "
                     "for composition_preserve"
                 )
-            composition = extract_composition_subspace(
-                host,
-                layers=list(range(int(n_layer))),
-                rank=self.composition_rank,
-                heads=self.composition_heads,
-            )
+            ch = self.composition_heads
+            if self.composition_mode == "reader-geometry" or ch == "all":
+                composition = extract_composition_subspace(
+                    host, layers=list(range(int(n_layer))), rank=self.composition_rank,
+                    heads="all", mode="reader-geometry",
+                )
+            else:
+                # writer-output: resolve the circuit WRITER heads (preset -> detect, or explicit list)
+                if isinstance(ch, str):
+                    from saeforge import circuit_heads
+                    triples = circuit_heads.identify(host, self._calibration_corpus(host), ch)
+                    writers = [(L, h) for (L, h, _s) in triples]
+                    self._last_writers = triples
+                else:
+                    writers = [tuple(x) for x in ch]
+                    self._last_writers = [(int(L), int(h), None) for (L, h) in writers]
+                if not writers:
+                    raise ValueError(
+                        f"ForgePipeline: composition_heads={ch!r} resolved to no writer heads "
+                        "(none above the detection threshold); pass an explicit (layer,head) list."
+                    )
+                composition = extract_composition_subspace(
+                    host, layers=list(range(int(n_layer))), rank=self.composition_rank,
+                    heads=writers, mode="writer-output",
+                )
         assertion_atoms = None
         if self.assertion_preserve and self.assertion_k > 0:
             assertion_atoms = self._select_assertion_atoms(self.assertion_k)
@@ -867,7 +934,10 @@ class ForgePipeline:
         W_dec = self.basis.W_dec
         # orthonormal basis of the (Polygram) kept subspace S = rowspace(W_dec)
         S, _ = np.linalg.qr(W_dec.T)  # (d, rank_S)
-        report = {"d_model": d_model, "layers": {}}
+        report = {"d_model": d_model, "layers": {},
+                  "composition_mode": (self.composition_mode if self.composition_heads != "all" else "reader-geometry"),
+                  "writer_heads": [list(w[:2]) for w in (getattr(self, "_last_writers", None) or [])],
+                  "writer_scores": [w[2] for w in (getattr(self, "_last_writers", None) or [])]}
         comp = augmented.composition or {}
         budget_cap = 0.25  # soft: warn (not error) when the preserved budget is large
         for ell, cs in comp.items():

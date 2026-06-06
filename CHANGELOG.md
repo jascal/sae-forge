@@ -5,6 +5,26 @@ their corresponding OpenSpec change is archived.
 
 ## [Unreleased]
 
+### Changed
+
+- **`U_C` is now the circuit writers' OV-output (`two-basis-uc-writer-output`).**
+  The composition subspace is redefined from the aggregate per-layer
+  reader-geometry to the orthonormalised union of the **OV-output row spaces of
+  the circuit's writer heads** (`extract_writer_subspace`). On an alive
+  single-layer GPT-2 forge this removes the induction-predictable KL excess
+  (−111%) where reader-geometry does not (−6%), and the label-free attribution
+  subspace (`∂loss/∂residual`) is ~orthogonal to it (overlap 0.05) and fails
+  (+14% worse) — *loss-sensitivity ≠ circuit-mechanism*, so writers are
+  identified mechanistically. New `saeforge.circuit_heads` detects writers
+  behaviorally (`prev-token` / `duplicate-token` presets, by Δ=1 /
+  same-token-earlier attention). `ForgePipeline.composition_heads` now accepts a
+  preset, an explicit `(layer, head)` list, or `"all"`; new
+  `composition_mode={"writer-output" (default),"reader-geometry"}`; CLI gains
+  `--composition-mode` and `--composition-heads` accepts presets / `L.H` lists /
+  `all`. The run report records the writer heads with their detection scores and
+  the mode. The legacy reader-geometry path remains as a documented ablation.
+  Default-off and byte-identical when disabled (gate unchanged).
+
 ## [0.13.0] — 2026-06-06
 
 **Two-basis forge release (`two-basis-forge`).** Preserves *two* residual

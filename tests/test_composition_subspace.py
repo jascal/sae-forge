@@ -12,7 +12,7 @@ from saeforge.composition_subspace import (
 
 
 def test_U_orthonormal_and_rank_bounded(tiny_gpt2):
-    subs = extract_composition_subspace(tiny_gpt2, layers=[0, 1], rank=4)
+    subs = extract_composition_subspace(tiny_gpt2, layers=[0, 1], rank=4, mode="reader-geometry")
     assert set(subs) == {0, 1}
     for s in subs.values():
         d, r = s.U.shape
@@ -23,9 +23,13 @@ def test_U_orthonormal_and_rank_bounded(tiny_gpt2):
 
 
 def test_records_ln_meansub_approximation(tiny_gpt2):
-    subs = extract_composition_subspace(tiny_gpt2, layers=[0], rank=4, fold_ln1=True)
+    subs = extract_composition_subspace(
+        tiny_gpt2, layers=[0], rank=4, fold_ln1=True, mode="reader-geometry"
+    )
     assert subs[0].metadata["ln_meansub_approx"] is True
-    no_fold = extract_composition_subspace(tiny_gpt2, layers=[0], rank=4, fold_ln1=False)
+    no_fold = extract_composition_subspace(
+        tiny_gpt2, layers=[0], rank=4, fold_ln1=False, mode="reader-geometry"
+    )
     assert no_fold[0].metadata["ln_meansub_approx"] is False
 
 
@@ -35,7 +39,9 @@ def test_U_C_captures_QK_read_geometry(tiny_gpt2):
     cfg = tiny_gpt2.config
     d, H = cfg.n_embd, cfg.n_head
     hd = d // H
-    subs = extract_composition_subspace(tiny_gpt2, layers=[0], rank=d)  # full rank → exact
+    subs = extract_composition_subspace(
+        tiny_gpt2, layers=[0], rank=d, mode="reader-geometry"
+    )  # full rank → exact
     U = subs[0].U
     P = U @ U.T  # projector onto span(U_C)
 
@@ -58,8 +64,12 @@ def test_U_C_captures_QK_read_geometry(tiny_gpt2):
 
 
 def test_head_restriction_shrinks_source(tiny_gpt2):
-    full = extract_composition_subspace(tiny_gpt2, layers=[0], rank=4, heads="all")[0]
-    restricted = extract_composition_subspace(tiny_gpt2, layers=[0], rank=4, heads=[0, 1])[0]
+    full = extract_composition_subspace(
+        tiny_gpt2, layers=[0], rank=4, heads="all", mode="reader-geometry"
+    )[0]
+    restricted = extract_composition_subspace(
+        tiny_gpt2, layers=[0], rank=4, heads=[0, 1], mode="reader-geometry"
+    )[0]
     assert full.source_heads == "all"
     assert restricted.source_heads == [0, 1]
     # restricting to 2 of 4 heads cannot increase the captured rank
@@ -74,7 +84,7 @@ def test_non_gpt2_host_raises():
         config = _Cfg()
 
     with pytest.raises(NotImplementedError, match="gpt2"):
-        extract_composition_subspace(_Host(), layers=[0])
+        extract_composition_subspace(_Host(), layers=[0], mode="reader-geometry")
 
 
 def test_compositionsubspace_validates_orthonormality():

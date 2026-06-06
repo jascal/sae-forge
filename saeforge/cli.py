@@ -14,6 +14,34 @@ if TYPE_CHECKING:
     from saeforge.forge_quality import QualityThresholds  # noqa: F401
 
 
+def _parse_composition_heads(spec: str):
+    """Map the --composition-heads CLI string to a ForgePipeline value.
+
+    'prev-token' / 'duplicate-token' / 'all' pass through as strings; a comma list of 'L.H' tokens
+    (e.g. '4.11,2.2') becomes an explicit [(layer, head), ...] writer list.
+    """
+    if spec in ("prev-token", "duplicate-token", "all"):
+        return spec
+    heads = []
+    for tok in spec.split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        if "." not in tok:
+            raise argparse.ArgumentTypeError(
+                f"--composition-heads: explicit writer {tok!r} must be 'L.H' (e.g. '4.11'); "
+                "or use a preset ('prev-token' / 'duplicate-token') or 'all'."
+            )
+        L, h = tok.split(".", 1)
+        heads.append((int(L), int(h)))
+    if not heads:
+        raise argparse.ArgumentTypeError(
+            f"--composition-heads={spec!r} parsed to no writer heads; "
+            "use 'L.H,...', a preset, or 'all'."
+        )
+    return heads
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="sae-forge",
@@ -178,8 +206,23 @@ def _build_parser() -> argparse.ArgumentParser:
     forge.add_argument(
         "--composition-heads",
         type=str,
-        default="all",
-        help="'all' (default) or a comma-separated head-index list to restrict U_C's source heads.",
+        default="prev-token",
+        help=(
+            "Writer-head selector for U_C: a behavioral preset ('prev-token' (default) / "
+            "'duplicate-token') detected on the eval corpus, a comma-separated 'L.H' list of explicit "
+            "(layer, head) writers (e.g. '4.11,2.2'), or 'all' (legacy reader-geometry, weaker)."
+        ),
+    )
+    forge.add_argument(
+        "--composition-mode",
+        type=str,
+        default="writer-output",
+        choices=("writer-output", "reader-geometry"),
+        help=(
+            "How U_C is built. 'writer-output' (default, validated): the circuit writer heads' "
+            "OV-output row space. 'reader-geometry' (legacy/ablation): the aggregate per-layer "
+            "QK/OV read+write geometry — does NOT protect circuits."
+        ),
     )
     forge.add_argument(
         "--assertion-preserve",
@@ -1135,16 +1178,13 @@ def _cmd_forge(args: argparse.Namespace) -> int:
 
     two_basis_kwargs: dict = {}
     if args.composition_preserve or args.assertion_preserve:
-        heads = (
-            "all"
-            if args.composition_heads == "all"
-            else [int(x) for x in args.composition_heads.split(",") if x.strip()]
-        )
+        heads = _parse_composition_heads(args.composition_heads)
         two_basis_kwargs = dict(
             composition_preserve=args.composition_preserve,
             assertion_preserve=args.assertion_preserve,
             composition_rank=args.composition_rank,
             composition_heads=heads,
+            composition_mode=args.composition_mode,
             assertion_k=args.assertion_k,
         )
 
