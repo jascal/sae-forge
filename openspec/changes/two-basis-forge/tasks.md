@@ -1,20 +1,20 @@
 ## 1. Composition subspace extraction (`saeforge/composition_subspace.py`)
 
-- [ ] 1.1 New module `saeforge/composition_subspace.py`. `CompositionSubspace` dataclass: `U: np.ndarray` (`d_model × r`, orthonormal), `layer: int`, `rank: int`, `source_heads: list[int] | str`, `singular_tail: np.ndarray` (logged for the rank choice), `d_model: int`
-- [ ] 1.2 `__post_init__` validates `U` is `d_model × r` with orthonormal columns (`||UᵀU − I||_F < 1e-5`) and `r <= d_model`
-- [ ] 1.3 `extract_composition_subspace(host, *, layers, rank=None, heads="all", fold_ln1=True) -> dict[int, CompositionSubspace]`. Per layer: build read geometry `R = [W_Q^h | W_K^h]` over `heads`, write geometry `Wo = [W_V^h W_O^h]`, fold `ln_1.weight` into the residual side when `fold_ln1`, SVD each, take top-`rank` (or singular-value-knee when `None`), orthonormalise the union. Record the `ln_1` mean-subtraction rank-1 approximation (`ln_meansub_approx` + dropped-rank magnitude) in `CompositionSubspace.metadata` for the run report
+- [x] 1.1 New module `saeforge/composition_subspace.py`. `CompositionSubspace` dataclass: `U: np.ndarray` (`d_model × r`, orthonormal), `layer: int`, `rank: int`, `source_heads: list[int] | str`, `singular_tail: np.ndarray` (logged for the rank choice), `d_model: int`
+- [x] 1.2 `__post_init__` validates `U` is `d_model × r` with orthonormal columns (`||UᵀU − I||_F < 1e-5`) and `r <= d_model`
+- [x] 1.3 `extract_composition_subspace(host, *, layers, rank=None, heads="all", fold_ln1=True) -> dict[int, CompositionSubspace]`. Per layer: build read geometry `R = [W_Q^h | W_K^h]` over `heads`, write geometry `Wo = [W_V^h W_O^h]`, fold `ln_1.weight` into the residual side when `fold_ln1`, SVD each, take top-`rank` (or singular-value-knee when `None`), orthonormalise the union. Record the `ln_1` mean-subtraction rank-1 approximation (`ln_meansub_approx` + dropped-rank magnitude) in `CompositionSubspace.metadata` for the run report
 - [ ] 1.4 Layer-index + head-slice extraction reuses the architecture adapter's `layer_index_for` / head geometry helpers so non-GPT-2 hosts plug in (GPT-2 `c_attn` Conv1D slicing handled in the adapter, not here)
 - [ ] 1.5 Budget reporting: `preserved_fraction(d_model)` = `r / d_model`; warn-log when any layer exceeds a configurable budget cap (default 0.25)
-- [ ] 1.6 Tests `tests/test_composition_subspace.py`: orthonormality; rank honoured; `heads` list restricts the source; the algebraic invariant — for a tiny GPT-2, `Uᵀ M_h U` (QK in the preserved subspace) matches the host `M_h` restricted to `U` to `1e-6`
+- [x] 1.6 Tests `tests/test_composition_subspace.py`: orthonormality; rank honoured; `heads` list restricts the source; the algebraic invariant — for a tiny GPT-2, `Uᵀ M_h U` (QK in the preserved subspace) matches the host `M_h` restricted to `U` to `1e-6`
 
 ## 2. Augmented basis (`saeforge/augmented_basis.py`)
 
-- [ ] 2.1 New module `saeforge/augmented_basis.py`. `AugmentedBasis` dataclass: `basis: FeatureBasis`, `assertion_atoms: np.ndarray | None` (`U_A`, `K_A × d_model`), `composition: dict[int, CompositionSubspace] | None`
-- [ ] 2.2 `__post_init__` validates `d_model` agreement across `basis.W_dec`, `U_A`, every `U_C`; raises `ValueError` naming the mismatched source and the two conflicting `d_model` values
-- [ ] 2.3 `kept_subspace(layer) -> (W_dec_eff, preserve_mask)`: orthonormalise the stack `[U_A ; U_C[layer] ; W_dec_remainder]` (Gram–Schmidt with the verbatim rows first so they are preserved exactly), and return the boolean `preserve_mask` marking which effective rows must be written verbatim vs. Polygram-merged. `W_dec_remainder` = `basis.W_dec` with the components already in `span(U_A ∪ U_C)` removed
-- [ ] 2.4 `preserved_dimension(layer) -> int` and `preserved_fraction(layer, d_model) -> float` for reporting
-- [ ] 2.5 When `assertion_atoms is None and composition is None`, `kept_subspace` returns `(basis.W_dec, all-False mask)` — i.e. the single-basis path, byte-identical
-- [ ] 2.6 Tests `tests/test_augmented_basis.py`: kept-subspace orthonormality; preserve-mask marks exactly the `U_A ∪ U_C` rows; `d_model` mismatch raises; budget fraction; null-augment returns the original `W_dec` unchanged
+- [x] 2.1 New module `saeforge/augmented_basis.py`. `AugmentedBasis` dataclass: `basis: FeatureBasis`, `assertion_atoms: np.ndarray | None` (`U_A`, `K_A × d_model`), `composition: dict[int, CompositionSubspace] | None`
+- [x] 2.2 `__post_init__` validates `d_model` agreement across `basis.W_dec`, `U_A`, every `U_C`; raises `ValueError` naming the mismatched source and the two conflicting `d_model` values
+- [x] 2.3 `kept_subspace(layer) -> (W_dec_eff, preserve_mask)`: orthonormalise the stack `[U_A ; U_C[layer] ; W_dec_remainder]` (Gram–Schmidt with the verbatim rows first so they are preserved exactly), and return the boolean `preserve_mask` marking which effective rows must be written verbatim vs. Polygram-merged. `W_dec_remainder` = `basis.W_dec` with the components already in `span(U_A ∪ U_C)` removed
+- [x] 2.4 `preserved_dimension(layer) -> int` and `preserved_fraction(layer, d_model) -> float` for reporting
+- [x] 2.5 When `assertion_atoms is None and composition is None`, `kept_subspace` returns `(basis.W_dec, all-False mask)` — i.e. the single-basis path, byte-identical
+- [x] 2.6 Tests `tests/test_augmented_basis.py`: kept-subspace orthonormality; preserve-mask marks exactly the `U_A ∪ U_C` rows; `d_model` mismatch raises; budget fraction; null-augment returns the original `W_dec` unchanged
 
 ## 3. Projector dispatch (`saeforge/projector.py`)
 
