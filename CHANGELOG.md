@@ -5,6 +5,20 @@ their corresponding OpenSpec change is archived.
 
 ## [Unreleased]
 
+## [0.13.0] — 2026-06-06
+
+**Two-basis forge release (`two-basis-forge`).** Preserves *two* residual
+subspaces verbatim inside the projection — the assertion subspace `U_A` (sharp
+atoms → recovers `cov95`) and the per-layer composition subspace `U_C` (the host
+attention QK/OV read+write geometry → forged circuits stay faithful), with the
+Polygram basis carrying the orthogonal remainder. Operationalizes the `lm-sae`
+finding that a single residual basis cannot carry both 1-operand assertions and
+2-operand composition: forged QK/OV reproduce the host on `span(U_C)` (verified
+to 1e-6/1e-9), and the new `circuit_kl` (induction-predictable tokens) measures
+the fidelity global KL is blind to. Default-off and byte-identical when
+disabled; orthogonal to `hybrid-bridge-forge`. GPU-scale defaults decision
+pending `scripts/compare_single_vs_two_basis_gpt2.py` on Intel/GPT-2.
+
 ### Added
 
 - **Two-basis forge (`two-basis-forge`).** Opt-in forge path that preserves two
