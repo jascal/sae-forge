@@ -5,6 +5,22 @@ their corresponding OpenSpec change is archived.
 
 ## [Unreleased]
 
+### Changed
+
+- **Retracted the writer-output `U_C` circuit-preservation claim from v0.14.0
+  (docs only; no code change).** The "−111% induction-tax removal" rested on
+  `excess = induction_kl − complement_kl`, a *gameable* metric (a subspace can
+  lower it by damaging the complement rather than preserving the circuit). A
+  compression-controlled re-validation (`lm-sae` PRs #7/#8/#9 — rank swept at
+  matched `complement_kl` across layers 5–7 with random-subspace controls) found
+  writer-output `U_C` never reduces `induction_kl` below the recon-only baseline,
+  is indistinguishable from a random OV-output subspace at matched compression,
+  and at deeper layers makes induction worse (`writer_OV` won 0/6 configs). The
+  mechanism (preserve a subspace; default-off; byte-identical when disabled) is
+  unchanged and correct — only the evidence is retracted. `composition_mode=
+  "writer-output"` is now documented as **experimental / unvalidated**; see the
+  caveat in `docs/two_basis_forge.md`.
+
 ## [0.14.0] — 2026-06-06
 
 **Writer-output `U_C` release (`two-basis-uc-writer-output`).** Redefines the

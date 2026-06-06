@@ -1,5 +1,26 @@
 # Two-basis forge (composition-subspace preserve)
 
+> **⚠️ Validation retracted (2026-06 compression-controlled re-test).** The
+> writer-output `U_C` **circuit-preservation claim below (the "−111% induction
+> tax removal") does NOT hold** under a non-gameable metric. It rested on
+> `excess = induction_kl − complement_kl`, which is *gameable*: preserving a
+> subspace also changes overall compression, and a subspace can lower the excess
+> by damaging the *complement* rather than preserving the circuit. A
+> compression-controlled re-validation (`lm-sae` PRs #7/#8/#9, sweeping rank at
+> matched `complement_kl` across layers 5–7 with random-subspace controls) found
+> writer-output `U_C` (a) never reduces `induction_kl` below the recon-only
+> baseline, (b) is indistinguishable from a *random* OV-output subspace at
+> matched compression, and (c) at deeper induction layers makes induction
+> *worse* — `writer_OV` won 0/6 (layer, rank) configs. The −111% was the
+> complement rising, not induction preserved.
+>
+> The **mechanism is unchanged and correct** (preserve a subspace inside the
+> projection; default-off; byte-identical when disabled — the tests below verify
+> that wiring). Only the *circuit-preservation evidence* is retracted. Treat
+> `composition_mode="writer-output"` as **experimental / unvalidated** and do not
+> rely on the −111% figure. The table in "Why writer-output" is kept for the
+> record with this caveat.
+
 A forge run projects every host weight through a single `FeatureBasis` — a
 *residual / feature* basis whose rows read 1-operand **assertions** (token
 identity, lexical class). The forge tax is that this preserves `mAUC` but
@@ -62,10 +83,16 @@ single-basis** at a non-regressing global KL.
 
 ## Why writer-output, not reader-geometry or attribution
 
+> **Retracted — see the caveat at the top of this doc.** The `excess`-based
+> evidence in this section did not survive a compression-controlled re-test;
+> the writer-output `U_C` is not a validated circuit-preserve. Kept for the
+> record.
+
 `U_C` was redefined from the aggregate reader-layer geometry to the writer
 heads' OV-output after an **alive single-layer GPT-2 forge** (`lm-sae`,
 `two_basis_single_layer.py`) measured the induction-predictable KL *excess*
-each candidate subspace removes:
+each candidate subspace removes (the `excess` metric is **gameable** — see the
+caveat; these numbers are not reliable):
 
 | `U_C` candidate | what it preserves | induction excess removed |
 |---|---|---|
