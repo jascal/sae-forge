@@ -210,7 +210,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Writer-head selector for U_C: a behavioral preset ('prev-token' (default) / "
             "'duplicate-token') detected on the eval corpus, a comma-separated 'L.H' list of explicit "
-            "(layer, head) writers (e.g. '4.11,2.2'), or 'all' (legacy reader-geometry, weaker)."
+            "(layer, head) writers, or 'all' (legacy reader-geometry, weaker). "
+            "Examples: 'prev-token' | '4.11,2.2' | 'all'."
         ),
     )
     forge.add_argument(

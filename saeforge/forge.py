@@ -898,8 +898,12 @@ class ForgePipeline:
                     self._last_writers = [(int(L), int(h), None) for (L, h) in writers]
                 if not writers:
                     raise ValueError(
-                        f"ForgePipeline: composition_heads={ch!r} resolved to no writer heads "
-                        "(none above the detection threshold); pass an explicit (layer,head) list."
+                        f"ForgePipeline: composition_heads={ch!r} detected no writer heads on the "
+                        "calibration corpus (none above the attention threshold). This forge does NOT "
+                        "silently fall back — choose one explicitly: pass an explicit (layer,head) "
+                        "list, use a longer/more-repetitive eval corpus, or set "
+                        "composition_mode='reader-geometry' (composition_heads='all') for the "
+                        "circuit-agnostic legacy subspace."
                     )
                 composition = extract_composition_subspace(
                     host, layers=list(range(int(n_layer))), rank=self.composition_rank,
