@@ -923,6 +923,7 @@ def _extract_host_activations(
 # block accessor here (e.g. Llama-style: ``lambda m, layer: m.model.layers[layer]``).
 _FORGED_BLOCK_ACCESSORS = {
     "gpt2": lambda m, layer: m.transformer.h[layer],
+    "gpt_neox": lambda m, layer: m.gpt_neox.layers[layer],
 }
 
 

@@ -68,11 +68,36 @@ The bring-up found and fixed two real issues, now regression-guarded: (i) `parti
 defaulting to 1.0 (rope_parameters migration); (ii) the dtype trap — real Pythia checkpoints load in float16,
 so faithfulness must be judged on **relative** error / argmax, not an absolute |Δ| threshold.
 
+### Pythia-ladder RESULT (2026-06-13) — the GPT-2 forge-level win does NOT generalize
+
+With the adapter in place, the **causal forge gate ran on Pythia** (`scripts/pythia_ladder_gate.py`, fetching
+EleutherAI sparsify `sae-pythia-{70m,160m}-32k` from HF; the `gpt_neox` forged-block accessor was wired into
+`sweep_capability._FORGED_BLOCK_ACCESSORS`). Same protocol as the GPT-2 forge gate (proxy-train `E` +
+full-multi-layer-forge score, trained vs `pinv` retained-mAUC). Data: `scripts/pythia_ladder_gate_results.json`.
+
+| host + SAE | n=128 Δ (trained − pinv) | verdict |
+|---|---|---|
+| **GPT-2** + jbloom **ReLU** SAE | **+0.039 ± 0.003** (~13σ) | SURVIVES |
+| **Pythia-70m** + sparsify **TopK** SAE (3 seeds) | **−0.030 ± 0.005** (~6σ) | **ERASED** |
+| **Pythia-160m** + sparsify **TopK** SAE (2 seeds) | +0.0001 ± 0.0003 | TIE |
+
+**The GPT-2 forge-level trained-encoder win does NOT generalize across causal architectures** — it reverses to
+tie/negative on *both* Pythia rungs. This **falsifies** the "causal hosts win" reading from the earlier
+activation-level control. The surviving pattern tracks **SAE type / decoder geometry**, not host causality:
+ReLU + unnormalized decoder (GPT-2) → `pinv` suboptimal → trained gains; **TopK + normalized decoder** (Pythia
+*and* ESM-2) → `pinv` near-optimal → trained can't. The standing SAE-type confound is now the *leading*
+hypothesis, and the clean isolation is a **matched-SAE control** (same host, a ReLU vs a TopK SAE). *Caveat:*
+the Pythia gate uses a restricted-ReLU task encoder over the TopK SAE's directions (TopK gating dropped for
+training tractability), so "SAE type" here means the **decoder geometry the dictionary was trained with**.
+Descriptive; no overclaim — the ladder's value is precisely that it broke the host-class conclusion.
+
 ## What this does NOT solve
 
-- **No Pythia SAE shipped.** The adapter makes the *forge* run on Pythia; the capability *gate* additionally
-  needs a Pythia SAE (none cached locally). The Pythia-ladder trained-encoder experiment is unblocked but
-  awaits an SAE.
+- **Matched-SAE control still open.** The Pythia ladder points the trained-encoder win at SAE type rather than
+  host class, but a same-host ReLU-vs-TopK SAE pair is the decisive isolation (offline-blocked: needs a TopK
+  GPT-2 SAE or a ReLU Pythia SAE; both are fetchable / trainable as a follow-up).
+- **Ladder is 2 rungs.** EleutherAI `sae-pythia-*-32k` exists for 70m + 160m only; 410m–2.8b lack that SAE
+  release (the *forge* runs on all of them — only the SAE is missing).
 - **`attention_width="host"` only** in v1 (feature_native QKV both-sides projection raises — a follow-up).
 - **No `host_wrapped_module`** (v1 ships GPT-2 only there; inherits the base `NotImplementedError`).
 - **No rope_scaling** beyond Pythia's default (NeoX hosts with linear/dynamic/yarn scaling are a follow-up).

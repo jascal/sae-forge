@@ -1,0 +1,73 @@
+{
+  "experiment": "Pythia-ladder causal forge gate (gpt_neox adapter; proxy-train E + full multi-layer forge score, trained vs pinv retained-mAUC)",
+  "date": "2026-06-13",
+  "saes": "EleutherAI sparsify sae-pythia-{70m:layers.3,160m:layers.6}-32k (TopK k=16, normalize_decoder=true); host_layer=sae_block+1 (verified by recon cosine)",
+  "protocol": "identical to causal_host_forge_gate.py (GPT-2): SAE-derived labels, restricted-ReLU task encoder, per-token feed, 200 steps; 70m=3 seeds, 160m=2 seeds.",
+  "rungs": {
+    "EleutherAI/pythia-70m": [
+      {
+        "width": 64,
+        "n_seeds": 3,
+        "delta_mean": -0.0027405496456519205,
+        "delta_std": 0.008361124395652054,
+        "pinv_mean": 0.7174985865477442,
+        "trained_mean": 0.7147580369020923,
+        "gate": "ERASED"
+      },
+      {
+        "width": 128,
+        "n_seeds": 3,
+        "delta_mean": -0.029711191706771018,
+        "delta_std": 0.004869081040371309,
+        "pinv_mean": 0.7421100287804444,
+        "trained_mean": 0.7123988370736735,
+        "gate": "ERASED"
+      },
+      {
+        "width": 256,
+        "n_seeds": 3,
+        "delta_mean": 0.0022978374312729866,
+        "delta_std": 0.0025675333858206765,
+        "pinv_mean": 0.7075253022029816,
+        "trained_mean": 0.7098231396342545,
+        "gate": "SURVIVES"
+      }
+    ],
+    "EleutherAI/pythia-160m": [
+      {
+        "width": 64,
+        "n_seeds": 2,
+        "delta_mean": 0.002736925027167436,
+        "delta_std": 0.002191045178048634,
+        "pinv_mean": 0.6911602261550112,
+        "trained_mean": 0.6938971511821785,
+        "gate": "SURVIVES"
+      },
+      {
+        "width": 128,
+        "n_seeds": 2,
+        "delta_mean": 5.730197308162488e-05,
+        "delta_std": 0.00029027124702241114,
+        "pinv_mean": 0.6913114897481683,
+        "trained_mean": 0.6913687917212499,
+        "gate": "TIE"
+      },
+      {
+        "width": 256,
+        "n_seeds": 2,
+        "delta_mean": -0.017810947205697314,
+        "delta_std": 0.00606486721278221,
+        "pinv_mean": 0.7036634065786648,
+        "trained_mean": 0.6858524593729675,
+        "gate": "ERASED"
+      }
+    ]
+  },
+  "comparison_at_n128": {
+    "gpt2_jbloom_relu": "+0.039 SURVIVES (~13s)",
+    "pythia70m_sparsify_topk": "-0.030 ERASED (~6s)",
+    "pythia160m_sparsify_topk": "+0.0001 TIE",
+    "esm2_bio_topk_activation_level": "~0 TIE"
+  },
+  "verdict": "The GPT-2 forge-level trained-encoder win does NOT generalize across causal architectures \u2014 it reverses to tie/negative on both Pythia rungs. The 'causal hosts win' reading is FALSIFIED. The pattern tracks SAE TYPE / decoder geometry (ReLU+unnormalized decoder -> pinv suboptimal -> trained gains; TopK+normalized decoder -> pinv near-optimal -> trained can't), not host causality. Descriptive; a matched-SAE control (same host, ReLU vs TopK SAE) is the clean isolation. Caveat: the Pythia gate uses a restricted-ReLU task encoder over the TopK SAE's directions (TopK gating dropped for training tractability), so 'SAE type' here means the decoder geometry the dictionary was TRAINED with, not the eval-time activation."
+}
