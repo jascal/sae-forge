@@ -27,47 +27,84 @@ a *measurement of the interpretability cost*, and the gap to the host is the *ge
 At each width `N`, the sweep already computes the interpretable forge. The diagnostic adds two more
 **activation-level** retained-mAUC quantities (the basis-quality level — no full forge needed for the oracle):
 
-| quantity | definition | role |
-|---|---|---|
-| `retained_mauc_svd` | project host activations onto the top-`N` readout-aligned **SVD** subspace | reference (the τ\* / frozen-linear floor) |
-| `retained_mauc_pinv` | `pinv`(top-`N` **SAE atoms**) — the interpretable basis | **← the shipped forge's basis** |
-| `retained_mauc_ceiling` | a **trained** rank-`N` subspace (init readout-aligned SVD, fit on the capability target, held-out, `overfit_flag`-guarded) | **oracle only — never shipped** |
+**Four reference points** (`retained_mauc`, activation-level), from "what ships" to "the oracle". The middle
+two are both **interpretable** (SAE atoms); the gap between them is where action lives.
 
-Derived, surfaced on `ParetoFrontierRow`:
+| quantity | definition | interpretable? |
+|---|---|:--:|
+| `retained_mauc_svd` | top-`N` readout-aligned **SVD** subspace | n/a (reference) |
+| `retained_mauc_pinv` | `pinv`(top-`N`-**by-norm** SAE atoms) — today's default basis | ✅ **← ships** |
+| `retained_mauc_best_atoms` | `pinv`(best-`N` SAE atoms by **readout-aligned selection** = X1) | ✅ best *interpretable* basis |
+| `retained_mauc_ceiling` | a **trained** rank-`N` subspace (any directions) — the oracle | ❌ never shipped |
 
-- **`interpretability_tax` = ceiling − pinv** — capability the *interpretable* basis leaves on the table (only
-  recoverable by giving up feature-level interpretability).
-- **`irreducible_floor_gap` = host − ceiling** — what *even* the capability-optimal subspace can't recover at
-  rank `N` (the genuine entropy-rank + cross-layer-composition tax; **OPEN** whether truly irreducible, per
-  `no-necessity-claims`).
+**Why the `best_atoms` row matters (the load-bearing refinement, from review).** `ceiling − pinv` lumps two
+very different gaps: "*I picked the wrong atoms*" (fixable) and "*even the best atoms can't span the task as
+well as free directions*" (intrinsic to insisting on interpretable features). Splitting at `best_atoms`
+separates them, so the diagnostic is **actionable**, not just descriptive. Derived gaps on
+`ParetoFrontierRow`:
 
-Note this is the **basis-quality** decomposition (activation level). The existing full-forge tax (LayerNorm /
-TopK non-commutation) sits *on top* of it; this diagnostic isolates "is the SAE basis a good rank-`N`
+- **`selection_gap` = best_atoms − pinv** — *fixable by better atom selection* (X1, **interpretability
+  preserved**). This is the gap you should chase.
+- **`interpretability_tax` = ceiling − best_atoms** — *the intrinsic cost of insisting on SAE atoms*; even the
+  best interpretable selection cannot match free directions. Not a bug to fix — a tradeoff to **accept or
+  reject** at a given rank.
+- **`ceiling_gap` = host − ceiling** — what *even* free directions can't recover at rank `N` (entropy-rank +,
+  in the full forge, composition). **A measured gap at rank `N`, achievability OPEN** (`no-necessity-claims`)
+  — *renamed from "irreducible_floor_gap" per review; it is not a proven floor.*
+
+**Scope (stated, per review):** this is the **activation-level basis-quality** decomposition. The existing
+full-forge tax (LayerNorm / TopK non-commutation) sits *on top*; this isolates "is the SAE basis a good rank-`N`
 subspace?" from "does the multi-layer forge degrade it further?"
+
+### How the ceiling oracle is trained (design note, per review — the tax is only as good as this)
+
+`retained_mauc_ceiling` is a **single linear rank-`N` projection** `B` (`d_model × N`), **not** an iterative or
+non-linear model: `B` initialised at the readout-aligned SVD subspace, readout **tied** to the task encoder
+(R2-tied form — matched capacity to a rank-`N` lens, no free readout to overfit), trained by Adam on a
+cross-entropy/distill objective against the held-out capability target, reusing `train_encoder`'s split /
+early-stop / **scoring-only-AUC** / `overfit_flag` discipline. It is therefore an **empirical ceiling** (the
+best subspace *this recipe* finds), not a proven global optimum — so `interpretability_tax` is a **lower
+bound** on the intrinsic cost. To bound the recipe's quality the gate SHALL also report a **random-subspace
+floor** (mean over a few random rank-`N` projections) and **multi-init** spread, so a reader can see the
+ceiling sits well above random and is init-stable. **Circularity guard (per review):** labels are derived from
+the SAE's own features, and the oracle trains on them — to avoid the oracle trivially chasing a self-referential
+target, the label-defining features SHALL be **held out** of the oracle's training target (train on the
+*complement* features / an independent signal where available, e.g. next-token buckets for LM hosts).
 
 ## What it drives (the interpretable pipeline — nothing opaque ships)
 
-- **Large `interpretability_tax`** → the SAE dictionary / **which-atoms selection** is leaving capability on
-  the table. Act on the *basis* (better SAE, readout-aligned **selection** of atoms — X1) — **not** the encoder
-  (X2's near-no-op). Interpretability preserved; you just pick better *features*.
-- **Small `interpretability_tax`** → the SAE basis is already near the rank-`N` optimum; stop tuning the basis,
-  the residual is `irreducible_floor_gap`.
+- **Large `selection_gap`** → you kept the wrong atoms; **fix it with readout-aligned selection (X1)** — a
+  greedy/supervised atom score over the SAE dictionary (and, where available, Polygram's hierarchical
+  merge machinery). *This is the actionable lever; interpretability is preserved.*
+- **Large `interpretability_tax` (after selection)** → the *intrinsic* price of an SAE-feature basis at this
+  rank — surface it as a **conscious tradeoff** (accept the tax for interpretability, or raise the rank), not
+  a tuning target.
+- **Large `ceiling_gap`** → even free directions are rank-`N`-limited here; raise `N` or accept the floor.
 - Reported **cross-architecture** (GPT-2 + Pythia, via the merged `gpt_neox` adapter) so the decomposition is
   not single-host.
 
+### The metric, defined (per review — not deferred to prior PRs)
+
+`retained_mauc = (basis feature-label AUC) / (host feature-label AUC)`, where for a candidate rank-`N` basis
+`P` (projection of host activations): score the SAE encoder applied to `P(host_acts)` against the **labels**
+(the SAE's prevalence-band features, binarised; the oracle's training target holds those features out — see
+the circularity guard). AUC is per-feature Mann–Whitney, `mAUC` = mean over labels of max-over-latents. All
+four quantities use the **same** labels + the **same** held-out items, so the gaps are apples-to-apples.
+
 ## Falsifiable acceptance gate (descriptive, both outcomes first-class)
 
-On GPT-2 + Pythia-70m at compressed widths, multi-seed: report the three retained-mAUC quantities + the two
-gaps. Expectations (pre-committed, not gating a "win"):
+On GPT-2 + Pythia-70m at compressed widths, multi-seed: report the **four** retained-mAUC quantities + the
+**three** gaps + the **random-subspace floor** + multi-init spread. Expectations (pre-committed, not gating a
+"win"):
 
-- Per R2 (model-general), **`retained_mauc_ceiling` > `retained_mauc_pinv` and > `retained_mauc_svd`** on both
-  hosts → there *is* a measurable interpretability tax (the SAE basis is not the rank-`N` optimum), and it's
-  not host-specific.
-- If `ceiling ≈ pinv` → the SAE basis already *is* near the rank-`N` optimum (no interpretability tax to pay) —
-  an equally-useful, reportable outcome.
+- Per R2 (model-general), **`ceiling > best_atoms ≥ pinv > svd ≫ random`** on both hosts → the recipe produces
+  a real ceiling and a measurable, host-general decomposition.
+- The scientifically interesting splits: is the gap mostly **`selection_gap`** (fixable — chase X1) or mostly
+  **`interpretability_tax`** (intrinsic — a real tradeoff)? Either is a useful, reportable answer.
 
 The verdict is the **decomposition**, not a pass/fail. No "irreducible" / "closes the tax" language for
-`irreducible_floor_gap` — it is a *measured gap at rank `N`*, achievability open.
+`ceiling_gap` — it is a *measured gap at rank `N`*, achievability open, and the ceiling itself is empirical
+(a lower bound on the intrinsic cost).
 
 ## Scope / what this is NOT
 

@@ -2,41 +2,45 @@
 
 ## 0. Design pre-locks (blocking)
 
-- [ ] 0.1 Lock the **activation-level** oracle: the ceiling is a trained rank-`N` projection fit on host
-  activations against the capability target (R2-tied style: init readout-aligned SVD, readout/decode tied to
-  the task encoder), held-out + `overfit_flag`-guarded — NOT trained through the full forge. Confirm it is
-  measured at the same level as `retained_mauc_pinv` (activation-level decode∘encode) so the gap is
-  apples-to-apples.
-- [ ] 0.2 Lock that the trained subspace is **never** returned/persisted as a forge basis — oracle only. No
-  code path lets `project_module` consume it.
+- [ ] 0.1 Lock the **activation-level** measurement: every quantity (`svd` / `pinv` / `best_atoms` / `ceiling` /
+  `random`) is a rank-`N` projection of host activations scored through the SAE encoder against the same
+  labels on the same held-out items — apples-to-apples. NOT through the full forge (that tax sits on top).
+- [ ] 0.2 Lock the **ceiling recipe** (per review — the tax is only as good as this): a single linear rank-`N`
+  projection `B`, init readout-aligned SVD, readout **tied** to the task encoder, Adam on the held-out
+  capability target, `train_encoder`-style split / early-stop / scoring-only-AUC / `overfit_flag`. Empirical
+  ceiling = **lower bound** on the intrinsic cost (document, don't claim global optimum).
+- [ ] 0.3 Lock the **circularity guard**: the label-defining SAE features are **held out** of the ceiling
+  oracle's training target (train on complement features / independent signal); scoring still uses the labels.
+- [ ] 0.4 Lock that the trained subspace is **never** returned/persisted/forged — oracle only.
 
-## 1. The ceiling oracle — `saeforge/training` (reuse the X2 machinery)
+## 1. The reference quantities — `saeforge/training` (reuse X2 machinery)
 
-- [ ] 1.1 `train_subspace_ceiling(host_acts, host_encoder, labels, n_features, init_svd, *, steps, seed)`:
-  fit a rank-`N` projection `B` (init readout-aligned SVD of the host decision geometry; fall back to top-`N`
-  SAE-atom span when no unembed), tied readout, on the held-out capability target; return
-  `retained_mauc_ceiling` + `overfit_flag`. Reuse `train_encoder`'s split / early-stop / scoring-only-AUC
-  discipline.
-- [ ] 1.2 `retained_mauc_svd`: project host activations onto the top-`N` readout-aligned SVD subspace
-  (`_readout_aligned_order` already computes the geometry) and score retained-mAUC.
+- [ ] 1.1 `retained_mauc_svd`: top-`N` readout-aligned SVD subspace projection (reuse `_readout_aligned_order`
+  geometry) → retained-mAUC.
+- [ ] 1.2 `retained_mauc_best_atoms`: `pinv` of the best-`N` SAE atoms by **readout-aligned selection** (the X1
+  ordering) — distinct from `pinv`(top-`N`-by-norm) which is `retained_mauc_pinv`.
+- [ ] 1.3 `train_subspace_ceiling(...)`: the ceiling recipe from 0.2 → `retained_mauc_ceiling` + `overfit_flag`.
+- [ ] 1.4 `retained_mauc_random`: mean over `k` random rank-`N` projections (floor) + multi-init ceiling spread.
 
 ## 2. `sweep_pareto_capability` — opt-in diagnostic
 
-- [ ] 2.1 `compute_capability_ceiling: bool = False`. When True, `_run_capability_cell` also computes
-  `retained_mauc_svd`, `retained_mauc_ceiling`, and the derived `interpretability_tax = ceiling − pinv` and
-  `irreducible_floor_gap = host − ceiling`. Default False ⇒ byte-identical to today.
-- [ ] 2.2 Surface the five fields on `ParetoFrontierRow` (+ `to_json_dict`); back-compat: omitted when the
-  flag is off (mirror the existing optional-capability-field pattern).
+- [ ] 2.1 `compute_capability_ceiling: bool = False`. When True, `_run_capability_cell` computes 1.1–1.4 and the
+  derived `selection_gap = best_atoms − pinv`, `interpretability_tax = ceiling − best_atoms`,
+  `ceiling_gap = 1.0 − ceiling`. Default False ⇒ byte-identical to today.
+- [ ] 2.2 Surface the fields on `ParetoFrontierRow` (+ `to_json_dict`); omitted when the flag is off.
 
 ## 3. Tests
 
-- [ ] 3.1 Synthetic fixture where the SAE atoms are a *bad* rank-`N` subspace → ceiling > pinv (a real
-  interpretability tax); and a fixture where SAE atoms ARE the optimal subspace → ceiling ≈ pinv. Assert the
-  decomposition fields populate and `interpretability_tax`/`irreducible_floor_gap` have the right signs.
-- [ ] 3.2 `compute_capability_ceiling=False` leaves rows byte-identical (the optional fields absent).
+- [ ] 3.1 **Selection-fixable fixture:** a *different* `N` atoms span a much better subspace than top-`N`-by-norm,
+  free directions add little → `selection_gap` dominant, `interpretability_tax` ≈ 0.
+- [ ] 3.2 **Intrinsic fixture:** no `N`-atom selection matches free directions → `interpretability_tax` dominant,
+  `selection_gap` small.
+- [ ] 3.3 `ceiling > random` always; `compute_capability_ceiling=False` byte-identical (fields absent).
 
 ## 4. Acceptance gate (descriptive — the decomposition IS the result)
 
-- [ ] 4.1 `scripts/capability_ceiling_gate.py`: report the three retained-mAUC quantities + the two gaps on
-  **GPT-2 + Pythia-70m** at compressed widths, multi-seed (reuse the gpt2 / pythia ladder fixtures). Route the
-  decomposition into the proposal "Gate RESULT". No pass/fail; no "irreducible"/"closes the tax" language.
+- [ ] 4.1 `scripts/capability_ceiling_gate.py`: report the four retained-mAUC quantities + three gaps + random
+  floor + multi-init spread on **GPT-2 + Pythia-70m** at compressed widths, multi-seed (reuse the gpt2 / pythia
+  fixtures). Route the decomposition into the proposal "Gate RESULT".
+- [ ] 4.2 **Descriptive verdict:** which gap dominates (`selection_gap` ⇒ chase X1; `interpretability_tax` ⇒ a
+  real interpretability tradeoff) per host/width. No pass/fail; no "irreducible"/"closes the tax" language.
