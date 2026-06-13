@@ -26,6 +26,17 @@ GPT-NeoX combines three features no single existing adapter had together:
    reshaped per-head `[q|k|v]`; **GELU MLP** (`dense_h_to_4h`/`dense_4h_to_h`) — all with biases; **untied**
    `embed_in`/`embed_out`.
 
+Architectural diff vs the nearest existing adapters (reader aid):
+
+| axis | GPT-2 | Llama/Gemma | **GPT-NeoX (this)** |
+|---|---|---|---|
+| residual | sequential | sequential | **parallel** (attn+mlp off same `x`) |
+| positions | learned `wpe` | full RoPE | **partial RoPE** (`rotary_pct`) |
+| norm | LayerNorm (+bias) | RMSNorm (no bias) | **LayerNorm (+bias)** |
+| QKV | fused `c_attn` | separate `q/k/v` | **fused `query_key_value`** (per-head `[q\|k\|v]`) |
+| MLP | GELU (+bias) | SwiGLU (no bias) | **GELU (+bias)** |
+| embeddings | tied | usu. tied | **untied** (`embed_in`/`embed_out`) |
+
 ## What
 
 ### 1. Partial rotary — `saeforge._positional.rope.apply_rotary_pos_emb_partial`
@@ -81,15 +92,34 @@ full-multi-layer-forge score, trained vs `pinv` retained-mAUC). Data: `scripts/p
 | **Pythia-70m** + sparsify **TopK** SAE (3 seeds) | **−0.030 ± 0.005** (~6σ) | **ERASED** |
 | **Pythia-160m** + sparsify **TopK** SAE (2 seeds) | +0.0001 ± 0.0003 | TIE |
 
-**The GPT-2 forge-level trained-encoder win does NOT generalize across causal architectures** — it reverses to
-tie/negative on *both* Pythia rungs. This **falsifies** the "causal hosts win" reading from the earlier
-activation-level control. The surviving pattern tracks **SAE type / decoder geometry**, not host causality:
-ReLU + unnormalized decoder (GPT-2) → `pinv` suboptimal → trained gains; **TopK + normalized decoder** (Pythia
-*and* ESM-2) → `pinv` near-optimal → trained can't. The standing SAE-type confound is now the *leading*
-hypothesis, and the clean isolation is a **matched-SAE control** (same host, a ReLU vs a TopK SAE). *Caveat:*
-the Pythia gate uses a restricted-ReLU task encoder over the TopK SAE's directions (TopK gating dropped for
-training tractability), so "SAE type" here means the **decoder geometry the dictionary was trained with**.
-Descriptive; no overclaim — the ladder's value is precisely that it broke the host-class conclusion.
+**What the gate measures (self-contained, not deferred to prior PRs).** For each width `N`: slice the SAE
+decoder to its top-`N` rows = the basis; forge the host onto it and run the full multi-layer forward; read the
+forged residual at the SAE's layer back through the SAE encoder. **Labels** = the SAE's own prevalence-band
+features, binarised. **retained-mAUC** = forged feature-label AUC / host feature-label AUC. The **trained**
+arm proxy-trains the encoder `E` (init `pinv(W_dec)`) to preserve the host's latents; the **`pinv`** arm is the
+Frobenius baseline. Δ = trained − `pinv`, held-out, multi-seed.
+
+**The GPT-2 forge win does NOT generalize to Pythia** — it reverses to tie/negative on both rungs, falsifying
+the "causal hosts win" reading from the earlier activation-level control. **But "decoder geometry, not host
+causality" is a candidate explanation, NOT the established takeaway — the dominant confound is unresolved:**
+GPT-2 used a **ReLU** SAE and Pythia a **TopK** SAE, so the reversal cannot be cleanly attributed to decoder
+geometry vs. the encoder being mis-specified for the SAE type. Stacked caveats: (i) **SAE-type mismatch is the
+leading confound — the clean isolation is a matched-SAE control (a ReLU vs a TopK SAE on the *same* host),
+which this PR does not run**; (ii) the Pythia gate uses a **restricted-ReLU task encoder over the TopK SAE's
+directions** (TopK gating dropped for training tractability) — not apples-to-apples; (iii) low power (2–3
+seeds, two small models). The descriptive, defensible claim is just: *the GPT-2 forge win did not replicate on
+Pythia under this protocol.*
+
+**Deeper resolution (powered-R2 follow-up, run after this gate; lands in `add-trained-subspace-projector`).**
+The forge gate's premise was itself a mis-transfer. fieldrun's **R2** ("a trained rank-`r` projection beats
+frozen SVD") trains the **subspace** (which directions to keep); the forge's X2 only trains the **encoder into
+a *fixed* SAE dictionary**, where `pinv` is already optimal — so it can win only on ill-conditioned (ReLU)
+dictionaries. And R2's actual lever is **model-general**: a powered rerun (`fieldrun/lo3a/tau_star_powered.py`,
+20k tokens, 3 seeds) gives trained-subspace − frozen-SVD open-class R@32 of **GPT-2 +52pp** and **Pythia-70m
++31pp** (the earlier "Pythia loses" was R2's *under-powered* 1199-token protocol). So the honest summary: the
+forge result is about *which knob you train* (subspace vs encoder-into-a-fixed-dictionary) and SAE
+conditioning — **not** host causality; the matched-SAE control + a `train_subspace` mode are the follow-ups
+that isolate it.
 
 ## What this does NOT solve
 
