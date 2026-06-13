@@ -91,9 +91,12 @@ def main():
           f"finite={finite}  sum|grad|={nonzero:.4f}  nonzero={nonzero > 0}")
 
     ok = match and finite and nonzero > 0
-    print(f"\nSPIKE VERDICT: {'PASS — autograd flows to E end-to-end through the ESM-2 forge, '
-          'and the differentiable path reproduces the inference forge at the baseline E. '
-          'differentiable_forge_h is feasible.' if ok else 'FAIL — see above.'}")
+    verdict = (
+        "PASS — autograd flows to E end-to-end through the ESM-2 forge, and the differentiable path "
+        "reproduces the inference forge at the baseline E. differentiable_forge_h is feasible."
+        if ok else "FAIL — see above."
+    )
+    print(f"\nSPIKE VERDICT: {verdict}")
     return 0 if ok else 1
 
 
