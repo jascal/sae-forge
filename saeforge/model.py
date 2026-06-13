@@ -31,6 +31,7 @@ _SUPPORTED_OUTPUT_KINDS = ("logits", "encoder_states")
 # actually-registered adapter and surfaces a clear error otherwise.
 _SUPPORTED_FAMILIES = (
     "gpt2",
+    "gpt_neox",
     "llama",
     "gemma2",
     "qwen2",

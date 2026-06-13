@@ -105,3 +105,27 @@ def apply_rotary_pos_emb(q, k, cos, sin):
     q_rot = (q * cos) + (_rotate_half(q) * sin)
     k_rot = (k * cos) + (_rotate_half(k) * sin)
     return q_rot, k_rot
+
+
+def apply_rotary_pos_emb_partial(q, k, cos, sin, rot_dim: int):
+    """**Partial** RoPE (GPT-NeoX / GPT-J style ``rotary_pct < 1``).
+
+    Rotary is applied to only the first ``rot_dim`` dimensions of each head; the remaining
+    ``head_dim - rot_dim`` dimensions pass through unrotated. Matches HF's ``GPTNeoXRotaryEmbedding`` +
+    ``GPTNeoXAttention`` (``rotary_ndims = int(head_dim * rotary_pct)``), which splits ``[rot | pass]`` along
+    the last axis, rotates the ``rot`` slice with the **same** rotate-half convention as full RoPE, and
+    concatenates. ``cos``/``sin`` MUST be built for ``rot_dim`` (i.e. ``compute_rope_cache(seq, rot_dim, …)``).
+
+    Args:
+        q, k: ``(..., n_heads, seq_len, head_dim)``.
+        cos, sin: ``(seq_len, rot_dim)`` cache.
+        rot_dim: number of leading head dims to rotate (``int(head_dim * rotary_pct)``).
+
+    Returns:
+        ``(q_out, k_out)`` with the same shapes as ``q``/``k`` (rot slice rotated, pass slice untouched).
+    """
+    torch = require_extra("torch", "torch")
+    q_rot, q_pass = q[..., :rot_dim], q[..., rot_dim:]
+    k_rot, k_pass = k[..., :rot_dim], k[..., rot_dim:]
+    q_rot, k_rot = apply_rotary_pos_emb(q_rot, k_rot, cos, sin)
+    return torch.cat((q_rot, q_pass), dim=-1), torch.cat((k_rot, k_pass), dim=-1)
