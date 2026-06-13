@@ -41,9 +41,12 @@ until positive, no "irreducible" claim if negative (`no-necessity-claims`).
 
 ## Decision 6: cost mitigations make the full forge affordable on the gate host
 
-The full forge forward per step is the cost. Mitigations: (a) **minibatch the sequences** per step (a random
-subset of the dataset proteins); (b) **precompute the host-latent target** once (it's `E`-independent);
-(c) modest `steps` with early-stop on the held-out plateau. The tiny ESM-2-8M gate host makes this tractable
+The full forge forward per step is the cost. Mitigations: (a) **minibatch the sequences** per step — a
+**seeded** random subset of the dataset proteins (the per-step subset is drawn from `train_encoder`'s
+`seed`, so a fit is fully reproducible per seed; the gate's multi-seed run then varies *both* the
+init/data-order and the minibatch draws together); (b) **precompute the host-latent target** once (it's
+`E`-independent); (c) modest `steps` with early-stop on the held-out plateau. The tiny ESM-2-8M gate host
+makes this tractable
 on CPU; large hosts are out of scope (Decision 3).
 
 ## Alternatives considered

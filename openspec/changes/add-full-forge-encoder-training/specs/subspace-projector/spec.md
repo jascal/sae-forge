@@ -26,8 +26,9 @@ Constraints:
   documented projection algebra (`D @ W`, `W @ E`, `D @ W @ E`) expressed in torch ops on
   `E`, so autograd reaches `E` end-to-end.
 - At `E == pinv(W_dec) * scale_boost`, the returned `forged_h` SHALL match the numpy
-  `project_module → NativeModel → forward` output to numerical tolerance (the differentiable
-  path is the *same* forge at the baseline `E`).
+  `project_module → NativeModel → forward` output within **float32 tolerance**
+  (`torch.allclose(forged_h, numpy_forged_h, atol=1e-5, rtol=1e-4)` after casting both to
+  float32) — the differentiable path is the *same* forge at the baseline `E`.
 - v1 SHALL implement the `esm2` host family. Other families (`gpt2`/`llama`/`gemma2`/
   `whisper`) SHALL raise `NotImplementedError` naming the family and that the differentiable
   forward is a follow-up — SHALL NOT silently fall back to the activation proxy.
@@ -42,7 +43,8 @@ Constraints:
 
 - **WHEN** `differentiable_forge_h` is called with `E = pinv(basis.W_dec) * scale_boost`
 - **THEN** its `forged_h` SHALL equal the numpy `project_module → NativeModel → forward`
-  forged hidden state (same host, same inputs) to numerical tolerance
+  forged hidden state (same host, same inputs) within `torch.allclose(atol=1e-5, rtol=1e-4)`
+  in float32
 
 #### Scenario: non-esm2 family is refused, not silently downgraded
 

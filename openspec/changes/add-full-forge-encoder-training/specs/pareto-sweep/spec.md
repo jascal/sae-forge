@@ -21,8 +21,13 @@ Constraints:
 - It SHALL train **only** `E` (matched capacity, the tied design) and SHALL keep the held-out
   split, `overfit_flag`, early-stop, and **scoring-only** rank-AUC from the parent change — the
   AUC SHALL NOT be the loss.
-- It SHALL minibatch the sequences per step and SHALL precompute the `E`-independent host-latent
-  target once (cost mitigation), without changing the held-out gate semantics.
+- `dist` SHALL reuse the parent change's `loss` parameter: **`loss="cosine"`** (cosine distance,
+  default) or **`loss="mse"`** (standardized MSE) — same names and default as
+  `add-capability-trained-encoder`.
+- It SHALL minibatch the sequences per step using a **seeded** RNG derived from the call's `seed`
+  (so a fit is reproducible per seed; the gate's multi-seed run varies the minibatch draws with the
+  init/data-order together) and SHALL precompute the `E`-independent host-latent target once (cost
+  mitigation), without changing the held-out gate semantics.
 
 #### Scenario: forge_distill trains E through the full forge
 
