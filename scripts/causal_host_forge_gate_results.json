@@ -1,0 +1,42 @@
+{
+  "experiment": "causal-host FULL-FORGE gate (GPT-2, proxy-train E + score on the full multi-layer NativeModel forge)",
+  "date": "2026-06-13",
+  "host": "gpt2 (causal)",
+  "layer": 8,
+  "sae": "jbloom GPT2-Small-SAEs-Reformatted blocks.8 (SAELens W_dec/W_enc, 24576x768, ReLU/L1)",
+  "protocol": "sweep_pareto_capability(train_encoder=True, train_objective='proxy', host_layer=8); SAE-derived labels; per-token (residue) feed; matched to the ESM bio gate (proxy-train + full-forge-score); 3 seeds; 200 steps.",
+  "results_per_width": [
+    {
+      "width": 64,
+      "n_seeds": 3,
+      "delta_mean": -0.002845084463521793,
+      "delta_std": 0.0014384078111325392,
+      "pinv_mean": 0.7715505009587852,
+      "trained_mean": 0.7687054164952634,
+      "any_overfit": false,
+      "gate": "TIE/ERASED"
+    },
+    {
+      "width": 128,
+      "n_seeds": 3,
+      "delta_mean": 0.039127426707085876,
+      "delta_std": 0.0030570952132581383,
+      "pinv_mean": 0.7384813375777338,
+      "trained_mean": 0.7776087642848196,
+      "any_overfit": false,
+      "gate": "SURVIVES"
+    },
+    {
+      "width": 256,
+      "n_seeds": 3,
+      "delta_mean": 0.0072656712806074,
+      "delta_std": 0.0047559200663788714,
+      "pinv_mean": 0.7495457087225024,
+      "trained_mean": 0.7568113800031098,
+      "any_overfit": false,
+      "gate": "SURVIVES"
+    }
+  ],
+  "comparison": "ESM-2 proxy bio gate at n=128 was \u0394 -0.0003 (tie); GPT-2 full forge at n=128 is \u0394 +0.039 \u00b1 0.003 -> the causal trained-encoder win SURVIVES the full multi-layer forge, unlike ESM.",
+  "verdict": "SURVIVES at n=128/256 (mid widths), ERASED at n=64 (smallest). The causal projection win is FORGE-level, not just activation-level. Descriptive; delta is the optimistic all-token row delta (same caveat as the ESM bio gate), overfit_flag clean at n=128. SAE-type confound (ReLU vs TopK) still stands."
+}
