@@ -64,7 +64,8 @@ def run_regime(name, cfg, bio_root, out_dir, device, steps, widths, train_object
     for w in wlist:
         recs = per_width[w]
         if not recs:
-            out.append({"regime": name, "width": w, "error": "all seeds errored"}); continue
+            out.append({"regime": name, "width": w, "error": "all seeds errored"})
+            continue
         deltas = np.array([x[0] for x in recs], float)
         mean_d, std_d = float(deltas.mean()), float(deltas.std())
         gate = "PASS" if mean_d >= -1e-4 else "FAIL"
