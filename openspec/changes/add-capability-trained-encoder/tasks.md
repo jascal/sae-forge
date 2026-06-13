@@ -13,7 +13,15 @@ computed pinv baseline, saves the trained `E` sidecar), and the 7 new row-schema
 preserved). 3 new e2e tests on the tiny-host fixture; all 31 capability + 153 affected tests green.
 *Partial:* the in-memory E **dedup cache** keyed by `(basis hash, …)` is not yet added (only the sidecar
 persistence is) — an optimization, not correctness; and held-out scoring still uses `encoder.py`'s local
-AUC rather than the existing `recipe_auc_matrix` (a consolidation follow-up). **Task 4 (CLI) not started.**
+AUC rather than the existing `recipe_auc_matrix` (a consolidation follow-up).
+
+**CLI (task 4, 2026-06-13).** `sweep-capability` gains `--train-encoder` / `--basis-order` /
+`--readout-fallback` / `--train-steps` (wired into both sweep call sites); `recommend` gains
+`--trained-margin` (default 0.02) and prefers the trained encoder only when `delta_heldout > margin` **and**
+not `overfit_flag` (ties → pinv), emitting `recommended_encoder` + `effective_retained_mauc` (+ the sidecar
+path when trained) in both tabular and `--json` output. 8 CLI tests; help text carries the encoder-only
+readout caveat + the held-out gate. **Remaining: 5.2 (FORGE_TAX_TRACK.md write-up) + 6.1 (formal bio gate),
+both pending the bio-sae bundles.**
 
 Two implementation notes for the follow-up (sweep/CLI, tasks 3–4):
 - **`train_encoder` takes the decomposed pieces** (`host_acts`, `host_encoder`, `labels`) rather than a
@@ -114,11 +122,11 @@ Two implementation notes for the follow-up (sweep/CLI, tasks 3–4):
 
 ## 4. `saeforge/cli.py` — flags
 
-- [ ] 4.1 `sae-forge sweep capability` gains `--train-encoder` and `--basis-order {row_norm,readout_aligned}`.
-- [ ] 4.2 `sae-forge recommend` prefers a trained-encoder row only when `delta_heldout > 0.02`
+- [x] 4.1 `sae-forge sweep capability` gains `--train-encoder` and `--basis-order {row_norm,readout_aligned}`.
+- [x] 4.2 `sae-forge recommend` prefers a trained-encoder row only when `delta_heldout > 0.02`
   (held-out retained-mAUC margin over the pinv baseline) **and** `overfit_flag is False`; otherwise it keeps
   the simpler (pinv) forge. The `0.02` threshold is a flag (`--trained-margin`); ties default to pinv.
-- [ ] 4.3 CLI help text documents the encoder-only-family readout caveat and the held-out gate.
+- [x] 4.3 CLI help text documents the encoder-only-family readout caveat and the held-out gate.
 
 - [x] 4.4 **De-risk script (run early, before the full sweep wiring):**
   `scripts/forge_trained_encoder_gate.py` — load one bio fixture, fit `train_encoder` at the single gate

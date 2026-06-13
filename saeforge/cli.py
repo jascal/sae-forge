@@ -799,6 +799,44 @@ def _build_parser() -> argparse.ArgumentParser:
         "--device", default="cpu",
         help="torch device for forge + extraction (default: 'cpu').",
     )
+    cap.add_argument(
+        "--train-encoder",
+        action="store_true",
+        help=(
+            "Fit a capability-trained encoder per cell (the 'supervised forge', "
+            "add-capability-trained-encoder) instead of using only the Frobenius pinv(W_dec). "
+            "Each cell reports retained_mauc_trained ALONGSIDE the always-computed pinv baseline, "
+            "both on a HELD-OUT split (the gate); the trained E is saved as a <cell>.encoder.npy "
+            "sidecar. A trained row is only better when its held-out delta_heldout clears the "
+            "pinv baseline (see `recommend --trained-margin`); a tie is a valid descriptive pass."
+        ),
+    )
+    cap.add_argument(
+        "--basis-order",
+        choices=["row_norm", "readout_aligned"],
+        default="row_norm",
+        help=(
+            "How the width slice ranks kept features. 'row_norm' (default) = L2 decoder norm. "
+            "'readout_aligned' = alignment with the host's readout (decode-decision) geometry, "
+            "sourced from the host unembed (load_host_unembed). NOTE: encoder-only hosts "
+            "(ESM-2, Whisper) have no vocabulary unembed — 'readout_aligned' then RAISES unless "
+            "--readout-fallback is given (it never silently reverts to row_norm)."
+        ),
+    )
+    cap.add_argument(
+        "--readout-fallback",
+        choices=["downstream_decode"],
+        default=None,
+        help=(
+            "Only with --basis-order readout_aligned on an encoder-only host with no unembed: "
+            "'downstream_decode' orders by the SAE's own decode geometry instead of raising "
+            "(emits a one-shot warning). Explicit opt-in; default raises."
+        ),
+    )
+    cap.add_argument(
+        "--train-steps", type=int, default=300,
+        help="Steps for --train-encoder per cell (default: 300; early-stops on held-out plateau).",
+    )
 
     # ------------------------------------------------------------------
     # recommend — pick the smallest-parameter row meeting a predicate.
@@ -851,6 +889,19 @@ def _build_parser() -> argparse.ArgumentParser:
             "explaining which stage's argmin-plateau-member shifted. "
             "Use only when you've separately verified the recommendation "
             "is appropriate for your workflow."
+        ),
+    )
+    rec.add_argument(
+        "--trained-margin",
+        type=float,
+        default=0.02,
+        metavar="DELTA",
+        help=(
+            "Held-out retained-mAUC margin a capability-trained row "
+            "(--train-encoder sweep) must clear over its pinv baseline to be "
+            "preferred over the plain (pinv) forge. A trained row is chosen only "
+            "when delta_heldout > DELTA AND overfit_flag is False; otherwise the "
+            "simpler pinv forge wins (ties default to pinv). Default: 0.02."
         ),
     )
 
@@ -2070,6 +2121,13 @@ def _cmd_sweep_capability(args: argparse.Namespace) -> int:
             output_dir=args.output_dir,
         )
 
+    # Capability-trained encoder + readout-aligned ordering flags (add-capability-trained-encoder, task 4).
+    train_kwargs = dict(
+        train_encoder=args.train_encoder,
+        basis_order=args.basis_order,
+        readout_fallback=args.readout_fallback,
+        train_steps=args.train_steps,
+    )
     if multi_encoding_specs:
         rows = sweep_pareto_capability(
             encodings=multi_encoding_specs,
@@ -2081,6 +2139,7 @@ def _cmd_sweep_capability(args: argparse.Namespace) -> int:
             cache_host=(not args.no_host_cache),
             max_seq_len=args.max_seq_len,
             device=args.device,
+            **train_kwargs,
         )
     else:
         rows = sweep_pareto_capability(
@@ -2094,6 +2153,7 @@ def _cmd_sweep_capability(args: argparse.Namespace) -> int:
             cache_host=(not args.no_host_cache),
             max_seq_len=args.max_seq_len,
             device=args.device,
+            **train_kwargs,
         )
     errors = sum(1 for r in rows if r.error_message is not None)
     encoding_summary = (
@@ -2463,8 +2523,31 @@ def _cmd_recommend(args: argparse.Namespace) -> int:
         )
     picked = min(survivors, key=_key)
 
+    # Capability-trained-encoder preference (add-capability-trained-encoder, task 4.2): for the picked
+    # cell, recommend the trained encoder ONLY when its held-out margin clears --trained-margin and it
+    # did not overfit; otherwise keep the simpler pinv forge (ties default to pinv).
+    trained_margin = getattr(args, "trained_margin", 0.02)
+    use_trained = bool(
+        picked.encoder_trained
+        and picked.delta_heldout is not None
+        and picked.delta_heldout > trained_margin
+        and not picked.overfit_flag
+    )
+    recommended_encoder = "trained" if use_trained else "pinv"
+    effective_retained = (
+        picked.retained_mauc_trained if use_trained else
+        (picked.retained_mauc_pinv_baseline
+         if picked.retained_mauc_pinv_baseline is not None
+         else picked.retained_mauc_vs_host)
+    )
+
     if args.emit_json:
-        print(json.dumps(picked.to_json_dict(), indent=2))
+        out = picked.to_json_dict()
+        if picked.encoder_trained:
+            out["recommended_encoder"] = recommended_encoder
+            out["effective_retained_mauc"] = effective_retained
+            out["trained_margin"] = trained_margin
+        print(json.dumps(out, indent=2))
         return 0
 
     # Tabular: emit the load-bearing fields per the spec.
@@ -2484,6 +2567,14 @@ def _cmd_recommend(args: argparse.Namespace) -> int:
         print(f"  gap_median:               {picked.gap_median:+.4f}")
     if picked.gap_p95 is not None:
         print(f"  gap_p95:                  {picked.gap_p95:+.4f}")
+    if picked.encoder_trained:
+        print(f"  recommended_encoder:      {recommended_encoder}"
+              f"  (trained Δ_heldout {picked.delta_heldout:+.4f} vs margin "
+              f"{trained_margin:+.4f}, overfit={picked.overfit_flag})")
+        if effective_retained is not None:
+            print(f"  effective_retained_mauc:  {effective_retained:.4f}")
+        if recommended_encoder == "trained" and picked.encoder_artifact_path:
+            print(f"  trained_encoder_artifact: {picked.encoder_artifact_path}")
 
     # Multi-encoding: emit the per-encoding ranking table. Per the
     # openspec, ALWAYS print on multi-encoding frontiers — the
