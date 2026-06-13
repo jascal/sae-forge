@@ -120,6 +120,19 @@ through the forge) is *validated* (the spike); this negative is about whether E-
 whether it's *possible*. **The change ships the validated machinery; the science is the also-plateaus
 finding.**
 
+**(iv) HOST-CLASS caveat — the big one (do NOT over-generalize this null).** The trained-encoder hypothesis
+was *motivated* by `lm-sae`'s R2 result (a trained rank-`r` projection beats frozen SVD, +13pp) — measured on
+**causal autoregressive LMs** (GPT-2, SmolLM, Pythia), where the forge tax = the **open-class lexical / Zipf
+tail of the decode distribution**. But this gate ran on **ESM-2, which is NOT a causal model** — it is a
+*bidirectional masked encoder* over a 20-letter amino-acid alphabet, with **no autoregressive decode, no
+readout-aligned decision geometry, and no open-class-lexis heavy tail**. So the very structure R2's trained
+lens exploited *plausibly does not exist in ESM-2*. The honest reading of this null is therefore **host-class-
+specific**: "on a *non-causal* protein encoder, trained-`E` does not beat `pinv`" — **not** a universal
+"projection is near-optimal." The decisive, still-open test is the trained encoder on a **causal-LM forge**
+(GPT-2/Llama host + an LM SAE), where R2's structure is actually present; the X2 *proxy* path already supports
+LM families, so it is testable now. Until that runs, every "trained-`E` doesn't help" statement carries the
+qualifier *"on non-causal hosts."* (Tracked as the follow-up causal-LM-forge experiment.)
+
 ## What this does NOT solve
 
 - **Not a full fine-tune.** Only `E` is trained; the host weights and the `NativeModel` are otherwise fixed.
