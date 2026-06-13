@@ -92,6 +92,99 @@ both reported descriptively:**
 Either way the verdict is **descriptive**, multi-seed, and carries **no "irreducible" / "closes the tax"
 claim** (`no-necessity-claims`). Falsified-as-a-feature: if full-forge training *also* plateaus, we say so.
 
+### Gate RESULT (real bio-sae ESM-2, 2026-06-13) — the ALSO-PLATEAUS outcome
+
+Implemented (tasks 1–5) and run on bio-sae's real spread fixture (`scripts/forge_trained_encoder_bio_gate.py
+--train-objective full_forge`, multi-seed). **Full-forge training does NOT reliably beat `pinv` — at the
+cleanest (non-overfit) width it is *slightly worse*, and its one positive width is overfit-tainted:**
+
+| width | seeds | pinv | trained (full_forge) | Δ mean ± std | overfit |
+|---:|---:|---:|---:|---:|:--:|
+| 128 | 0,1,2 | 1.0053 | 0.9909 | **−0.0144 ± 0.0052** | no |
+| 256 | 0,1,2 | 0.9612 | 1.0006 | +0.0395 ± 0.0222 | **yes** |
+
+At **n=128** the negative is consistent across seeds (~2.8σ), `overfit_flag` False — a clean small loss. At
+**n=256** the Δ flips positive (+0.0395) but `overfit_flag` is **True** (the trained `E` beat `pinv` on the
+fit subset while regressing on the internal held-out — the +0.0395 is the *optimistic* all-protein row delta,
+not a trustworthy win). The activation-**proxy** width sweep is likewise sign-inconsistent (single-seed:
+n=16 −0.017, n=64 +0.0065, n=128 −0.0003, n=256 +0.0133). **Net: no reliable E-only win on this substrate** —
+the **also-plateaus** branch the proposal pre-committed to. Even E-only training through the *correct*
+objective (autograd verified to reach `E` end-to-end by the task 0.1 spike) does not reliably beat the
+Frobenius `pinv`, so for **this substrate** the basis *projection* (`pinv`) is **near-optimal** and the spread
+forge tax lives structurally beyond `E` (LayerNorm non-commutation / TopK rank-shuffle), not in the projection
+geometry — consistent with bio-sae's **Reckoning #5** (a representation-distillation fine-tune recovers the
+mAUC half but not the cov95 half). **But see the host-class caveat (iv) and its now-resolved causal control
+below: this near-optimal reading is ESM-2-(non-causal)-specific, not universal.**
+
+**Honest caveats (no-necessity-claims).** (i) *Methodological:* the sweep row's Δ is compression-controlled
+over all proteins (the trained `E` saw the fit subset — an *optimistic* scoring), yet it still loses;
+`train_encoder`'s internal held-out `E` is early-stop-protected. (ii) *Budget:* 80 steps, 120 proteins, the
+label-free distill objective, n=128 — **achievability via more steps/data or a supervised-through-forge
+objective stays OPEN**; we report the null rather than tune until positive. (iii) The **mechanism** (autograd
+through the forge) is *validated* (the spike); this negative is about whether E-only training *helps*, not
+whether it's *possible*. **The change ships the validated machinery; the science is the also-plateaus
+finding.**
+
+**(iv) HOST-CLASS caveat — the big one (do NOT over-generalize this null).** The trained-encoder hypothesis
+was *motivated* by `lm-sae`'s R2 result (a trained rank-`r` projection beats frozen SVD, +13pp) — measured on
+**causal autoregressive LMs** (GPT-2, SmolLM, Pythia), where the forge tax = the **open-class lexical / Zipf
+tail of the decode distribution**. But this gate ran on **ESM-2, which is NOT a causal model** — it is a
+*bidirectional masked encoder* over a 20-letter amino-acid alphabet, with **no autoregressive decode, no
+readout-aligned decision geometry, and no open-class-lexis heavy tail**. So the very structure R2's trained
+lens exploited *plausibly does not exist in ESM-2*. The honest reading of this null is therefore **host-class-
+specific**: "on a *non-causal* protein encoder, trained-`E` does not beat `pinv`" — **not** a universal
+"projection is near-optimal." The decisive, still-open test is the trained encoder on a **causal-LM forge**
+(GPT-2/Llama host + an LM SAE), where R2's structure is actually present; the X2 *proxy* path already supports
+LM families, so it is testable now. Until that runs, every "trained-`E` doesn't help" statement carries the
+qualifier *"on non-causal hosts."* (Tracked as the follow-up causal-LM-forge experiment.)
+
+### Causal-LM control RESULT (2026-06-13) — the host-class caveat is CONFIRMED: the null is non-causal-specific
+
+The caveat's decisive test, run (`scripts/causal_lm_forge_gate.py`; results in
+`scripts/causal_lm_forge_gate_results.json`). **Scope honesty first:** the *exact* analog — the full
+multi-layer `NativeModel` forge on GPT-2 — is **blocked**, not optimistic-supported: the cached jbloom GPT-2
+SAEs live on a *mid-layer* residual (`blocks.8.hook_resid_pre`), but `ForgedGPT2.forward` emits only
+*final-layer logits* with no intermediate-hidden-state extraction, and the sweep's `_extract_*` helpers are
+ESM-shaped (`host.esm` / `last_hidden_state` / `[1:-1]`). Generalising that is a separate plumbing change (see
+"What this does NOT solve"). So the control runs the question **R2 is actually about** — the *projection* at
+the **activation level**: at matched compressed rank `N`, does a *trained* `E` beat the closed-form `pinv`
+through the decode∘encode bottleneck? `train_encoder(objective="distill")` runs exactly that, host-agnostic,
+held-out, compression-controlled. We ran the **identical** gate on a **causal** host (GPT-2 layer-8 residual +
+jbloom ReLU/L1 SAE) and the **non-causal** control (ESM-2 + bio TopK SAE), matched N=1400, 3 seeds, same
+SAE-self-label protocol:
+
+| width | **GPT-2 (causal)** Δ | **ESM-2 (non-causal)** Δ |
+|---:|---|---|
+| 64  | +0.0154 ± 0.011 (overfit) | +0.0081 ± 0.001 (overfit) |
+| 128 | **+0.0312 ± 0.0020** (clean) | +0.0016 ± 0.0013 |
+| 256 | +0.0230 ± 0.003 (overfit) | 0.0000 (tie) |
+| 512 | **+0.0702 ± 0.003** (clean) | 0.0000 (tie) |
+
+**On the causal host, trained-`E` beats `pinv` by a clean, multi-seed, noise-clearing margin at every width**
+(+0.031 to +0.070; the cleanest cell, n=128 non-overfit, is ~15σ); **on the non-causal host, identical
+protocol and matched N, it barely moves** (+0.0016 at n=128, exactly 0 at n=256/512 where the bottleneck is
+near/over `d_model`=320). A GPT-2 **layer sweep** (n=128, 3 seeds) confirms the causal win is **not a
+single-hook fluke** — positive at every layer {1: +0.099, 4: +0.024, 8: +0.031, 11: +0.061}, U-shaped (largest
+near the lexical surface: embeddings-adjacent layer 1 and readout-adjacent layer 11), consistent with R2's
+open-class/Zipf-tail reading.
+
+**Confounds, assessed honestly (no over-claim of "causality" in isolation):**
+- **Compression-regime / `d_model`** (768 vs 320) — **ruled out**: GPT-2 wins *more* when *less* compressed
+  (n=512 = 67% of `d` → +0.070) than ESM at 40% of `d` (+0.0016); the opposite of what this confound predicts.
+- **Layer / hook point** — **ruled out**: win robust across all four GPT-2 layers.
+- **SAE activation type** (GPT-2 ReLU/L1 *dense* vs ESM TopK *sparse* → better-conditioned dictionary → `pinv`
+  nearer-optimal) — **STANDING**. This is the one confound the control can't isolate offline; a matched-SAE
+  test (a TopK GPT-2 SAE or a ReLU non-causal SAE) is the decisive next step.
+
+**Verdict (descriptive).** The ESM null is **host-class-specific**, exactly as caveat (iv) anticipated: the
+trained-encoder learning that motivated this whole line (R2, on causal LMs) **does** reproduce on a causal
+host at the projection level, and is **absent** on the non-causal protein encoder the X2/full-forge nulls were
+measured on. The "`pinv` is near-optimal" reading is therefore **ESM-2-specific, not universal**. What stays
+open: (1) isolating SAE-type from host-class via a matched-SAE control; (2) whether the causal projection win
+*survives the full multi-layer forge* (the LayerNorm/TopK tax that erased ESM's tiny activation-level gain) —
+which needs the blocked mid-layer-hidden-state forge plumbing. No "irreducible" / "closes the tax" language
+(`no-necessity-claims`).
+
 ## What this does NOT solve
 
 - **Not a full fine-tune.** Only `E` is trained; the host weights and the `NativeModel` are otherwise fixed.

@@ -16,7 +16,7 @@ loss), and the **held-out** comparison is the gate. ``overfit_flag`` surfaces th
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Literal, Tuple
+from typing import Any, Callable, Literal, Tuple
 
 import numpy as np
 
@@ -76,7 +76,7 @@ def train_encoder(
     host_acts: np.ndarray,
     host_encoder: Callable,
     labels: np.ndarray,
-    objective: Literal["distill", "supervised"] = "distill",
+    objective: Literal["distill", "supervised", "forge_distill"] = "distill",
     loss: Literal["cosine", "mse"] = "cosine",
     init: Literal["pinv"] = "pinv",
     scale_boost: float = 1.0,
@@ -86,6 +86,10 @@ def train_encoder(
     patience: int = 30,
     eval_every: int = 5,
     seed: int = 0,
+    forge: Any = None,
+    sequences: "list[str] | None" = None,
+    feed: str = "pooled",
+    minibatch: int = 16,
 ) -> Tuple[np.ndarray, EncoderCalibrationReport]:
     """Fit a matched-capacity encoder ``E`` and return ``(E, EncoderCalibrationReport)``.
 
@@ -118,6 +122,14 @@ def train_encoder(
         raise ValueError(f"fit split empty (N={N}, holdout_frac={holdout_frac})")
 
     E0 = (np.linalg.pinv(W_dec) * scale_boost).astype(np.float64)  # (d_model, n_features)
+
+    if objective == "forge_distill":
+        return _forge_distill_train(
+            torch=torch, basis=basis, X=X, Y=Y, host_encoder=host_encoder, E0=E0,
+            fit_idx=fit_idx, held_idx=held_idx, forge=forge, sequences=sequences, feed=feed,
+            loss=loss, steps=steps, lr=lr, patience=patience, eval_every=eval_every,
+            minibatch=minibatch, seed=seed,
+        )
 
     def project(X_rows: np.ndarray, E: np.ndarray) -> np.ndarray:
         return (X_rows @ E) @ W_dec  # forged → decoded, back to d_model
@@ -194,6 +206,82 @@ def train_encoder(
         n_heldout=int(len(held_idx)),
     )
     return E_final.astype(basis.W_dec.dtype), report
+
+
+def _forge_distill_train(*, torch, basis, X, Y, host_encoder, E0, fit_idx, held_idx, forge, sequences,
+                         feed, loss, steps, lr, patience, eval_every, minibatch, seed):
+    """`objective="forge_distill"` — fit `E` through the FULL forge (not the activation proxy). The loss
+    distills the forged→decoded→encoded latents to the host's own latents; held-out scoring runs the same
+    full forge. v1: pooled feed (1 forge row per protein). See add-full-forge-encoder-training."""
+    if forge is None or sequences is None:
+        raise ValueError(
+            "objective='forge_distill' requires a forge context: forge=DifferentiableEsm2Forge(host, "
+            "basis, scale_boost) and sequences=[...] (1:1 with host_acts rows for pooled feed)."
+        )
+    if feed != "pooled":
+        raise NotImplementedError(
+            "forge_distill v1 supports feed='pooled' (one forge row per protein); residue-feed minibatching "
+            "is a follow-up."
+        )
+    if len(sequences) != X.shape[0]:
+        raise ValueError(
+            f"forge_distill: sequences ({len(sequences)}) must align 1:1 with host_acts rows ({X.shape[0]})."
+        )
+    ids_all = forge.tokenize(sequences)
+    rng = np.random.default_rng(seed)
+
+    def forge_d(E_t, idx):
+        return forge.forge_d(E_t, [ids_all[int(i)] for i in idx], feed="pooled")
+
+    def retained(E_np, idx):
+        with torch.no_grad():
+            Zf = host_encoder(forge_d(torch.tensor(E_np, dtype=torch.float32), idx)).cpu().numpy()
+        Zh = _np_encoder(host_encoder, X[idx])
+        host_m = _mauc(Zh, Y[idx])
+        return _mauc(Zf, Y[idx]) / host_m if host_m > 0 else 0.0
+
+    with torch.no_grad():
+        target_all = host_encoder(torch.tensor(X, dtype=torch.float32)).detach()  # (N, latent), fixed
+
+    E = torch.tensor(E0, dtype=torch.float32, requires_grad=True)
+    opt = torch.optim.Adam([E], lr=lr)
+    rt_base, rt_base_fit = retained(E0, held_idx), retained(E0, fit_idx)
+    best_held, best_E, E_last = rt_base, E0.copy(), E0.copy()
+    steps_run = no_improve = 0
+    for step in range(steps):
+        mb = rng.choice(fit_idx, size=min(minibatch, len(fit_idx)), replace=False)
+        opt.zero_grad()
+        pred = host_encoder(forge_d(E, mb))
+        tgt = target_all[torch.as_tensor(mb, dtype=torch.long)]
+        if loss == "cosine":
+            loss_val = 1.0 - torch.nn.functional.cosine_similarity(pred, tgt, dim=1).mean()
+        else:
+            t = (tgt - tgt.mean(0)) / (tgt.std(0) + 1e-6)
+            p = (pred - pred.mean(0)) / (pred.std(0) + 1e-6)
+            loss_val = torch.nn.functional.mse_loss(p, t)
+        loss_val.backward()
+        opt.step()
+        steps_run = step + 1
+        if (step + 1) % eval_every == 0:
+            E_last = E.detach().cpu().numpy().astype(np.float64)
+            held = retained(E_last, held_idx)
+            if held > best_held + 1e-9:
+                best_held, best_E, no_improve = held, E_last.copy(), 0
+            else:
+                no_improve += eval_every
+                if no_improve >= patience:
+                    break
+
+    rt_trained, rt_trained_fit = retained(best_E, held_idx), retained(best_E, fit_idx)
+    overfit = (retained(E_last, fit_idx) > rt_base_fit + 1e-6) and (retained(E_last, held_idx) < rt_base - 1e-6)
+    report = EncoderCalibrationReport(
+        retained_mauc_trained=rt_trained, retained_mauc_pinv_baseline=rt_base,
+        delta_heldout=rt_trained - rt_base, retained_mauc_trained_fit=rt_trained_fit,
+        overfit_flag=bool(overfit), objective="forge_distill", loss=loss, steps=steps,
+        steps_run=steps_run, lr=lr, holdout_frac=len(held_idx) / (len(held_idx) + len(fit_idx)),
+        n_fit=int(len(fit_idx)), n_heldout=int(len(held_idx)),
+    )
+    return best_E.astype(basis.W_dec.dtype), report
 
 
 def _np_encoder(host_encoder: Callable, X_rows: np.ndarray) -> np.ndarray:
