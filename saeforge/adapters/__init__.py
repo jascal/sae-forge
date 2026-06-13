@@ -107,6 +107,7 @@ def adapter_for_family(family: str) -> ArchitectureAdapter:
 # scope. Order matters: more specific subclasses (Gemma2 extends Llama-like
 # layout) register first if they share a base class.
 from saeforge.adapters import gpt2 as _gpt2  # noqa: E402,F401
+from saeforge.adapters import gpt_neox as _gpt_neox  # noqa: E402,F401
 from saeforge.adapters import llama as _llama  # noqa: E402,F401
 from saeforge.adapters import gemma2 as _gemma2  # noqa: E402,F401
 from saeforge.adapters import qwen2 as _qwen2  # noqa: E402,F401
