@@ -6,19 +6,21 @@
   `random`) is a rank-`N` projection of host activations scored through the SAE encoder against the same
   labels on the same held-out items — apples-to-apples. NOT through the full forge (that tax sits on top).
 - [ ] 0.2 Lock the **ceiling recipe** (per review — the tax is only as good as this): a single linear rank-`N`
-  projection `B`, init readout-aligned SVD, readout **tied** to the task encoder, Adam on the held-out
-  capability target, `train_encoder`-style split / early-stop / scoring-only-AUC / `overfit_flag`. Empirical
-  ceiling = **lower bound** on the intrinsic cost (document, don't claim global optimum).
+  projection `B`, init **activation-PCA** (encoder-side; NOT readout SVD — `retained_mauc` is encoder-side and
+  readout-alignment is decode-specific / harmful here, per polygram `add-readout-aligned-geometry-profile`),
+  readout **tied** to the task encoder, Adam on the held-out capability target, `train_encoder`-style split /
+  early-stop / scoring-only-AUC / `overfit_flag`. Empirical ceiling = **lower bound** on the intrinsic cost.
 - [ ] 0.3 Lock the **circularity guard**: the label-defining SAE features are **held out** of the ceiling
   oracle's training target (train on complement features / independent signal); scoring still uses the labels.
 - [ ] 0.4 Lock that the trained subspace is **never** returned/persisted/forged — oracle only.
 
 ## 1. The reference quantities — `saeforge/training` (reuse X2 machinery)
 
-- [ ] 1.1 `retained_mauc_svd`: top-`N` readout-aligned SVD subspace projection (reuse `_readout_aligned_order`
-  geometry) → retained-mAUC.
-- [ ] 1.2 `retained_mauc_best_atoms`: `pinv` of the best-`N` SAE atoms by **readout-aligned selection** (the X1
-  ordering) — distinct from `pinv`(top-`N`-by-norm) which is `retained_mauc_pinv`.
+- [ ] 1.1 `retained_mauc_svd`: top-`N` **activation-PCA** subspace projection (encoder-side frozen-linear
+  reference) → retained-mAUC.
+- [ ] 1.2 `retained_mauc_best_atoms`: `pinv` of the best-`N` SAE atoms by **capability-supervised selection**
+  (rank atoms by how much they preserve the downstream features) — distinct from `pinv`(top-`N`-by-norm) which
+  is `retained_mauc_pinv`. (NOT readout-aligned — encoder-side metric.)
 - [ ] 1.3 `train_subspace_ceiling(...)`: the ceiling recipe from 0.2 → `retained_mauc_ceiling` + `overfit_flag`.
 - [ ] 1.4 `retained_mauc_random`: mean over `k` random rank-`N` projections (floor) + multi-init ceiling spread.
 
@@ -42,5 +44,6 @@
 - [ ] 4.1 `scripts/capability_ceiling_gate.py`: report the four retained-mAUC quantities + three gaps + random
   floor + multi-init spread on **GPT-2 + Pythia-70m** at compressed widths, multi-seed (reuse the gpt2 / pythia
   fixtures). Route the decomposition into the proposal "Gate RESULT".
-- [ ] 4.2 **Descriptive verdict:** which gap dominates (`selection_gap` ⇒ chase X1; `interpretability_tax` ⇒ a
+- [ ] 4.2 **Descriptive verdict:** which gap dominates (`selection_gap` ⇒ chase capability-supervised atom
+  selection; `interpretability_tax` ⇒ a
   real interpretability tradeoff) per host/width. No pass/fail; no "irreducible"/"closes the tax" language.

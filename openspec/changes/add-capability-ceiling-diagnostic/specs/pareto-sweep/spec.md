@@ -8,10 +8,17 @@
 additionally report, **at the activation level** (the same decode∘encode level as the `pinv` basis, so all
 gaps are apples-to-apples — same labels, same held-out items):
 
-- `retained_mauc_svd` — top-`N` readout-aligned **SVD** subspace of the host activations.
-- `retained_mauc_best_atoms` — `pinv` of the best-`N` SAE atoms by **readout-aligned selection** (the X1
-  ordering), i.e. the best *interpretable* basis.
-- `retained_mauc_ceiling` — a **trained single linear rank-`N` projection** (init readout-aligned SVD, readout
+All baselines SHALL use **encoder-side / activation geometry**, NOT the readout subspace: `retained_mauc`
+is an encoder-side metric (does the SAE encoder recover the features through the forge), and readout-alignment
+is decode-specific — empirically *harmful* on an encoder-side metric (polygram
+`add-readout-aligned-geometry-profile`, archived). R2's *principle* (a trained subspace beats the closed-form
+one) transfers; its *basis* does not.
+
+- `retained_mauc_svd` — top-`N` **activation-PCA** subspace of the host activations (the encoder-side
+  frozen-linear reference).
+- `retained_mauc_best_atoms` — `pinv` of the best-`N` SAE atoms by **capability-supervised selection** (the
+  atoms that most preserve the downstream features), i.e. the best *interpretable* basis.
+- `retained_mauc_ceiling` — a **trained single linear rank-`N` projection** (init **activation-PCA**, readout
   **tied** to the task encoder, fit on the held-out capability target, `overfit_flag`-guarded) — the
   **empirical oracle ceiling** (a lower bound on the intrinsic cost, not a proven optimum).
 - `retained_mauc_random` — mean retained-mAUC over a few random rank-`N` projections (a floor that bounds the
@@ -19,8 +26,8 @@ gaps are apples-to-apples — same labels, same held-out items):
 
 and the derived gaps (note the split at `best_atoms`):
 
-- `selection_gap = retained_mauc_best_atoms − retained_mauc_pinv` — *fixable by atom selection (X1);
-  interpretability preserved.*
+- `selection_gap = retained_mauc_best_atoms − retained_mauc_pinv` — *fixable by capability-supervised atom
+  selection; interpretability preserved.*
 - `interpretability_tax = retained_mauc_ceiling − retained_mauc_best_atoms` — *intrinsic cost of an SAE-feature
   basis; not selection-fixable.*
 - `ceiling_gap = (host retained-mAUC = 1.0) − retained_mauc_ceiling` — *measured gap at rank `N`, achievability
@@ -45,8 +52,8 @@ Constraints:
   norm ones, but free directions add little beyond that
 - **WHEN** `sweep_pareto_capability(compute_capability_ceiling=True, ...)` runs a cell
 - **THEN** `selection_gap` (`best_atoms − pinv`) SHALL be the dominant positive gap and `interpretability_tax`
-  (`ceiling − best_atoms`) SHALL be ≈ 0 — i.e. the diagnostic attributes the gap to **atom selection (X1)**,
-  not to the interpretability constraint
+  (`ceiling − best_atoms`) SHALL be ≈ 0 — i.e. the diagnostic attributes the gap to **capability-supervised
+  atom selection**, not to the interpretability constraint
 
 #### Scenario: an intrinsic gap surfaces as `interpretability_tax`, not `selection_gap`
 

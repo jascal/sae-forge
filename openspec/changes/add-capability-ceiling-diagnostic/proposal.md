@@ -22,6 +22,17 @@ abandon sae-forge's interpretability premise. So instead of a forge mode, use th
 **ceiling/oracle**: it bounds what *any* rank-`N` basis could achieve, so the gap to the interpretable basis is
 a *measurement of the interpretability cost*, and the gap to the host is the *genuinely irreducible* floor.
 
+> **CORRECTION (2026-06-13) — use ACTIVATION geometry, not readout geometry, for the baselines.** An earlier
+> draft of this proposal made the `svd` reference and the `best_atoms` selection **readout-aligned** (R2's
+> basis). That is **wrong for this metric.** R2's +52pp validated readout-alignment for a **decode-side**
+> target (next-token argmax); `retained_mauc` is **encoder-side** (does the SAE encoder still recover the
+> features through the forge). Polygram's `add-readout-aligned-geometry-profile` (closed/archived) confirmed
+> the distinction empirically: readout-alignment *hurts* an encoder-side metric (co-firing Spearman
+> 0.64 → 0.27). So the **principle** R2 gives transfers — *a trained subspace beats the closed-form one* — but
+> the **basis does not**: this diagnostic's frozen baselines and the ceiling's init use the
+> **activation/encoder geometry** (activation-PCA + a capability-supervised atom selection), *not* the readout
+> subspace. See [[readout-alignment-is-decode-specific]] / polygram archive.
+
 ## What — three numbers per (host, width), and a decomposition
 
 At each width `N`, the sweep already computes the interpretable forge. The diagnostic adds two more
@@ -32,9 +43,9 @@ two are both **interpretable** (SAE atoms); the gap between them is where action
 
 | quantity | definition | interpretable? |
 |---|---|:--:|
-| `retained_mauc_svd` | top-`N` readout-aligned **SVD** subspace | n/a (reference) |
+| `retained_mauc_svd` | top-`N` **activation-PCA** subspace (the encoder-side frozen-linear reference) | n/a (reference) |
 | `retained_mauc_pinv` | `pinv`(top-`N`-**by-norm** SAE atoms) — today's default basis | ✅ **← ships** |
-| `retained_mauc_best_atoms` | `pinv`(best-`N` SAE atoms by **readout-aligned selection** = X1) | ✅ best *interpretable* basis |
+| `retained_mauc_best_atoms` | `pinv`(best-`N` SAE atoms by **capability-supervised selection** — the atoms that most preserve the downstream features) | ✅ best *interpretable* basis |
 | `retained_mauc_ceiling` | a **trained** rank-`N` subspace (any directions) — the oracle | ❌ never shipped |
 
 **Why the `best_atoms` row matters (the load-bearing refinement, from review).** `ceiling − pinv` lumps two
@@ -59,8 +70,9 @@ subspace?" from "does the multi-layer forge degrade it further?"
 ### How the ceiling oracle is trained (design note, per review — the tax is only as good as this)
 
 `retained_mauc_ceiling` is a **single linear rank-`N` projection** `B` (`d_model × N`), **not** an iterative or
-non-linear model: `B` initialised at the readout-aligned SVD subspace, readout **tied** to the task encoder
-(R2-tied form — matched capacity to a rank-`N` lens, no free readout to overfit), trained by Adam on a
+non-linear model: `B` initialised at the **activation-PCA** subspace (encoder-side; *not* the readout SVD —
+see the correction above), readout **tied** to the task encoder (matched capacity to a rank-`N` lens, no free
+readout to overfit), trained by Adam on a
 cross-entropy/distill objective against the held-out capability target, reusing `train_encoder`'s split /
 early-stop / **scoring-only-AUC** / `overfit_flag` discipline. It is therefore an **empirical ceiling** (the
 best subspace *this recipe* finds), not a proven global optimum — so `interpretability_tax` is a **lower
@@ -73,9 +85,10 @@ target, the label-defining features SHALL be **held out** of the oracle's traini
 
 ## What it drives (the interpretable pipeline — nothing opaque ships)
 
-- **Large `selection_gap`** → you kept the wrong atoms; **fix it with readout-aligned selection (X1)** — a
-  greedy/supervised atom score over the SAE dictionary (and, where available, Polygram's hierarchical
-  merge machinery). *This is the actionable lever; interpretability is preserved.*
+- **Large `selection_gap`** → you kept the wrong atoms; **fix it with capability-supervised atom selection** —
+  score each SAE atom by how much it preserves the downstream features (an **encoder-side / activation**
+  criterion, *not* readout-aligned), optionally via Polygram's hierarchical merge machinery. *This is the
+  actionable lever; interpretability is preserved.*
 - **Large `interpretability_tax` (after selection)** → the *intrinsic* price of an SAE-feature basis at this
   rank — surface it as a **conscious tradeoff** (accept the tax for interpretability, or raise the rank), not
   a tuning target.
@@ -120,5 +133,7 @@ The verdict is the **decomposition**, not a pass/fail. No "irreducible" / "close
 - `add-capability-trained-encoder` / `add-full-forge-encoder-training` (X2) — the wrong-knob predecessors;
   this reframes their question as a measurement.
 - `add-gpt-neox-adapter` — the merged Pythia adapter + the powered-R2 replication that motivate this.
-- fieldrun R2 (`tau_star_trained.py` / powered `tau_star_powered.py`) — the source lever used as the oracle;
-  FABLE F2 / X1 (readout-aligned basis is the init + the recommended action when the tax is large).
+- fieldrun R2 (`tau_star_trained.py` / powered `tau_star_powered.py`) — the source of the *principle* (a
+  trained subspace beats the closed-form one). NOTE its **basis** (readout-aligned) is decode-side and does
+  **not** transfer to this encoder-side metric — see the correction above and polygram's
+  `add-readout-aligned-geometry-profile` (archived: readout-alignment hurts an encoder-side metric).
