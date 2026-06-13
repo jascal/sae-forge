@@ -92,6 +92,34 @@ both reported descriptively:**
 Either way the verdict is **descriptive**, multi-seed, and carries **no "irreducible" / "closes the tax"
 claim** (`no-necessity-claims`). Falsified-as-a-feature: if full-forge training *also* plateaus, we say so.
 
+### Gate RESULT (real bio-sae ESM-2, 2026-06-13) — the ALSO-PLATEAUS outcome
+
+Implemented (tasks 1–5) and run on bio-sae's real spread fixture (`scripts/forge_trained_encoder_bio_gate.py
+--train-objective full_forge`, multi-seed). **Full-forge training also does NOT beat `pinv` — it is
+consistently *slightly worse*:**
+
+| width | seeds | pinv | trained (full_forge) | Δ mean ± std | overfit |
+|---:|---:|---:|---:|---:|:--:|
+| 128 | 0,1,2 | 1.0053 | 0.9909 | **−0.0144 ± 0.0052** | no |
+
+The negative is **consistent across seeds (~2.8σ), not noise**, and `overfit_flag` is False. So we hit the
+**also-plateaus** branch — and it is the deeper, equally-valuable finding the proposal pre-committed to:
+**even E-only training through the *correct* objective (autograd verified to reach `E` end-to-end by the
+task 0.1 spike) does not beat the Frobenius `pinv`.** That isolates the result cleanly — the **basis
+*projection* (`pinv`) is near-optimal for this substrate**, and the spread forge tax lives **structurally
+beyond `E`** (LayerNorm non-commutation / TopK rank-shuffle in the downstream encoder), not in the projection
+geometry. This confirms bio-sae's **Reckoning #5** (a representation-distillation fine-tune recovers the mAUC
+half but not the cov95 half) from a new, controlled angle.
+
+**Honest caveats (no-necessity-claims).** (i) *Methodological:* the sweep row's Δ is compression-controlled
+over all proteins (the trained `E` saw the fit subset — an *optimistic* scoring), yet it still loses;
+`train_encoder`'s internal held-out `E` is early-stop-protected. (ii) *Budget:* 80 steps, 120 proteins, the
+label-free distill objective, n=128 — **achievability via more steps/data or a supervised-through-forge
+objective stays OPEN**; we report the null rather than tune until positive. (iii) The **mechanism** (autograd
+through the forge) is *validated* (the spike); this negative is about whether E-only training *helps*, not
+whether it's *possible*. **The change ships the validated machinery; the science is the also-plateaus
+finding.**
+
 ## What this does NOT solve
 
 - **Not a full fine-tune.** Only `E` is trained; the host weights and the `NativeModel` are otherwise fixed.
