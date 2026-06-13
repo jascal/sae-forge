@@ -119,6 +119,20 @@ the row — keeping rows lightweight while making the trained encoder reproducib
 - **Free encoder (more DOF than `pinv`).** Rejected on R2 evidence: the free head overfits; matched capacity
   is the fair, generalizing design.
 
+## Decision 9 (post-gate, 2026-06-13): the activation proxy ≠ the full-forge metric
+
+The real bio-sae gate (proposal "Acceptance gate — RESULT") returned a **null**: trained `E` does not
+systematically beat pinv on the full ESM-2 forge (spread deltas ±1.7pp, sign-inconsistent, mean ≈ 0). The
+gate **diagnosed why**: `train_encoder` optimizes the **activation path** `host_encoder((x @ E) @ W_dec) ≈
+host_encoder(x)`, but the sweep scores the **full forge** — `E` is applied to the host *weights*
+(`project_module`), the forged `NativeModel` runs forward, and `forged_h` is **not** `host_X @ E`. So the
+training objective is a *proxy* that doesn't match the evaluated metric — the same cosine-vs-capability trap,
+one level up. **Implication for the next change:** to make the trained encoder pay off on the real forge,
+train `E` against the full-forge path (backprop through the `NativeModel`, or distill the forged
+activations), not the cheap activation proxy. The current cheap path is kept (it's correct, fast, and the
+*mechanism* is de-risk-validated) but documented as **not sufficient** for a real-forge win. We report the
+null rather than tune until something looks positive.
+
 ## Open questions
 
 - Does `objective="distill"` (host-latent matching) transfer to the **supervised** retained-mAUC as well as

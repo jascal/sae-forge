@@ -20,8 +20,20 @@ AUC rather than the existing `recipe_auc_matrix` (a consolidation follow-up).
 `--trained-margin` (default 0.02) and prefers the trained encoder only when `delta_heldout > margin` **and**
 not `overfit_flag` (ties → pinv), emitting `recommended_encoder` + `effective_retained_mauc` (+ the sidecar
 path when trained) in both tabular and `--json` output. 8 CLI tests; help text carries the encoder-only
-readout caveat + the held-out gate. **Remaining: 5.2 (FORGE_TAX_TRACK.md write-up) + 6.1 (formal bio gate),
-both pending the bio-sae bundles.**
+readout caveat + the held-out gate.
+
+**Formal bio gate (tasks 6.1 + 5.2, 2026-06-13) — NULL result, reported honestly.** Ran
+`scripts/forge_trained_encoder_bio_gate.py` against bio-sae's real ESM-2 fixtures (installed locally).
+**The trained encoder does NOT systematically beat pinv on the full forge**: spread deltas ±1.7pp,
+sign-inconsistent across n∈{16,64,128,256,512} (mean ≈ 0); concentrated ties (+0.0017). The gate diagnosed
+the cause — `train_encoder` optimizes an **activation proxy** while the sweep scores the **full forge**
+(`forged_h ≠ host_X @ E`), so the objective is mismatched to the metric (cosine-vs-capability, one level
+up). The de-risk validated the *mechanism*; the cheap proxy doesn't transfer. Result table + verdict routed
+into `proposal.md` ("Acceptance gate — RESULT") and `design.md` (Decision 9) — **sae-forge has no
+`FORGE_TAX_TRACK.md`**, so 5.2 lands there in-place (no new page). **The empirical "cheap proxy beats pinv"
+claim is FALSIFIED; achievability via full-forge-path training is OPEN (a separate change).** The shipped
+surface (override / train_encoder / sweep / CLI) is correct + tested; the user decides whether to merge the
+surface, reframe the proposal, or pursue the full-forge follow-up.
 
 Two implementation notes for the follow-up (sweep/CLI, tasks 3–4):
 - **`train_encoder` takes the decomposed pieces** (`host_acts`, `host_encoder`, `labels`) rather than a
@@ -137,12 +149,12 @@ Two implementation notes for the follow-up (sweep/CLI, tasks 3–4):
 
 - [x] 5.1 Export `train_encoder`, `EncoderCalibrationReport` from `saeforge.training.__init__` and
   `saeforge.__init__`; export the `encoder_override` field is already on the public `SubspaceProjector`.
-- [ ] 5.2 Route the gate results into `FORGE_TAX_TRACK.md` (sae-forge) — trained-E vs pinv retained-mAUC on
+- [x] 5.2 Route the gate results into `FORGE_TAX_TRACK.md` (sae-forge) — trained-E vs pinv retained-mAUC on
   the two bio fixtures, held-out, with the overfit-mode note. No new doc page.
 
 ## 6. Acceptance gate (blocking merge)
 
-- [ ] 6.1 Compression-controlled, held-out: trained-E retained-mAUC **≥ pinv baseline**. Spread
+- [x] 6.1 Compression-controlled, held-out: trained-E retained-mAUC **≥ pinv baseline**. Spread
   (`uniref50_n5000` pooled, n=512): single seed, report held-out n. Concentrated (`uniref50_small` residue,
   n=16): **multi-seed** `{0,1,2,3,4}` — require **mean** trained-E ≥ mean pinv baseline within tolerance,
   report mean ± std (Decision 7; ~5 held-out items is noisy). A tie is a pass (reported descriptively);

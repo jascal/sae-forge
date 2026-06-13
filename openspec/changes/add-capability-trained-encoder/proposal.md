@@ -126,6 +126,36 @@ legitimate descriptive outcome ("Frobenius is already near-optimal on this subst
 and is reported as such. A trained-E that beats on the fit split but loses on held-out is the explicit
 overfit-failure mode (mirrors R2's free head and the retracted U_C) and **must** be reported, not hidden.
 
+### Acceptance gate — RESULT (real bio-sae fixtures, 2026-06-13) — a NULL result, reported honestly
+
+Run end-to-end against bio-sae's real ESM-2 fixtures (`scripts/forge_trained_encoder_bio_gate.py`,
+`facebook/esm2_t6_8M_UR50D`; bio-sae installed locally), compression-controlled (same width / same kept
+rows, only `E` differs), held-out:
+
+| regime | width | pinv | trained | Δ_heldout | overfit |
+|---|---:|---:|---:|---:|:--:|
+| spread (pooled) | 16 | 0.8977 | 0.8809 | **−0.0169** | no |
+| spread (pooled) | 64 | 0.8977 | 0.9042 | +0.0065 | no |
+| spread (pooled) | 128 | 0.9157 | 0.9154 | −0.0003 | no |
+| spread (pooled) | 256 | 0.9242 | 0.9375 | +0.0133 | no |
+| spread (pooled) | 512 | 0.9423 | 0.9398 | −0.0025 | no |
+| concentrated (residue) | 16 | 1.0291 | 1.0308 | +0.0017 | no |
+
+**Verdict (descriptive, per `no-necessity-claims`): the trained encoder does NOT systematically beat pinv on
+the real forge.** The spread deltas are small (±1.7pp) and **sign-inconsistent across widths (mean ≈ 0)**;
+concentrated ties. This does **not** reproduce the synthetic de-risk's clean +0.126 — and the reason is a
+design limitation made explicit by this gate: **`train_encoder` optimizes an *activation proxy*** (`host_X →
+E → decode → host_encoder ≈ host_encoder(host_X)`), but the sweep scores the **full forge**, where `E` is
+applied to the ESM-2 *weights* and the forged network's forward produces `forged_h ≠ host_X @ E`. The proxy
+objective is therefore **mismatched to the metric it is evaluated on** — itself an instance of this repo's
+cosine-vs-capability lesson (optimizing the wrong proxy). The de-risk validated the *mechanism* (a trained
+`E` beats pinv when the training objective **is** the eval path); on the full forge the cheap proxy doesn't
+transfer. **Closing this needs training `E` against the full-forge path** (backprop through the `NativeModel`
+forward, or distilling the forged activations) — heavier, and a separate change. The shipped surface
+(override, `train_encoder`, sweep, CLI) is correct and tested; the *empirical* claim "cheap proxy beats pinv
+on the real forge" is **falsified**, and the honest status is **null, achievability via full-forge training
+OPEN**.
+
 ## What this does NOT solve
 
 - **The structural forge tax is not eliminated.** R2 showed a trained linear projection *dents but does not
