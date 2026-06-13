@@ -1,11 +1,19 @@
 # Implementation tasks
 
-## Implementation status — de-risk milestone (2026-06-13)
+## Implementation status
 
-Landed the load-bearing core (tasks 0–2, 4.4, 5.1) + tests; the de-risk gate **passes** on a controlled
-synthetic fixture (bottleneck + nonlinear ReLU host-encoder): held-out retained-mAUC **pinv 0.713 →
-trained 0.839 (Δ +0.126)**, `overfit_flag=False`, early-stopped; the saturated control ties (Δ +0.000, no
-spurious gain). 13 new tests green; existing projector suite unaffected.
+**De-risk milestone (2026-06-13).** Tasks 0–2, 4.4, 5.1 + tests; the de-risk gate **passes** (bottleneck +
+nonlinear ReLU host-encoder): held-out retained-mAUC **pinv 0.713 → trained 0.839 (Δ +0.126)**,
+`overfit_flag=False`; saturated control ties (Δ +0.000). 13 tests green.
+
+**Sweep integration (task 3, 2026-06-13).** `readout_aligned` ordering (`_readout_aligned_order` +
+`_resolve_basis_order` raise-by-default / opt-in `downstream_decode` fallback), per-cell `train_encoder`
+(fits E on the activation proxy, applies via `encoder_override`, re-scores the FULL forge vs the always-
+computed pinv baseline, saves the trained `E` sidecar), and the 7 new row-schema fields (back-compat
+preserved). 3 new e2e tests on the tiny-host fixture; all 31 capability + 153 affected tests green.
+*Partial:* the in-memory E **dedup cache** keyed by `(basis hash, …)` is not yet added (only the sidecar
+persistence is) — an optimization, not correctness; and held-out scoring still uses `encoder.py`'s local
+AUC rather than the existing `recipe_auc_matrix` (a consolidation follow-up). **Task 4 (CLI) not started.**
 
 Two implementation notes for the follow-up (sweep/CLI, tasks 3–4):
 - **`train_encoder` takes the decomposed pieces** (`host_acts`, `host_encoder`, `labels`) rather than a
@@ -81,10 +89,10 @@ Two implementation notes for the follow-up (sweep/CLI, tasks 3–4):
 
 ## 3. `saeforge/sweep_capability.py` — opt-in trained encoder + readout-aligned ordering
 
-- [ ] 3.1 `_BasisCube`: add a `readout_aligned` ordering helper (project rows onto the top-competitor
+- [x] 3.1 `_BasisCube`: add a `readout_aligned` ordering helper (project rows onto the top-competitor
   `gain⊙U` SVD subspace) gated on a supplied/resolvable `u_matrix`/`gain`; default ordering stays `row_norms`.
   Detection: LM-family adapters expose the unembed; encoder-only adapters return `None` (Decision 5).
-- [ ] 3.2 `sweep_pareto_capability(..., train_encoder=False, basis_order="row_norm",
+- [x] 3.2 `sweep_pareto_capability(..., train_encoder=False, basis_order="row_norm",
   readout_fallback=None, host_encoder=None)`:
   - `basis_order="readout_aligned"`: order by the readout-aligned slice when a readout geometry is available;
     when absent, **raise `ValueError`** naming the missing `u_matrix` + family, **unless**
@@ -94,12 +102,12 @@ Two implementation notes for the follow-up (sweep/CLI, tasks 3–4):
     encoding, scale_boost, objective, seed)`; **always** compute + store the `pinv` baseline on the *same*
     held-out split for every cell (apples-to-apples, Decision 6); apply the trained `E` via
     `SubspaceProjector(encoder_override=E)`.
-- [ ] 3.3 Extend the per-cell row schema with optional `retained_mauc_trained`,
+- [x] 3.3 Extend the per-cell row schema with optional `retained_mauc_trained`,
   `retained_mauc_pinv_baseline`, `delta_heldout`, `encoder_trained` (bool), `overfit_flag` (bool),
   `basis_order`, and `encoder_artifact_path` — all default `None`/`False`, serialization back-compat. The
   trained `E` matrix is saved as a **sidecar** (`<cell>.encoder.npy` / safetensors entry beside the basis)
   and referenced by `encoder_artifact_path`, keeping rows lightweight + the encoder reproducible (Decision 8).
-- [ ] 3.4 Tests `tests/test_sweep_capability_trained.py`: a `train_encoder=True` sweep on a tiny fixture
+- [x] 3.4 Tests `tests/test_sweep_capability_trained.py`: a `train_encoder=True` sweep on a tiny fixture
   populates the new fields, the pinv-baseline column matches a `train_encoder=False` run at the same cell, the
   sidecar `E` round-trips, and `basis_order="readout_aligned"` without `u_matrix` raises (and the
   `readout_fallback` opt-in warns instead).

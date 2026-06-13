@@ -104,6 +104,18 @@ class ParetoFrontierRow:
     n_features_negative_gap: int | None = None
     capability_aggregator: str | None = None
     capability_min_prevalence: int | None = None
+    # Capability-trained encoder (the "supervised forge", change
+    # add-capability-trained-encoder). Populated only when
+    # ``sweep_pareto_capability(train_encoder=True)`` / a non-default
+    # ``basis_order`` is used; default None/False ⇒ omitted from JSON
+    # (back-compat with existing row writers).
+    retained_mauc_trained: float | None = None
+    retained_mauc_pinv_baseline: float | None = None
+    delta_heldout: float | None = None
+    encoder_trained: bool = False
+    overfit_flag: bool = False
+    basis_order: str | None = None
+    encoder_artifact_path: str | None = None
     # Progressive-sweep stage tag. Populated by
     # ``sweep_pareto_capability_progressive`` so a frontier carrying
     # rows from multiple stages can be partitioned by stage during
@@ -348,6 +360,19 @@ class ParetoFrontierRow:
                 if self.capability_min_prevalence is not None else None
             ),
         })
+        # Trained-encoder block (add-capability-trained-encoder): emit only when a
+        # trained encoder / non-default ordering was actually used, so default rows
+        # stay byte-equivalent to the pre-change schema.
+        if self.encoder_trained or self.basis_order is not None:
+            out.update({
+                "retained_mauc_trained":     _finite_or_none(self.retained_mauc_trained),
+                "retained_mauc_pinv_baseline": _finite_or_none(self.retained_mauc_pinv_baseline),
+                "delta_heldout":             _finite_or_none(self.delta_heldout),
+                "encoder_trained":           bool(self.encoder_trained),
+                "overfit_flag":              bool(self.overfit_flag),
+                "basis_order":               self.basis_order,
+                "encoder_artifact_path":     self.encoder_artifact_path,
+            })
         return out
 
     @classmethod
@@ -515,6 +540,22 @@ class ParetoFrontierRow:
             stage=(
                 int(data["stage"]) if data.get("stage") is not None else None
             ),
+            retained_mauc_trained=(
+                float(data["retained_mauc_trained"])
+                if data.get("retained_mauc_trained") is not None else None
+            ),
+            retained_mauc_pinv_baseline=(
+                float(data["retained_mauc_pinv_baseline"])
+                if data.get("retained_mauc_pinv_baseline") is not None else None
+            ),
+            delta_heldout=(
+                float(data["delta_heldout"])
+                if data.get("delta_heldout") is not None else None
+            ),
+            encoder_trained=bool(data.get("encoder_trained", False)),
+            overfit_flag=bool(data.get("overfit_flag", False)),
+            basis_order=data.get("basis_order"),
+            encoder_artifact_path=data.get("encoder_artifact_path"),
         )
 
 
