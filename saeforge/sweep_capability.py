@@ -104,18 +104,35 @@ class _EncodingState:
 def _load_encoding_state(label: str, path: "str | Path") -> _EncodingState:
     """Load one encoding's SAE state for the cell loop.
 
-    Reads ``decoder.weight`` (required) + the optional
-    ``partition_block_ids`` key (added by
-    ``add-partition-encoding-capability-validation``). Computes
-    row_norms + argsort order once per encoding.
+    Accepts two key conventions (detected by presence):
 
-    Raises ``ValueError`` when ``partition_block_ids`` shape doesn't
-    match decoder rows.
+    - **reference** (`add-downstream-capability-target` / bio-sae): ``decoder.weight`` shaped
+      ``(d_model, n_features)`` — transposed to ``(n_features, d_model)``.
+    - **SAELens** (LM SAEs, e.g. jbloom GPT-2): ``W_dec`` already shaped ``(n_features, d_model)``
+      (`add-causal-host-capability-sweep`).
+
+    plus the optional ``partition_block_ids`` key (added by
+    ``add-partition-encoding-capability-validation``). ``.safetensors`` checkpoints (SAELens) are read with the
+    safetensors loader; ``.pt`` with ``torch.load``. Computes row_norms + argsort order once per encoding.
+
+    Raises ``ValueError`` when ``partition_block_ids`` shape doesn't match decoder rows.
     """
     import torch
 
-    sae_state = torch.load(str(path), map_location="cpu", weights_only=True)
-    W_dec_full = sae_state["decoder.weight"].numpy().T.astype(np.float64)
+    if str(path).endswith(".safetensors"):
+        from safetensors.torch import load_file
+        sae_state = load_file(str(path))
+    else:
+        sae_state = torch.load(str(path), map_location="cpu", weights_only=True)
+    if "decoder.weight" in sae_state:
+        W_dec_full = sae_state["decoder.weight"].numpy().T.astype(np.float64)  # (d_model, n_features) -> (n_features, d_model)
+    elif "W_dec" in sae_state:
+        W_dec_full = np.asarray(sae_state["W_dec"], dtype=np.float64)  # SAELens: already (n_features, d_model)
+    else:
+        raise ValueError(
+            f"sweep_pareto_capability: SAE checkpoint {path} has neither 'decoder.weight' (reference) nor "
+            f"'W_dec' (SAELens) key; got {sorted(sae_state.keys())[:8]!r}..."
+        )
     row_norms = np.linalg.norm(W_dec_full, axis=1)
     order = np.argsort(-row_norms)
     partition_block_ids: np.ndarray | None = None
@@ -271,6 +288,7 @@ def sweep_pareto_capability(
     cache_host: bool = True,
     max_seq_len: int = 512,
     device: str = "cpu",
+    host_layer: "int | None" = None,
     train_encoder: bool = False,
     train_objective: str = "proxy",
     basis_order: str = "row_norm",
@@ -403,7 +421,9 @@ def sweep_pareto_capability(
         enabled=cache_host,
     )
     key = HostCacheKey.from_inputs(
-        host_model_id=host_model_id,
+        # host_layer changes the activations; fold it into the key's identity (hash-only — the real
+        # host_model_id below drives loading) so different layers don't collide in the same cache dir.
+        host_model_id=host_model_id if host_layer is None else f"{host_model_id}#L{host_layer}",
         sequences=list(dataset.sequences),
         aggregator=dataset.aggregator,
         max_seq_len=max_seq_len,
@@ -432,6 +452,7 @@ def sweep_pareto_capability(
             max_seq_len=max_seq_len,
             device=device,
             feed=dataset.feed,
+            host_layer=host_layer,
         )
         cache.save(key, host_X)
 
@@ -500,6 +521,7 @@ def sweep_pareto_capability(
                 host_mauc=host_mauc,
                 host_cov95=host_cov95,
                 device=device,
+                host_layer=host_layer,
                 partition_block_ids=enc_state.partition_block_ids,
                 train_encoder=train_encoder,
                 train_objective=train_objective,
@@ -622,6 +644,7 @@ def _run_capability_cell(
     host_mauc: float,
     host_cov95: float,
     device: str,
+    host_layer: "int | None" = None,
     partition_block_ids: np.ndarray | None = None,
     train_encoder: bool = False,
     train_objective: str = "proxy",
@@ -685,6 +708,7 @@ def _run_capability_cell(
         forged_h = _extract_forged_activations(
             model.torch_module, host, list(dataset.sequences), device=device,
             aggregator=dataset.aggregator, max_seq_len=512, feed=dataset.feed,
+            host_layer=host_layer,
         )
         forged_d = forged_h @ W_dec_t
         with torch.no_grad():
@@ -838,9 +862,14 @@ def _extract_host_activations(
     device: str,
     *,
     feed: str = "pooled",
+    host_layer: "int | None" = None,
 ):
-    """Run host ESM-2 over sequences; return activations shaped per
-    ``feed``.
+    """Run the host over sequences; return activations shaped per ``feed``.
+
+    When ``host_layer`` is set (**causal LM hosts**, whose SAE lives mid-model), read the residual stream at
+    ``hidden_states[host_layer]`` (= ``blocks.{host_layer}.hook_resid_pre``) via ``output_hidden_states=True``,
+    with **no** CLS/EOS strip (causal LMs have none). When ``host_layer is None`` the original encoder-only
+    (ESM-2) path runs byte-identically (``host.esm`` / ``last_hidden_state`` / ``[0, 1:-1, :]``).
 
     - ``feed="pooled"`` (default): mean-pool per protein. Returns
       ``(n_proteins, d_model)``.
@@ -863,20 +892,38 @@ def _extract_host_activations(
     from saeforge.utils.host_loader import load_host_for_forge
 
     host = load_host_for_forge(host_model_id)
-    inner = host.esm if hasattr(host, "esm") else host
+    causal = host_layer is not None
+    inner = host if causal else (host.esm if hasattr(host, "esm") else host)
     inner.to(device).eval()
     tokenizer = AutoTokenizer.from_pretrained(host_model_id)
     chunks: list = []
     with torch.no_grad():
-        for seq in sequences:
+        for seq in sequences:  # batch-size 1 per item ([0] drops the singleton batch dim)
             enc = tokenizer(seq[:max_seq_len], return_tensors="pt").to(device)
-            out = inner(input_ids=enc["input_ids"])
-            h = out.last_hidden_state[0, 1:-1, :].cpu().float()
+            if causal:
+                out = inner(input_ids=enc["input_ids"], output_hidden_states=True)
+                # hidden_states[L] == blocks.{L}.hook_resid_pre; no CLS/EOS to strip on a causal LM.
+                h = out.hidden_states[host_layer][0].cpu().float()
+            else:
+                out = inner(input_ids=enc["input_ids"])
+                h = out.last_hidden_state[0, 1:-1, :].cpu().float()
             if feed == "pooled":
                 chunks.append(h.mean(dim=0, keepdim=True))
             else:  # feed == "residue"
                 chunks.append(h)  # (L_i, d_model), no pooling
     return torch.cat(chunks, dim=0)
+
+
+# Causal mid-layer extraction: family → callable(forged_module, layer) returning the block whose **input**
+# is ``resid_pre[layer]``. A forward-pre-hook on that block captures the forged residual at the SAE's hook
+# point. NOTE the forged module runs ``native_in_basis`` (its ``hidden_size == n_features``), so the captured
+# residual lives in **basis space** (width N), NOT ``d_model`` — which is exactly why the caller remaps it
+# with ``forged_h @ W_dec`` (N → d_model). The pre-hook input is the forged counterpart of the tensor the
+# host side reads as ``hidden_states[layer]``, keeping host/forged aligned. To extend a family, add its
+# block accessor here (e.g. Llama-style: ``lambda m, layer: m.model.layers[layer]``).
+_FORGED_BLOCK_ACCESSORS = {
+    "gpt2": lambda m, layer: m.transformer.h[layer],
+}
 
 
 def _extract_forged_activations(
@@ -888,27 +935,70 @@ def _extract_forged_activations(
     aggregator: "str | Any",
     max_seq_len: int,
     feed: str = "pooled",
+    host_layer: "int | None" = None,
 ):
     """Run forged module over sequences; shape output per ``feed``.
 
-    Mirrors :func:`_extract_host_activations`'s shape contract.
+    Mirrors :func:`_extract_host_activations`'s shape contract. When ``host_layer`` is set (**causal LM**), the
+    forged module emits only final logits, so the residual at the SAE's layer is captured via a
+    forward-pre-hook on the family's block (see ``_FORGED_BLOCK_ACCESSORS``) — no forward-signature change.
+    Because the forged module runs ``native_in_basis`` (``hidden_size == n_features``), the captured residual
+    is in **basis space**: shape ``(seq, N)`` where ``N`` is the basis width, **not** ``d_model``. That is
+    exactly why the caller's ``forged_h @ W_dec`` step (N → d_model) is needed, mirroring ESM-2 (no CLS/EOS
+    strip). ``host_layer is None`` keeps the encoder-only path byte-identical.
+
+    Extraction is **batch-size-1 per sequence** (one forward per item; the ``[0]`` / ``[0, 1:-1, :]`` indexing
+    drops the singleton batch dim). True batching would need padding + an attention mask and is out of scope.
     """
     import torch
     from transformers import AutoTokenizer
 
     forged_module.to(device).eval()
-    tok_id = (
-        getattr(host.config, "_name_or_path", None)
-        or "facebook/esm2_t6_8M_UR50D"
-    )
+    causal = host_layer is not None
+    # Tokenizer id from the host's own config. The ESM default is a *legacy encoder-path* fallback only — on
+    # the causal path we require the host's name rather than silently tokenizing LM text with an ESM vocab.
+    tok_id = getattr(getattr(host, "config", None), "_name_or_path", None)
+    if tok_id is None and not causal:
+        tok_id = "facebook/esm2_t6_8M_UR50D"
+    if tok_id is None:
+        raise ValueError(
+            "_extract_forged_activations: causal mid-layer extraction needs the host tokenizer id "
+            "(host.config._name_or_path); none found on the host config."
+        )
     tokenizer = AutoTokenizer.from_pretrained(tok_id)
+
+    block, captured, handle = None, {}, None
+    if causal:
+        family = getattr(getattr(forged_module, "config", None), "family", None)
+        accessor = _FORGED_BLOCK_ACCESSORS.get(family)
+        if accessor is None:
+            raise NotImplementedError(
+                f"_extract_forged_activations: causal mid-layer extraction is implemented for "
+                f"{sorted(_FORGED_BLOCK_ACCESSORS)}; family {family!r} is a follow-up — add its block "
+                f"accessor to _FORGED_BLOCK_ACCESSORS (the block whose input is resid_pre[layer])."
+            )
+        block = accessor(forged_module, host_layer)
+
+        def _prehook(_mod, args):
+            captured["h"] = args[0].detach()  # block INPUT == basis-space resid_pre[host_layer]
+
+        handle = block.register_forward_pre_hook(_prehook)
+
     chunks: list = []
-    with torch.no_grad():
-        for seq in sequences:
-            enc = tokenizer(seq[:max_seq_len], return_tensors="pt").to(device)
-            h = forged_module(enc["input_ids"])[0, 1:-1, :].cpu().float()
-            if feed == "pooled":
-                chunks.append(h.mean(dim=0, keepdim=True))
-            else:  # feed == "residue"
-                chunks.append(h)
+    try:
+        with torch.no_grad():
+            for seq in sequences:  # batch-size 1 per item (see docstring)
+                enc = tokenizer(seq[:max_seq_len], return_tensors="pt").to(device)
+                if causal:
+                    forged_module(enc["input_ids"])  # logits discarded; the hook captures resid_pre
+                    h = captured["h"][0].cpu().float()  # (seq, N) basis-space, no strip
+                else:
+                    h = forged_module(enc["input_ids"])[0, 1:-1, :].cpu().float()
+                if feed == "pooled":
+                    chunks.append(h.mean(dim=0, keepdim=True))
+                else:  # feed == "residue"
+                    chunks.append(h)
+    finally:
+        if handle is not None:
+            handle.remove()
     return torch.cat(chunks, dim=0)
