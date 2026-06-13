@@ -14,11 +14,17 @@ default path (`train_objective="proxy"`) byte-identical so the parent change's t
   `tests/test_train_encoder_forge.py` (2).
 - **3** `sweep_pareto_capability(train_objective={proxy,full_forge})` + `_run_capability_cell`. e2e test on
   the tiny host. **4** CLI `--train-objective`. **5** multi-seed bio gate (`forge_trained_encoder_bio_gate.py`).
-- **GATE RESULT — also-plateaus (negative):** full-forge training does NOT beat `pinv` on the real spread
-  fixture (n=128, 3 seeds: Δ **−0.0144 ± 0.0052**, consistent ~2.8σ, no overfit). The deeper finding: the
-  basis *projection* (`pinv`) is near-optimal; the spread tax is **structural beyond `E`** (Reckoning #5).
-  Achievability via more budget / a supervised-through-forge objective stays OPEN. Full writeup + caveats in
-  `proposal.md` "Gate RESULT".
+- **GATE RESULT — also-plateaus (negative) on ESM-2:** full-forge training does NOT reliably beat `pinv` on
+  the real spread fixture (n=128, 3 seeds: Δ **−0.0144 ± 0.0052**, clean; n=256 Δ +0.0395 but **overfit**).
+  The basis *projection* (`pinv`) is near-optimal **for this substrate**; the tax is structural beyond `E`.
+- **CAUSAL-LM CONTROL — host-class caveat CONFIRMED (`scripts/causal_lm_forge_gate.py`):** the same
+  activation-level trained-vs-`pinv` gate run on a **causal** host (GPT-2 + jbloom SAE) vs the **non-causal**
+  ESM-2 control, matched N. Trained-`E` beats `pinv` cleanly on GPT-2 (+0.031 @n=128, +0.070 @n=512, layer-
+  robust) but ≈ ties on ESM-2 (+0.0016 / 0.000) → **the null is non-causal-specific**, as caveat (iv)
+  predicted. Compression-regime & layer confounds ruled out; SAE-type (ReLU vs TopK) is the standing confound.
+  Full writeup + table in `proposal.md` "Causal-LM control RESULT"; data in `causal_lm_forge_gate_results.json`.
+  NOTE: the *full multi-layer* GPT-2 forge stays blocked (mid-layer SAE vs final-logits-only forge) — future
+  plumbing, tracked in proposal "What this does NOT solve".
 
 ## 0. Design pre-locks (blocking)
 

@@ -1,0 +1,177 @@
+{
+  "experiment": "causal-LM forge gate (activation-level trained-vs-pinv, held-out, compression-controlled)",
+  "date": "2026-06-13",
+  "protocol": "train_encoder(objective='distill'); labels derived from each host's own SAE features (prevalence band [0.04,0.40]); matched N=1400 items; 3 seeds; 200 steps; widths slice top-N atoms by row-norm.",
+  "hosts": {
+    "gpt2": {
+      "class": "causal",
+      "sae": "jbloom GPT2-Small ReLU/L1, blocks.8.hook_resid_pre, 24576x768"
+    },
+    "esm2": {
+      "class": "non_causal",
+      "sae": "bio-sae TopK k=64, esm2_t6_8M, 1024x320"
+    }
+  },
+  "width_sweep": [
+    {
+      "host": "gpt2",
+      "host_class": "causal",
+      "sae_type": "relu_l1",
+      "width": 64,
+      "n_seeds": 3,
+      "delta_mean": 0.01536995246128973,
+      "delta_std": 0.01090982704578747,
+      "pinv_mean": 0.7704883619700883,
+      "trained_mean": 0.785858314431378,
+      "any_overfit": true,
+      "gate": "PASS",
+      "n_items": 1400,
+      "n_labels": 400
+    },
+    {
+      "host": "gpt2",
+      "host_class": "causal",
+      "sae_type": "relu_l1",
+      "width": 128,
+      "n_seeds": 3,
+      "delta_mean": 0.031241626483137035,
+      "delta_std": 0.001994317867440055,
+      "pinv_mean": 0.7792421622268969,
+      "trained_mean": 0.8104837887100339,
+      "any_overfit": false,
+      "gate": "PASS",
+      "n_items": 1400,
+      "n_labels": 400
+    },
+    {
+      "host": "gpt2",
+      "host_class": "causal",
+      "sae_type": "relu_l1",
+      "width": 256,
+      "n_seeds": 3,
+      "delta_mean": 0.023007737909857884,
+      "delta_std": 0.0032621238478619165,
+      "pinv_mean": 0.8020924326032649,
+      "trained_mean": 0.8251001705131227,
+      "any_overfit": true,
+      "gate": "PASS",
+      "n_items": 1400,
+      "n_labels": 400
+    },
+    {
+      "host": "gpt2",
+      "host_class": "causal",
+      "sae_type": "relu_l1",
+      "width": 512,
+      "n_seeds": 3,
+      "delta_mean": 0.07017303197336222,
+      "delta_std": 0.00312395903792356,
+      "pinv_mean": 0.8235500546918194,
+      "trained_mean": 0.8937230866651816,
+      "any_overfit": false,
+      "gate": "PASS",
+      "n_items": 1400,
+      "n_labels": 400
+    },
+    {
+      "host": "esm2",
+      "host_class": "non_causal",
+      "sae_type": "topk",
+      "width": 64,
+      "n_seeds": 3,
+      "delta_mean": 0.008059174363941804,
+      "delta_std": 0.0009648331792817812,
+      "pinv_mean": 0.7418262656141558,
+      "trained_mean": 0.7498854399780975,
+      "any_overfit": true,
+      "gate": "PASS",
+      "n_items": 1400,
+      "n_labels": 200
+    },
+    {
+      "host": "esm2",
+      "host_class": "non_causal",
+      "sae_type": "topk",
+      "width": 128,
+      "n_seeds": 3,
+      "delta_mean": 0.0015967089909548389,
+      "delta_std": 0.0013140145538615786,
+      "pinv_mean": 0.7988880902563454,
+      "trained_mean": 0.8004847992473003,
+      "any_overfit": false,
+      "gate": "PASS",
+      "n_items": 1400,
+      "n_labels": 200
+    },
+    {
+      "host": "esm2",
+      "host_class": "non_causal",
+      "sae_type": "topk",
+      "width": 256,
+      "n_seeds": 3,
+      "delta_mean": 0.0,
+      "delta_std": 0.0,
+      "pinv_mean": 0.8829825362835617,
+      "trained_mean": 0.8829825362835617,
+      "any_overfit": false,
+      "gate": "TIE",
+      "n_items": 1400,
+      "n_labels": 200
+    },
+    {
+      "host": "esm2",
+      "host_class": "non_causal",
+      "sae_type": "topk",
+      "width": 512,
+      "n_seeds": 3,
+      "delta_mean": 0.0,
+      "delta_std": 0.0,
+      "pinv_mean": 1.0,
+      "trained_mean": 1.0,
+      "any_overfit": false,
+      "gate": "TIE",
+      "n_items": 1400,
+      "n_labels": 200
+    }
+  ],
+  "gpt2_layer_sweep_n128": {
+    "1": {
+      "pinv_mean": 0.7875983482919858,
+      "trained_mean": 0.8871360406728735,
+      "delta_mean": 0.09953769238088787,
+      "delta_std": 0.00783866436139874,
+      "gate": "PASS",
+      "any_overfit": false
+    },
+    "4": {
+      "pinv_mean": 0.7825290606187486,
+      "trained_mean": 0.8064534872015486,
+      "delta_mean": 0.023924426582800067,
+      "delta_std": 0.006749059893515579,
+      "gate": "PASS",
+      "any_overfit": true
+    },
+    "8": {
+      "pinv_mean": 0.7792421622268969,
+      "trained_mean": 0.8104837887100339,
+      "delta_mean": 0.031241626483137035,
+      "delta_std": 0.001994317867440055,
+      "gate": "PASS",
+      "any_overfit": false
+    },
+    "11": {
+      "pinv_mean": 0.7378686391294154,
+      "trained_mean": 0.79920106082064,
+      "delta_mean": 0.061332421691224624,
+      "delta_std": 0.007593973736239596,
+      "gate": "PASS",
+      "any_overfit": false
+    }
+  },
+  "confounds_assessed": {
+    "compression_regime_d_model": "RULED OUT \u2014 GPT-2 wins MORE when LESS compressed (n=512=67% of d -> +0.070) than ESM at 40% of d (+0.0016); opposite of the confound's prediction.",
+    "layer_hook_point": "RULED OUT \u2014 trained-win positive & noise-clearing at all 4 GPT-2 layers (1/4/8/11), U-shaped (largest at lexical-surface ends).",
+    "sae_activation_type": "STANDING \u2014 GPT-2 SAE is ReLU/L1 (dense), ESM SAE is TopK (sparse, better-conditioned -> pinv nearer-optimal). Needs a matched-SAE control (TopK GPT-2 SAE or ReLU non-causal SAE); offline-infeasible now."
+  },
+  "verdict": "Host-class signal consistent with R2: at the projection/activation level, a trained encoder beats the closed-form pinv on a CAUSAL host (GPT-2, +0.031 @n=128 clean, up to +0.070 @n=512, layer-robust) but only ties on the NON-CAUSAL host (ESM-2, +0.0016 @n=128, 0.000 @n=256/512). Descriptive; SAE-type confound named; the full multi-layer causal forge remains blocked (mid-layer SAE vs final-logits-only forge)."
+}
