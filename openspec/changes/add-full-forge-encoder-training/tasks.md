@@ -1,0 +1,57 @@
+# Implementation tasks
+
+## 0. Design pre-locks (blocking)
+
+- [ ] 0.1 **Differentiability spike (the gating risk):** on a tiny synthetic ESM-2, confirm autograd reaches
+  a grad-enabled `E` end-to-end through the projected-weight forward — `loss.backward()` populates `E.grad`
+  with a finite, nonzero tensor. If a layer breaks the graph (detach / numpy / in-place), name it and decide
+  the torch-native re-expression before any other work. This de-risks the whole change.
+- [ ] 0.2 Confirm `differentiable_forge_h` reproduces the numpy `project_module → NativeModel → forward`
+  output to tolerance when `E = pinv(W_dec)*scale_boost` (the differentiable path must match the inference
+  forge at the baseline `E`, else the gate compares apples to oranges).
+- [ ] 0.3 Lock `E`-only matched capacity (host weights / `W_dec` / encoder are fixed buffers, no grad) and
+  the held-out, scoring-only-AUC conventions inherited from `add-capability-trained-encoder`.
+- [ ] 0.4 Lock the v1 family scope: `esm2` differentiable; all other families raise `NotImplementedError`
+  (no silent fallback to the proxy objective).
+
+## 1. `saeforge/forge_diff.py` — the differentiable forge forward
+
+- [ ] 1.1 New module. `differentiable_forge_h(host, basis, E, input_ids, *, aggregator, feed, device)`:
+  build the `esm2` forged forward in torch with `E`-projected weights (`D@W`, `W@E`, `D@W@E`) as functions of
+  the grad-enabled `E`; run the forward; return the aggregated forged hidden state `(N, d_model)` with grad.
+- [ ] 1.2 Non-`esm2` host families raise `NotImplementedError` naming the family + that it's a follow-up.
+- [ ] 1.3 Tests `tests/test_forge_diff.py`: (a) baseline match — `E = pinv·scale` reproduces the numpy forge
+  `forged_h` to tolerance; (b) autograd — `E.grad` is finite/nonzero after a dummy loss; (c) non-esm2 raises.
+
+## 2. `saeforge/training/encoder.py` — the `forge_distill` objective
+
+- [ ] 2.1 Add `objective="forge_distill"` to `train_encoder` (alongside `distill` / `supervised`). Loss =
+  `dist(host_encoder(differentiable_forge_h(E, seqs)), host_encoder(host_X))`, default cosine; needs the host
+  + sequences + feed/aggregator threaded through (a `forge_ctx` arg bundling them).
+- [ ] 2.2 Minibatch the sequences per step (Decision 6); precompute the host-latent target once; keep the
+  held-out split, `overfit_flag`, early-stop, and the scoring-only AUC from the parent change.
+- [ ] 2.3 Tests `tests/test_train_encoder_forge.py`: a synthetic ESM-2-shape fixture where the full-forge
+  objective runs, `E` updates, the report fields populate, and held-out scoring uses the full forge.
+
+## 3. `saeforge/sweep_capability.py` — `train_objective`
+
+- [ ] 3.1 `sweep_pareto_capability(..., train_objective="proxy")` ∈ {`"proxy"`, `"full_forge"`}; when
+  `full_forge`, `_run_capability_cell` fits `E` via the `forge_distill` objective (passing host + sequences
+  + feed) instead of the activation proxy. `"proxy"` default = byte-identical to the parent change.
+- [ ] 3.2 Test: a tiny-host e2e cell with `train_objective="full_forge"` populates the trained row fields and
+  the pinv baseline column matches a `train_encoder=False` run (apples-to-apples).
+
+## 4. `saeforge/cli.py` — flag
+
+- [ ] 4.1 `sae-forge sweep-capability --train-objective {proxy,full_forge}` (default proxy); help text notes
+  full_forge is esm2-only in v1 and far heavier.
+
+## 5. Acceptance gate (blocking merge) — multi-seed, both outcomes first-class
+
+- [ ] 5.1 `scripts/forge_trained_encoder_bio_gate.py --train-objective full_forge`, ≥3 seeds, on bio-sae
+  spread (n∈{64,128,256}) + concentrated, compression-controlled, held-out. Report mean ± std of
+  `delta_heldout` per width.
+- [ ] 5.2 **Descriptive verdict, pre-committed both ways:** SUCCESS (mean Δ > 0 clearing noise on the spread
+  mid-widths → the X2 null becomes a win) OR ALSO-PLATEAUS (Δ ≈ 0 through the full forge → the tax is
+  structural beyond `E`, Reckoning #5). Route into `add-full-forge-encoder-training/proposal.md` ("Gate
+  RESULT") + the parent change's Decision 9 follow-up note. No "irreducible"/"closes the tax" language.
