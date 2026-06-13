@@ -110,9 +110,10 @@ def test_forged_causal_hook_captures_basis_resid(_patch_tokenizer):
         forged, host, seqs, device="cpu", aggregator="pool_then_encode",
         max_seq_len=128, feed="residue", host_layer=2,
     )
-    # residue feed → one row per token, concatenated across sequences; width is the basis width N.
-    assert out.shape[1] == N
-    assert out.shape[0] == 4 + 3  # token counts from _FakeTok
+    # residue feed → one row per token, concatenated across sequences; width is the basis width N
+    # (basis space, NOT d_model — the forged module runs native_in_basis).
+    assert out.shape == (4 + 3, N)  # token counts from _FakeTok
+    assert out.dtype == torch.float32
     assert torch.isfinite(out).all()
 
 
@@ -130,6 +131,17 @@ def test_forged_causal_unsupported_family_raises(_patch_tokenizer):
     forged = _ForgedGPT2(7, 4, family="llama")
     host = SimpleNamespace(config=SimpleNamespace(_name_or_path="gpt2"))
     with pytest.raises(NotImplementedError, match="llama"):
+        _extract_forged_activations(
+            forged, host, ["alpha beta"], device="cpu", aggregator="pool_then_encode",
+            max_seq_len=128, feed="residue", host_layer=2,
+        )
+
+
+def test_forged_causal_missing_tokenizer_id_raises(_patch_tokenizer):
+    """The causal path requires the host tokenizer id and must NOT silently fall back to the ESM vocab."""
+    forged = _ForgedGPT2(7, 4)
+    host = SimpleNamespace(config=SimpleNamespace(_name_or_path=None))
+    with pytest.raises(ValueError, match="host tokenizer id"):
         _extract_forged_activations(
             forged, host, ["alpha beta"], device="cpu", aggregator="pool_then_encode",
             max_seq_len=128, feed="residue", host_layer=2,

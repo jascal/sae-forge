@@ -898,7 +898,7 @@ def _extract_host_activations(
     tokenizer = AutoTokenizer.from_pretrained(host_model_id)
     chunks: list = []
     with torch.no_grad():
-        for seq in sequences:
+        for seq in sequences:  # batch-size 1 per item ([0] drops the singleton batch dim)
             enc = tokenizer(seq[:max_seq_len], return_tensors="pt").to(device)
             if causal:
                 out = inner(input_ids=enc["input_ids"], output_hidden_states=True)
@@ -912,6 +912,18 @@ def _extract_host_activations(
             else:  # feed == "residue"
                 chunks.append(h)  # (L_i, d_model), no pooling
     return torch.cat(chunks, dim=0)
+
+
+# Causal mid-layer extraction: family → callable(forged_module, layer) returning the block whose **input**
+# is ``resid_pre[layer]``. A forward-pre-hook on that block captures the forged residual at the SAE's hook
+# point. NOTE the forged module runs ``native_in_basis`` (its ``hidden_size == n_features``), so the captured
+# residual lives in **basis space** (width N), NOT ``d_model`` — which is exactly why the caller remaps it
+# with ``forged_h @ W_dec`` (N → d_model). The pre-hook input is the forged counterpart of the tensor the
+# host side reads as ``hidden_states[layer]``, keeping host/forged aligned. To extend a family, add its
+# block accessor here (e.g. Llama-style: ``lambda m, layer: m.model.layers[layer]``).
+_FORGED_BLOCK_ACCESSORS = {
+    "gpt2": lambda m, layer: m.transformer.h[layer],
+}
 
 
 def _extract_forged_activations(
@@ -928,47 +940,58 @@ def _extract_forged_activations(
     """Run forged module over sequences; shape output per ``feed``.
 
     Mirrors :func:`_extract_host_activations`'s shape contract. When ``host_layer`` is set (**causal LM**), the
-    forged module emits only final logits, so the basis-space ``resid_pre`` at the SAE's layer is captured via
-    a forward-pre-hook on the family's block list (GPT-2: ``transformer.h[host_layer]``) — no forward-signature
-    change. The captured ``(seq, N)`` basis-space tensor is returned (no CLS/EOS strip); the caller's
-    ``forged_h @ W_dec`` step remaps basis → ``d_model`` exactly as for ESM-2. ``host_layer is None`` keeps the
-    encoder-only path byte-identical.
+    forged module emits only final logits, so the residual at the SAE's layer is captured via a
+    forward-pre-hook on the family's block (see ``_FORGED_BLOCK_ACCESSORS``) — no forward-signature change.
+    Because the forged module runs ``native_in_basis`` (``hidden_size == n_features``), the captured residual
+    is in **basis space**: shape ``(seq, N)`` where ``N`` is the basis width, **not** ``d_model``. That is
+    exactly why the caller's ``forged_h @ W_dec`` step (N → d_model) is needed, mirroring ESM-2 (no CLS/EOS
+    strip). ``host_layer is None`` keeps the encoder-only path byte-identical.
+
+    Extraction is **batch-size-1 per sequence** (one forward per item; the ``[0]`` / ``[0, 1:-1, :]`` indexing
+    drops the singleton batch dim). True batching would need padding + an attention mask and is out of scope.
     """
     import torch
     from transformers import AutoTokenizer
 
     forged_module.to(device).eval()
     causal = host_layer is not None
-    tok_id = (
-        getattr(host.config, "_name_or_path", None)
-        or "facebook/esm2_t6_8M_UR50D"
-    )
+    # Tokenizer id from the host's own config. The ESM default is a *legacy encoder-path* fallback only — on
+    # the causal path we require the host's name rather than silently tokenizing LM text with an ESM vocab.
+    tok_id = getattr(getattr(host, "config", None), "_name_or_path", None)
+    if tok_id is None and not causal:
+        tok_id = "facebook/esm2_t6_8M_UR50D"
+    if tok_id is None:
+        raise ValueError(
+            "_extract_forged_activations: causal mid-layer extraction needs the host tokenizer id "
+            "(host.config._name_or_path); none found on the host config."
+        )
     tokenizer = AutoTokenizer.from_pretrained(tok_id)
 
     block, captured, handle = None, {}, None
     if causal:
         family = getattr(getattr(forged_module, "config", None), "family", None)
-        if family == "gpt2":
-            block = forged_module.transformer.h[host_layer]
-        else:
+        accessor = _FORGED_BLOCK_ACCESSORS.get(family)
+        if accessor is None:
             raise NotImplementedError(
-                f"_extract_forged_activations: causal mid-layer extraction is implemented for 'gpt2' "
-                f"(transformer.h[L]); family {family!r} is a follow-up — wire its block list here."
+                f"_extract_forged_activations: causal mid-layer extraction is implemented for "
+                f"{sorted(_FORGED_BLOCK_ACCESSORS)}; family {family!r} is a follow-up — add its block "
+                f"accessor to _FORGED_BLOCK_ACCESSORS (the block whose input is resid_pre[layer])."
             )
+        block = accessor(forged_module, host_layer)
 
         def _prehook(_mod, args):
-            captured["h"] = args[0].detach()  # block input == basis-space resid_pre[host_layer]
+            captured["h"] = args[0].detach()  # block INPUT == basis-space resid_pre[host_layer]
 
         handle = block.register_forward_pre_hook(_prehook)
 
     chunks: list = []
     try:
         with torch.no_grad():
-            for seq in sequences:
+            for seq in sequences:  # batch-size 1 per item (see docstring)
                 enc = tokenizer(seq[:max_seq_len], return_tensors="pt").to(device)
                 if causal:
-                    forged_module(enc["input_ids"])  # logits discarded; hook captures resid_pre
-                    h = captured["h"][0].cpu().float()  # (seq, N), no strip
+                    forged_module(enc["input_ids"])  # logits discarded; the hook captures resid_pre
+                    h = captured["h"][0].cpu().float()  # (seq, N) basis-space, no strip
                 else:
                     h = forged_module(enc["input_ids"])[0, 1:-1, :].cpu().float()
                 if feed == "pooled":
