@@ -85,6 +85,10 @@ def test_public_surface_is_frozen() -> None:
         "ForgedMoE",
         "ForgedMoEConfig",
         "forge_to_moe",
+        # Capability-trained encoder (the "supervised forge") added by
+        # add-capability-trained-encoder.
+        "EncoderCalibrationReport",
+        "train_encoder",
     }
     assert set(saeforge.__all__) == expected
 

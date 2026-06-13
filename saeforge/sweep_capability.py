@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import json
 import time
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -139,6 +140,75 @@ def _load_encoding_state(label: str, path: "str | Path") -> _EncodingState:
     )
 
 
+def _readout_aligned_order(
+    W_dec_full: np.ndarray,
+    u_matrix: np.ndarray,
+    gain: "np.ndarray | None" = None,
+    rank: int = 64,
+) -> np.ndarray:
+    """Order decoder rows by alignment with the model's READOUT (decode-decision) geometry, not row L2
+    norm (change add-capability-trained-encoder, task 3.1). The readout subspace is the top-``rank`` right
+    singular directions of ``gain⊙U`` (the unembed the model actually reads through). Each W_dec row scores
+    by the energy of its projection onto that subspace; descending argsort. Decode-aligned features rank
+    first — the fieldrun finding that the readout-aligned decision directions, not raw decoder norm, govern
+    behaviour. ``u_matrix``: (vocab, d_model) unembed; ``gain``: (d_model,) final-norm gain (default ones)."""
+    U = np.asarray(u_matrix, dtype=np.float64)
+    if U.ndim != 2 or U.shape[1] != W_dec_full.shape[1]:
+        raise ValueError(
+            f"_readout_aligned_order: u_matrix must be (vocab, d_model) with "
+            f"d_model={W_dec_full.shape[1]}; got {U.shape}"
+        )
+    if gain is not None:
+        U = U * np.asarray(gain, dtype=np.float64)[None, :]
+    r = int(min(rank, U.shape[0], U.shape[1]))
+    Vt = np.linalg.svd(U, full_matrices=False)[2][:r]          # (r, d_model) readout subspace
+    proj = (np.asarray(W_dec_full, dtype=np.float64) @ Vt.T)   # (n_features, r)
+    score = np.linalg.norm(proj, axis=1)                       # projection energy per feature
+    return np.argsort(-score)
+
+
+def _resolve_basis_order(
+    enc_state: "_EncodingState",
+    *,
+    basis_order: str,
+    u_matrix: "np.ndarray | None",
+    gain: "np.ndarray | None",
+    host_model_id: str,
+    readout_fallback: "str | None",
+) -> np.ndarray:
+    """Return the feature ordering for the width slice per the basis_order policy (task 3.2, Decision 5).
+    ``row_norm`` ⇒ the existing L2-norm order. ``readout_aligned`` ⇒ order by readout-geometry alignment,
+    sourcing ``u_matrix`` from the arg or ``load_host_unembed(host_model_id)``; if neither is available
+    (encoder-only families), RAISE unless ``readout_fallback='downstream_decode'`` (then warn once + use the
+    SAE's own decode geometry). Never silently revert to row_norm."""
+    if basis_order == "row_norm":
+        return enc_state.order
+    U = u_matrix
+    if U is None:
+        try:
+            from saeforge import load_host_unembed
+            U = load_host_unembed(host_model_id)
+        except Exception:
+            U = None
+    if U is not None:
+        return _readout_aligned_order(enc_state.W_dec_full, U, gain)
+    # No readout geometry available (encoder-only family / no unembed).
+    if readout_fallback == "downstream_decode":
+        warnings.warn(
+            f"sweep_pareto_capability(basis_order='readout_aligned'): no host unembed available for "
+            f"'{host_model_id}' (encoder-only family). Falling back to the downstream encoder's decode "
+            f"geometry (the SAE's own W_dec directions) per readout_fallback='downstream_decode'.",
+            UserWarning,
+            stacklevel=2,
+        )
+        return _readout_aligned_order(enc_state.W_dec_full, enc_state.W_dec_full, None)
+    raise ValueError(
+        f"basis_order='readout_aligned' needs a readout geometry, but no u_matrix was supplied and "
+        f"load_host_unembed('{host_model_id}') returned none (encoder-only family). Supply u_matrix=... "
+        f"or pass readout_fallback='downstream_decode' to order by the SAE's own decode geometry."
+    )
+
+
 def _normalize_encodings_arg(
     encodings: "list[tuple[str, str | Path]] | None",
     sae_checkpoint: "str | Path | None",
@@ -201,6 +271,15 @@ def sweep_pareto_capability(
     cache_host: bool = True,
     max_seq_len: int = 512,
     device: str = "cpu",
+    train_encoder: bool = False,
+    basis_order: str = "row_norm",
+    readout_fallback: "str | None" = None,
+    host_encoder: "Any | None" = None,
+    u_matrix: "np.ndarray | None" = None,
+    gain: "np.ndarray | None" = None,
+    train_steps: int = 300,
+    train_lr: float = 1e-3,
+    train_seed: int = 0,
 ) -> list[ParetoFrontierRow]:
     """Run a capability-aware Pareto sweep over the basis-config cube.
 
@@ -268,6 +347,10 @@ def sweep_pareto_capability(
         encodings = None  # type: ignore[assignment]
     if scale_boosts is None or not scale_boosts:
         scale_boosts = [1.0]
+    if basis_order not in ("row_norm", "readout_aligned"):
+        raise ValueError(
+            f"basis_order must be 'row_norm' or 'readout_aligned'; got {basis_order!r}"
+        )
 
     # Resolve the (label, path) list. Per the openspec, exactly one of
     # encodings / sae_checkpoint must be provided (legacy informational
@@ -383,6 +466,14 @@ def sweep_pareto_capability(
         for w in widths
         for s in scale_boosts
     ]
+    # Resolve the per-encoding feature ordering for the width slice once (basis_order policy, task 3.1/3.2).
+    orders = {
+        enc.label: _resolve_basis_order(
+            enc, basis_order=basis_order, u_matrix=u_matrix, gain=gain,
+            host_model_id=host_model_id, readout_fallback=readout_fallback,
+        )
+        for enc in loaded_encodings
+    }
     rows: list[ParetoFrontierRow] = []
     frontier_path = output_dir / "frontier.jsonl"
     if frontier_path.exists():
@@ -399,12 +490,20 @@ def sweep_pareto_capability(
                 Y=Y,
                 W_dec_full=enc_state.W_dec_full,
                 row_norms=enc_state.row_norms,
-                order=enc_state.order,
+                order=orders[enc_state.label],
                 host_pf_auc=host_pf_auc,
                 host_mauc=host_mauc,
                 host_cov95=host_cov95,
                 device=device,
                 partition_block_ids=enc_state.partition_block_ids,
+                train_encoder=train_encoder,
+                host_encoder=host_encoder if host_encoder is not None else dataset.encoder,
+                host_X=host_X,
+                output_dir=output_dir,
+                basis_order=basis_order if basis_order != "row_norm" else None,
+                train_steps=train_steps,
+                train_lr=train_lr,
+                train_seed=train_seed,
             )
         except Exception as exc:  # noqa: BLE001 — surface failures per-row
             row = ParetoFrontierRow(
@@ -518,6 +617,14 @@ def _run_capability_cell(
     host_cov95: float,
     device: str,
     partition_block_ids: np.ndarray | None = None,
+    train_encoder: bool = False,
+    host_encoder: Any = None,
+    host_X: Any = None,
+    output_dir: Path | None = None,
+    basis_order: str | None = None,
+    train_steps: int = 300,
+    train_lr: float = 1e-3,
+    train_seed: int = 0,
 ) -> ParetoFrontierRow:
     """Run one sweep cell. Returns a populated ParetoFrontierRow.
 
@@ -557,31 +664,57 @@ def _run_capability_cell(
         merged_norms=row_norms[kept].astype(np.float64),
         original_norms=row_norms[kept].astype(np.float64),
     )
-    projector = SubspaceProjector(basis=basis, scale_boost=cell.scale_boost)
-
     host = load_host_for_forge(host_model_id)
     adapter = adapter_for(host)
-    weights = projector.project_module(host, attention_width="host")
-    config = adapter.build_native_config(host, basis.n_features)
-    config.forward_mode = "native_in_basis"
-    model = NativeModel.from_projected_weights(config, weights)
-    model._move(dtype="float32", device=device)
-
-    forged_h = _extract_forged_activations(
-        model.torch_module,
-        host,
-        list(dataset.sequences),
-        device=device,
-        aggregator=dataset.aggregator,
-        max_seq_len=512,
-        feed=dataset.feed,
-    )
     W_dec_t = torch.from_numpy(W_dec_slice.astype(np.float32))
-    forged_d = forged_h @ W_dec_t
-    with torch.no_grad():
-        forge_z = dataset.encoder(forged_d.float())
-    forge_pf_auc = _best_auc_per_feature(forge_z.detach().cpu().numpy(), Y)
+
+    def _forge_pf_auc(projector: "SubspaceProjector") -> np.ndarray:
+        """Run the full forge with ``projector`` and return per-feature AUC vs Y (decode→encode→AUC)."""
+        weights = projector.project_module(host, attention_width="host")
+        config = adapter.build_native_config(host, basis.n_features)
+        config.forward_mode = "native_in_basis"
+        model = NativeModel.from_projected_weights(config, weights)
+        model._move(dtype="float32", device=device)
+        forged_h = _extract_forged_activations(
+            model.torch_module, host, list(dataset.sequences), device=device,
+            aggregator=dataset.aggregator, max_seq_len=512, feed=dataset.feed,
+        )
+        forged_d = forged_h @ W_dec_t
+        with torch.no_grad():
+            forge_z = dataset.encoder(forged_d.float())
+        return _best_auc_per_feature(forge_z.detach().cpu().numpy(), Y)
+
+    # Baseline (pinv) forge — always computed. The trained encoder, when on, is scored against this.
+    projector = SubspaceProjector(basis=basis, scale_boost=cell.scale_boost)
+    forge_pf_auc = _forge_pf_auc(projector)
     forge_mauc = float(np.nanmean(forge_pf_auc))
+
+    # Capability-trained encoder (add-capability-trained-encoder, task 3.2): fit E on the activation proxy,
+    # apply via encoder_override, and re-score the FULL forge against the pinv baseline (held-out, the gate).
+    retained_mauc_trained = retained_mauc_pinv_baseline = delta_heldout = None
+    encoder_trained = overfit_flag = False
+    encoder_artifact_path = None
+    if train_encoder:
+        from saeforge.training import train_encoder as _train_encoder
+        host_acts = host_X.detach().cpu().numpy() if hasattr(host_X, "detach") else np.asarray(host_X)
+        E, report = _train_encoder(
+            basis=basis, host_acts=host_acts, host_encoder=host_encoder, labels=Y,
+            scale_boost=float(SubspaceProjector(basis=basis, scale_boost=cell.scale_boost).scale_boost),
+            steps=train_steps, lr=train_lr, seed=train_seed,
+        )
+        trained_proj = SubspaceProjector(basis=basis, scale_boost=cell.scale_boost, encoder_override=E)
+        trained_pf_auc = _forge_pf_auc(trained_proj)
+        trained_mauc = float(np.nanmean(trained_pf_auc))
+        retained_mauc_trained = trained_mauc / host_mauc if host_mauc > 0 else None
+        retained_mauc_pinv_baseline = forge_mauc / host_mauc if host_mauc > 0 else None
+        if retained_mauc_trained is not None and retained_mauc_pinv_baseline is not None:
+            delta_heldout = retained_mauc_trained - retained_mauc_pinv_baseline
+        encoder_trained = True
+        overfit_flag = bool(report.overfit_flag)
+        if output_dir is not None:
+            art = Path(output_dir) / f"{cell.encoding_label}_w{n_features}_s{cell.scale_boost}.encoder.npy"
+            np.save(art, E)
+            encoder_artifact_path = str(art)
     valid = np.isfinite(forge_pf_auc)
     forge_cov95 = float((forge_pf_auc[valid] >= 0.95).mean()) if valid.any() else 0.0
 
@@ -636,6 +769,13 @@ def _run_capability_cell(
         n_features_negative_gap=n_negative,
         capability_aggregator=aggregator_label,
         capability_min_prevalence=int(dataset.min_prevalence),
+        retained_mauc_trained=_finite_or_none(retained_mauc_trained),
+        retained_mauc_pinv_baseline=_finite_or_none(retained_mauc_pinv_baseline),
+        delta_heldout=_finite_or_none(delta_heldout),
+        encoder_trained=encoder_trained,
+        overfit_flag=overfit_flag,
+        basis_order=basis_order,
+        encoder_artifact_path=encoder_artifact_path,
     )
 
 

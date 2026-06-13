@@ -1032,3 +1032,86 @@ def test_residue_feed_label_misalignment_raises(tmp_path: Path, _tiny_host_model
             output_dir=tmp_path / "sweep_misaligned",
             cache_host=False, device="cpu",
         )
+
+
+# ---------------------------------------------------------------------------
+# Suite 4: capability-trained encoder + readout-aligned ordering
+# (change add-capability-trained-encoder, task 3.4). Reuses the tiny-host
+# fixtures above.
+# ---------------------------------------------------------------------------
+
+
+def test_sweep_train_encoder_emits_trained_fields(tmp_path: Path, _tiny_host_model_id):
+    """train_encoder=True populates the trained fields, the sidecar E artifact, and the
+    pinv-baseline column equals a train_encoder=False run's retained_mauc_vs_host at the same cell."""
+    from saeforge import sweep_pareto_capability
+    from saeforge.datasets import CapabilityDataset
+
+    run_dir, bundle_path, seqs_path = _build_bio_sae_fixture(tmp_path)
+
+    def _dataset():
+        return CapabilityDataset.from_bio_sae(
+            run_dir, bundle_path, seqs_path, feed="pooled", n_proteins=4, sae_k=8,
+            tokenizer_id=_tiny_host_model_id,
+        )
+
+    common = dict(sae_checkpoint=run_dir / "sae.pt", host_model_id=_tiny_host_model_id,
+                  widths=[8], cache_host=True, device="cpu")
+    base_rows = sweep_pareto_capability(dataset=_dataset(), output_dir=tmp_path / "base", **common)
+    trained_rows = sweep_pareto_capability(
+        dataset=_dataset(), output_dir=tmp_path / "trained",
+        train_encoder=True, train_steps=40, train_seed=0, **common,
+    )
+    assert len(trained_rows) == 1 and trained_rows[0].error_message is None
+    r = trained_rows[0]
+    assert r.encoder_trained is True
+    assert r.retained_mauc_trained is not None
+    assert r.retained_mauc_pinv_baseline is not None
+    assert r.delta_heldout is not None
+    # the pinv-baseline column matches the no-train run's retained_mauc_vs_host at the same cell
+    assert r.retained_mauc_pinv_baseline == pytest.approx(
+        base_rows[0].retained_mauc_vs_host, abs=1e-6
+    )
+    # sidecar trained-encoder artifact exists and round-trips
+    assert r.encoder_artifact_path is not None
+    E = np.load(r.encoder_artifact_path)
+    assert E.shape[1] == r.n_features_kept_actual  # (d_model, n_features_kept)
+
+
+def test_readout_aligned_without_unembed_raises(tmp_path: Path, _tiny_host_model_id):
+    """basis_order='readout_aligned' on an encoder-only host (no unembed) raises, not silent row_norm."""
+    from saeforge import sweep_pareto_capability
+    from saeforge.datasets import CapabilityDataset
+
+    run_dir, bundle_path, seqs_path = _build_bio_sae_fixture(tmp_path)
+    dataset = CapabilityDataset.from_bio_sae(
+        run_dir, bundle_path, seqs_path, feed="pooled", n_proteins=4, sae_k=8,
+        tokenizer_id=_tiny_host_model_id,
+    )
+    # missing readout geometry is a fast config error (raised before the cell loop), not a silent row_norm
+    with pytest.raises(ValueError, match=r"readout_aligned|u_matrix"):
+        sweep_pareto_capability(
+            sae_checkpoint=run_dir / "sae.pt", host_model_id=_tiny_host_model_id,
+            dataset=dataset, widths=[8], output_dir=tmp_path / "ro_raise",
+            basis_order="readout_aligned", device="cpu",
+        )
+
+
+def test_readout_aligned_with_u_matrix_runs(tmp_path: Path, _tiny_host_model_id):
+    """Supplying u_matrix lets readout_aligned order the slice; rows carry basis_order."""
+    from saeforge import sweep_pareto_capability
+    from saeforge.datasets import CapabilityDataset
+
+    run_dir, bundle_path, seqs_path = _build_bio_sae_fixture(tmp_path, d_model=32)
+    dataset = CapabilityDataset.from_bio_sae(
+        run_dir, bundle_path, seqs_path, feed="pooled", n_proteins=4, sae_k=8,
+        tokenizer_id=_tiny_host_model_id,
+    )
+    U = np.random.default_rng(0).standard_normal((40, 32)).astype(np.float64)
+    rows = sweep_pareto_capability(
+        sae_checkpoint=run_dir / "sae.pt", host_model_id=_tiny_host_model_id,
+        dataset=dataset, widths=[8], output_dir=tmp_path / "ro_u",
+        basis_order="readout_aligned", u_matrix=U, device="cpu",
+    )
+    assert rows[0].error_message is None
+    assert rows[0].basis_order == "readout_aligned"
