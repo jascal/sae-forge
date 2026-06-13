@@ -1,47 +1,64 @@
 # Implementation tasks
 
+## Implementation status — de-risk milestone (2026-06-13)
+
+Landed the load-bearing core (tasks 0–2, 4.4, 5.1) + tests; the de-risk gate **passes** on a controlled
+synthetic fixture (bottleneck + nonlinear ReLU host-encoder): held-out retained-mAUC **pinv 0.713 →
+trained 0.839 (Δ +0.126)**, `overfit_flag=False`, early-stopped; the saturated control ties (Δ +0.000, no
+spurious gain). 13 new tests green; existing projector suite unaffected.
+
+Two implementation notes for the follow-up (sweep/CLI, tasks 3–4):
+- **`train_encoder` takes the decomposed pieces** (`host_acts`, `host_encoder`, `labels`) rather than a
+  `CapabilityDataset`, because `add-downstream-capability-target` is **not yet implemented** (0/36). A thin
+  `dataset=` wrapper adapts onto this core when that change lands (`CapabilityDataset.encoder` IS the
+  `host_encoder`). Task 2.3's signature is updated accordingly.
+- The capability infra **already on the public API** (`recipe_auc_matrix`, `load_host_unembed`,
+  `sweep_pareto_capability`) should be **reused** by task 3: `recipe_auc_matrix` for held-out scoring (replace
+  `encoder.py`'s local `_auc_matrix`) and `load_host_unembed` as the `u_matrix` source for `readout_aligned`.
+
 ## 0. Design pre-locks (blocking)
 
-- [ ] 0.1 Confirm `SubspaceProjector.encode` is the single read-path for the basis projection
+- [x] 0.1 Confirm `SubspaceProjector.encode` is the single read-path for the basis projection
   (`saeforge/projector.py:145`, `return x @ self.basis.pseudoinverse() * self.scale_boost`) and that adding
   an `encoder_override` branch there covers every caller (no other code multiplies by `pinv(W_dec)` directly).
-- [ ] 0.2 Confirm the `encoder_override` is the **full** map (absorbs `scale_boost`): `encode` MUST NOT
+- [x] 0.2 Confirm the `encoder_override` is the **full** map (absorbs `scale_boost`): `encode` MUST NOT
   re-apply `scale_boost` when the override is set, else a `train_encoder` round-trip (init `pinv·scale`)
   double-applies scale. Lock this in `__post_init__` + `encode`.
-- [ ] 0.3 Lock matched capacity: `encoder_override.shape == (d_model, n_features)` — identical DOF to the
+- [x] 0.3 Lock matched capacity: `encoder_override.shape == (d_model, n_features)` — identical DOF to the
   `pinv` it replaces (the "tied" design, Decision 1). Construction raises `ValueError` on any other shape.
-- [ ] 0.4 Lock the held-out gate convention: `train_encoder` carves a disjoint split, reports BOTH the
+- [x] 0.4 Lock the held-out gate convention: `train_encoder` carves a disjoint split, reports BOTH the
   trained-E and the `pinv` baseline retained-mAUC on the *same* held-out split; the fit-split numbers are
   reported but never gate (Decision 3).
-- [ ] 0.5 Confirm `objective="distill"` (label-free, host-latent matching) is the default and the rank-AUC
+- [x] 0.5 Confirm `objective="distill"` (label-free, host-latent matching) is the default and the rank-AUC
   metric is **scoring-only, never the loss** (Decision 2) — re-affirm against
   `saeforge/eval/targets/downstream_capability.py`'s AUC matmul (reused for scoring only).
 
 ## 1. `saeforge/projector.py` — optional trained encoder
 
-- [ ] 1.1 Add field `encoder_override: Optional[np.ndarray] = None` to `SubspaceProjector`.
-- [ ] 1.2 `__post_init__`: when `encoder_override` is not None, validate `ndim == 2` and
+- [x] 1.1 Add field `encoder_override: Optional[np.ndarray] = None` to `SubspaceProjector`.
+- [x] 1.2 `__post_init__`: when `encoder_override` is not None, validate `ndim == 2` and
   `shape == (basis.d_model, basis.n_features)`; cast to `W_dec`'s dtype; raise `ValueError` otherwise.
   The existing `scale_boost` validation/auto path runs unchanged and is **ignored for `encode`** when the
   override is set (document: the override already absorbs scale).
-- [ ] 1.3 `encode(x)`: `return x @ self.encoder_override` when set; else the existing
+- [x] 1.3 `encode(x)`: `return x @ self.encoder_override` when set; else the existing
   `x @ pinv(W_dec) * scale_boost`. `decode` unchanged.
-- [ ] 1.4 Unit tests `tests/test_projector_encoder_override.py`:
+- [x] 1.4 Unit tests `tests/test_projector_encoder_override.py`:
   - `encoder_override=None` ⇒ `encode` byte-identical to current behavior (regression guard) on `tiny_gpt2`.
   - `encoder_override = pinv(W_dec)*scale_boost` reproduces the default `encode` exactly (round-trip identity).
   - bad shape / ndim raises `ValueError` with an actionable message.
 
 ## 2. `saeforge/training/encoder.py` — `train_encoder` (matched-capacity fit)
 
-- [ ] 2.1 New module. Lazy torch via `require_extra` (no torch import at module scope); reuses the
+- [x] 2.1 New module. Lazy torch via `require_extra` (no torch import at module scope); reuses the
   `CapabilityDataset` from `add-downstream-capability-target` and that target's Mann-Whitney AUC matmul for
   **scoring only**.
-- [ ] 2.2 `EncoderCalibrationReport` dataclass: `retained_mauc_trained`, `retained_mauc_pinv_baseline`,
+- [x] 2.2 `EncoderCalibrationReport` dataclass: `retained_mauc_trained`, `retained_mauc_pinv_baseline`,
   `delta_heldout`, `retained_mauc_trained_fit`, `objective`, `steps`, `lr`, `holdout_frac`, `n_fit`,
   `n_heldout`, `overfit_flag` (True iff fit improves but held-out regresses vs baseline).
-- [ ] 2.3 `train_encoder(*, basis, dataset, objective="distill", loss="cosine", init="pinv", steps=300,
-  lr=1e-3, holdout_frac=0.3, patience=30, host_encoder=None, seed=0)`:
-  - Carve a disjoint fit/held-out split (seeded) over `dataset` items.
+- [x] 2.3 `train_encoder(*, basis, host_acts, host_encoder, labels, objective="distill", loss="cosine",
+  init="pinv", scale_boost=1.0, steps=300, lr=1e-3, holdout_frac=0.3, patience=30, eval_every=5, seed=0)`
+  — decomposed inputs pending `CapabilityDataset` (status note); `host_encoder` == `CapabilityDataset.encoder`:
+  - Carve a disjoint fit/held-out split (seeded) over items.
   - `E = nn.Parameter(pinv(W_dec)*scale_boost)`; Adam(lr). Loss per `objective` (design.md Decision 2,
     precise definition — `host_encoder` is the `CapabilityDataset.encoder`, NOT the host transformer):
     - `"distill"` (label-free): `dist( host_encoder((x @ E) @ W_dec), host_encoder(x) )` on the fit split,
@@ -52,9 +69,9 @@
   - After training: score retained-mAUC of the trained `E` AND of `pinv` on the held-out split (same items);
     fill the report (incl. both fit and held-out curves); set `overfit_flag`.
   - Return `(E.detach().cpu().numpy(), report)`.
-- [ ] 2.4 Pin `lr`/`steps` defaults from the gate reproduction; expose both fit and held-out curves so the
+- [x] 2.4 Pin `lr`/`steps` defaults from the gate reproduction; expose both fit and held-out curves so the
   under-/over-fit regime is visible (R2 saw both — Decision 1 / open question).
-- [ ] 2.5 Unit tests `tests/test_train_encoder.py`:
+- [x] 2.5 Unit tests `tests/test_train_encoder.py`:
   - Identity host-encoder + identity basis + `objective="distill"`: trained `E` stays ≈ `pinv` and held-out
     retained-mAUC ≈ baseline (no spurious gain on a saturated fixture).
   - A synthetic fixture where a non-Frobenius `E` is provably better (planted label-aligned direction the
@@ -95,14 +112,14 @@
   the simpler (pinv) forge. The `0.02` threshold is a flag (`--trained-margin`); ties default to pinv.
 - [ ] 4.3 CLI help text documents the encoder-only-family readout caveat and the held-out gate.
 
-- [ ] 4.4 **De-risk script (run early, before the full sweep wiring):**
+- [x] 4.4 **De-risk script (run early, before the full sweep wiring):**
   `scripts/forge_trained_encoder_gate.py` — load one bio fixture, fit `train_encoder` at the single gate
   width, print trained vs pinv held-out retained-mAUC + `overfit_flag`. This exercises the core claim
   (tasks 1–2) on real data before the sweep/CLI surface exists, per the reviewer's de-risk suggestion.
 
 ## 5. Exports + docs
 
-- [ ] 5.1 Export `train_encoder`, `EncoderCalibrationReport` from `saeforge.training.__init__` and
+- [x] 5.1 Export `train_encoder`, `EncoderCalibrationReport` from `saeforge.training.__init__` and
   `saeforge.__init__`; export the `encoder_override` field is already on the public `SubspaceProjector`.
 - [ ] 5.2 Route the gate results into `FORGE_TAX_TRACK.md` (sae-forge) — trained-E vs pinv retained-mAUC on
   the two bio fixtures, held-out, with the overfit-mode note. No new doc page.

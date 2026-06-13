@@ -50,7 +50,7 @@ from __future__ import annotations
 
 import warnings
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Union
+from typing import TYPE_CHECKING, Optional, Union
 
 import numpy as np
 
@@ -93,6 +93,12 @@ class SubspaceProjector:
 
     basis: FeatureBasis
     scale_boost: Union[float, str] = 1.0
+    # Optional trained encoder (capability-trained "supervised forge", change
+    # add-capability-trained-encoder). When set it REPLACES ``pinv(W_dec) * scale_boost``
+    # as the effective encode map — same shape ``(d_model, n_features)`` (matched capacity),
+    # and it already absorbs ``scale_boost`` (not re-applied). ``None`` ⇒ behaviour is
+    # byte-identical to the Frobenius pinv path.
+    encoder_override: Optional[np.ndarray] = None
 
     def __post_init__(self) -> None:
         # Resolve "auto" first so the float invariants below see a numeric value.
@@ -122,6 +128,26 @@ class SubspaceProjector:
                 UserWarning,
                 stacklevel=2,
             )
+        # Validate the optional trained encoder (matched capacity, full map).
+        if self.encoder_override is not None:
+            E = np.asarray(self.encoder_override)
+            expected = (self.basis.d_model, self.basis.n_features)
+            if E.ndim != 2 or E.shape != expected:
+                raise ValueError(
+                    f"encoder_override must have shape (d_model, n_features) = "
+                    f"{expected} — the same shape as pinv(W_dec); got {E.shape}. "
+                    f"The trained encoder is matched-capacity by design."
+                )
+            # The override IS the full encode map (it already absorbs scale_boost);
+            # cast to W_dec's dtype so encode/decode stay numerically consistent.
+            self.encoder_override = np.ascontiguousarray(E, dtype=self.basis.W_dec.dtype)
+
+    def _effective_encoder(self) -> np.ndarray:
+        """The encode matrix actually used: the trained override if set (already the full
+        map), else the Frobenius ``pinv(W_dec) * scale_boost``."""
+        if self.encoder_override is not None:
+            return self.encoder_override
+        return self.basis.pseudoinverse() * self.scale_boost
 
     def _auto_scale_boost(self) -> float:
         """Heuristic default for over-complete bases.
@@ -143,8 +169,11 @@ class SubspaceProjector:
         return float(d) / float(n)
 
     def encode(self, x: np.ndarray) -> np.ndarray:
-        """Project ``x`` (..., d_model) into the basis (..., n_features)."""
-        return x @ self.basis.pseudoinverse() * self.scale_boost
+        """Project ``x`` (..., d_model) into the basis (..., n_features).
+
+        Uses the trained ``encoder_override`` when set (the full map, no scale re-applied),
+        else ``pinv(W_dec) * scale_boost``."""
+        return x @ self._effective_encoder()
 
     def decode(self, z: np.ndarray) -> np.ndarray:
         """Reconstruct (..., d_model) from basis-space ``z`` (..., n_features)."""
@@ -169,7 +198,9 @@ class SubspaceProjector:
                 f"project_residual_full expects (d_model, d_model) = "
                 f"({self.basis.d_model}, {self.basis.d_model}); got {W.shape}"
             )
-        return self.basis.W_dec @ W @ self.basis.pseudoinverse() * self.scale_boost
+        # D @ W @ E, with E the effective encoder (trained override or pinv*scale) so the
+        # both-sides feature-native path stays consistent with encode().
+        return self.basis.W_dec @ W @ self._effective_encoder()
 
     def project_qkv_full(self, W: np.ndarray) -> np.ndarray:
         """(d_model, 3 * d_model) -> (n_features, 3 * n_features). v0.2 feature-native c_attn.

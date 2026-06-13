@@ -41,6 +41,7 @@ from saeforge.training.concept_anchor import (
     LabelSource,
     register_label_source,
 )
+from saeforge.training.encoder import EncoderCalibrationReport, train_encoder
 from saeforge.world_model import WorldModel
 
 __version__ = "0.14.0"
@@ -65,6 +66,7 @@ __all__ = [
     "QualityTier",
     "Recipe",
     "RegrowController",
+    "EncoderCalibrationReport",
     "SubspaceProjector",
     "WorldModel",
     "__version__",
@@ -88,6 +90,7 @@ __all__ = [
     "sweep_pareto_capability",
     "sweep_pareto_capability_progressive",
     "top1_is_anomalous",
+    "train_encoder",
 ]
 
 
