@@ -837,6 +837,17 @@ def _build_parser() -> argparse.ArgumentParser:
         "--train-steps", type=int, default=300,
         help="Steps for --train-encoder per cell (default: 300; early-stops on held-out plateau).",
     )
+    cap.add_argument(
+        "--train-objective",
+        choices=["proxy", "full_forge"],
+        default="proxy",
+        help=(
+            "Objective for --train-encoder (add-full-forge-encoder-training). 'proxy' (default) fits E on "
+            "the cheap activation path host_encoder((x@E)@W_dec)~host_encoder(x). 'full_forge' fits E through "
+            "the FULL differentiable forge (E applied to the host weights -> forged forward) — the objective "
+            "that matches the eval metric — esm2-only in v1, far heavier, pooled feed."
+        ),
+    )
 
     # ------------------------------------------------------------------
     # recommend — pick the smallest-parameter row meeting a predicate.
@@ -2124,6 +2135,7 @@ def _cmd_sweep_capability(args: argparse.Namespace) -> int:
     # Capability-trained encoder + readout-aligned ordering flags (add-capability-trained-encoder, task 4).
     train_kwargs = dict(
         train_encoder=args.train_encoder,
+        train_objective=args.train_objective,
         basis_order=args.basis_order,
         readout_fallback=args.readout_fallback,
         train_steps=args.train_steps,

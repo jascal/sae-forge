@@ -272,6 +272,7 @@ def sweep_pareto_capability(
     max_seq_len: int = 512,
     device: str = "cpu",
     train_encoder: bool = False,
+    train_objective: str = "proxy",
     basis_order: str = "row_norm",
     readout_fallback: "str | None" = None,
     host_encoder: "Any | None" = None,
@@ -350,6 +351,10 @@ def sweep_pareto_capability(
     if basis_order not in ("row_norm", "readout_aligned"):
         raise ValueError(
             f"basis_order must be 'row_norm' or 'readout_aligned'; got {basis_order!r}"
+        )
+    if train_objective not in ("proxy", "full_forge"):
+        raise ValueError(
+            f"train_objective must be 'proxy' or 'full_forge'; got {train_objective!r}"
         )
 
     # Resolve the (label, path) list. Per the openspec, exactly one of
@@ -497,6 +502,7 @@ def sweep_pareto_capability(
                 device=device,
                 partition_block_ids=enc_state.partition_block_ids,
                 train_encoder=train_encoder,
+                train_objective=train_objective,
                 host_encoder=host_encoder if host_encoder is not None else dataset.encoder,
                 host_X=host_X,
                 output_dir=output_dir,
@@ -618,6 +624,7 @@ def _run_capability_cell(
     device: str,
     partition_block_ids: np.ndarray | None = None,
     train_encoder: bool = False,
+    train_objective: str = "proxy",
     host_encoder: Any = None,
     host_X: Any = None,
     output_dir: Path | None = None,
@@ -697,10 +704,16 @@ def _run_capability_cell(
     if train_encoder:
         from saeforge.training import train_encoder as _train_encoder
         host_acts = host_X.detach().cpu().numpy() if hasattr(host_X, "detach") else np.asarray(host_X)
+        sb = float(SubspaceProjector(basis=basis, scale_boost=cell.scale_boost).scale_boost)
+        train_kw: dict = dict(steps=train_steps, lr=train_lr, seed=train_seed, scale_boost=sb)
+        if train_objective == "full_forge":
+            # Train E through the FULL differentiable forge (add-full-forge-encoder-training), not the proxy.
+            from saeforge.forge_diff import DifferentiableEsm2Forge
+            forge = DifferentiableEsm2Forge(host, basis, scale_boost=sb, device=device)
+            train_kw.update(objective="forge_distill", forge=forge,
+                            sequences=list(dataset.sequences), feed=dataset.feed)
         E, report = _train_encoder(
-            basis=basis, host_acts=host_acts, host_encoder=host_encoder, labels=Y,
-            scale_boost=float(SubspaceProjector(basis=basis, scale_boost=cell.scale_boost).scale_boost),
-            steps=train_steps, lr=train_lr, seed=train_seed,
+            basis=basis, host_acts=host_acts, host_encoder=host_encoder, labels=Y, **train_kw,
         )
         trained_proj = SubspaceProjector(basis=basis, scale_boost=cell.scale_boost, encoder_override=E)
         trained_pf_auc = _forge_pf_auc(trained_proj)

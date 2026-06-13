@@ -1115,3 +1115,27 @@ def test_readout_aligned_with_u_matrix_runs(tmp_path: Path, _tiny_host_model_id)
     )
     assert rows[0].error_message is None
     assert rows[0].basis_order == "readout_aligned"
+
+
+def test_sweep_train_objective_full_forge(tmp_path: Path, _tiny_host_model_id):
+    """train_objective='full_forge' fits E through the differentiable forge and populates trained fields
+    (add-full-forge-encoder-training task 3.2). Pooled feed; tiny host."""
+    from saeforge import sweep_pareto_capability
+    from saeforge.datasets import CapabilityDataset
+
+    run_dir, bundle_path, seqs_path = _build_bio_sae_fixture(tmp_path)
+    dataset = CapabilityDataset.from_bio_sae(
+        run_dir, bundle_path, seqs_path, feed="pooled", n_proteins=4, sae_k=8,
+        tokenizer_id=_tiny_host_model_id,
+    )
+    rows = sweep_pareto_capability(
+        sae_checkpoint=run_dir / "sae.pt", host_model_id=_tiny_host_model_id,
+        dataset=dataset, widths=[8], output_dir=tmp_path / "ff",
+        train_encoder=True, train_objective="full_forge", train_steps=6, device="cpu",
+    )
+    assert len(rows) == 1 and rows[0].error_message is None, getattr(rows[0], "error_message", None)
+    r = rows[0]
+    assert r.encoder_trained is True
+    assert r.retained_mauc_trained is not None
+    assert r.retained_mauc_pinv_baseline is not None
+    assert r.encoder_artifact_path is not None

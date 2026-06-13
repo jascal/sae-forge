@@ -31,7 +31,7 @@ REGIMES = {
 }
 
 
-def run_regime(name, cfg, bio_root, out_dir, device, steps, widths):
+def run_regime(name, cfg, bio_root, out_dir, device, steps, widths, train_objective="proxy", seeds=(0,)):
     from saeforge import sweep_pareto_capability
     from saeforge.datasets import CapabilityDataset
 
@@ -42,28 +42,40 @@ def run_regime(name, cfg, bio_root, out_dir, device, steps, widths):
         n_proteins=cfg["n_proteins"], max_seq_len=512,
         min_prevalence=cfg["min_prevalence"], sae_k=cfg["sae_k"],
     )
-    d_model = int(dataset.labels.shape[1]) if False else None  # noqa: F841 (kept for clarity)
-    rows = sweep_pareto_capability(
-        sae_checkpoint=run_dir / "sae.pt", host_model_id="facebook/esm2_t6_8M_UR50D",
-        dataset=dataset, widths=widths or [cfg["width"]], scale_boosts=[1.0],
-        output_dir=out_dir / name, cache_host=True, device=device,
-        train_encoder=True, train_steps=steps, train_seed=0,
-    )
+    import numpy as np
+    wlist = widths or [cfg["width"]]
+    # per-(width) list of (delta, pinv, trained, overfit) across seeds
+    per_width = {w: [] for w in wlist}
+    for seed in seeds:
+        rows = sweep_pareto_capability(
+            sae_checkpoint=run_dir / "sae.pt", host_model_id="facebook/esm2_t6_8M_UR50D",
+            dataset=dataset, widths=wlist, scale_boosts=[1.0],
+            output_dir=out_dir / f"{name}_s{seed}", cache_host=True, device=device,
+            train_encoder=True, train_objective=train_objective, train_steps=steps, train_seed=seed,
+        )
+        for r in rows:
+            if r.error_message is not None:
+                print(f"   [seed {seed}] n={r.target_n_features_kept}: ERROR {r.error_message}")
+                continue
+            per_width[r.target_n_features_kept].append(
+                (r.delta_heldout, r.retained_mauc_pinv_baseline, r.retained_mauc_trained, r.overfit_flag))
     out = []
-    print(f"\n== {name} ({cfg['feed']} feed) ==")
-    for r in rows:
-        if r.error_message is not None:
-            print(f"   n={r.target_n_features_kept}: ERROR {r.error_message}")
-            out.append({"regime": name, "width": r.target_n_features_kept, "error": r.error_message})
-            continue
-        pinv, trained, delta = r.retained_mauc_pinv_baseline, r.retained_mauc_trained, r.delta_heldout
-        gate = "PASS" if (delta is not None and delta >= -1e-4) else "FAIL"
-        print(f"   n={r.target_n_features_kept:>4}: held-out retained-mAUC  pinv {pinv:.4f} → trained "
-              f"{trained:.4f}  (Δ {delta:+.4f})  overfit={r.overfit_flag}  [{gate}]")
-        out.append({"regime": name, "width": r.target_n_features_kept, "feed": cfg["feed"],
-                    "retained_mauc_pinv_baseline": pinv, "retained_mauc_trained": trained,
-                    "delta_heldout": delta, "overfit_flag": r.overfit_flag,
-                    "host_baseline_mauc": r.host_baseline_mauc, "gate": gate})
+    print(f"\n== {name} ({cfg['feed']} feed, objective={train_objective}, seeds={seeds}) ==")
+    for w in wlist:
+        recs = per_width[w]
+        if not recs:
+            out.append({"regime": name, "width": w, "error": "all seeds errored"}); continue
+        deltas = np.array([x[0] for x in recs], float)
+        mean_d, std_d = float(deltas.mean()), float(deltas.std())
+        gate = "PASS" if mean_d >= -1e-4 else "FAIL"
+        print(f"   n={w:>4}: held-out retained-mAUC  pinv {np.mean([x[1] for x in recs]):.4f} → trained "
+              f"{np.mean([x[2] for x in recs]):.4f}   Δ mean {mean_d:+.4f} ± {std_d:.4f} (n_seed={len(recs)})  "
+              f"[{gate}]")
+        out.append({"regime": name, "width": w, "feed": cfg["feed"], "objective": train_objective,
+                    "n_seeds": len(recs), "delta_mean": mean_d, "delta_std": std_d,
+                    "pinv_mean": float(np.mean([x[1] for x in recs])),
+                    "trained_mean": float(np.mean([x[2] for x in recs])),
+                    "any_overfit": bool(any(x[3] for x in recs)), "gate": gate})
     return out
 
 
@@ -75,19 +87,28 @@ def main():
     ap.add_argument("--device", default="cpu")
     ap.add_argument("--steps", type=int, default=300)
     ap.add_argument("--widths", default=None, help="comma-separated widths (override the regime default)")
+    ap.add_argument("--train-objective", choices=["proxy", "full_forge"], default="proxy")
+    ap.add_argument("--seeds", default="0", help="comma-separated seeds (multi-seed gate, e.g. 0,1,2)")
+    ap.add_argument("--n-proteins", type=int, default=None, help="override regime n_proteins (full_forge is heavy)")
     args = ap.parse_args()
+    if args.n_proteins is not None:
+        for cfg in REGIMES.values():
+            cfg["n_proteins"] = args.n_proteins
     args.out.mkdir(parents=True, exist_ok=True)
     widths = [int(w) for w in args.widths.split(",")] if args.widths else None
-    print("== capability-trained-encoder FORMAL bio gate (compression-controlled, held-out) ==")
+    seeds = [int(s) for s in args.seeds.split(",")]
+    print(f"== capability-trained-encoder FORMAL bio gate (compression-controlled, held-out; "
+          f"objective={args.train_objective}, seeds={seeds}) ==")
     results = []
     for n in args.regimes:
-        results.extend(run_regime(n, REGIMES[n], args.bio_root, args.out, args.device, args.steps, widths))
+        results.extend(run_regime(n, REGIMES[n], args.bio_root, args.out, args.device, args.steps, widths,
+                                  train_objective=args.train_objective, seeds=seeds))
     json.dump(results, open(args.out / "bio_gate_summary.json", "w"), indent=2)
     ok = [r for r in results if "error" not in r]
     print("\n== verdict ==")
     for r in ok:
-        print(f"   {r['regime']:<13} n={r['width']:>4}  Δ {r['delta_heldout']:+.4f}  [{r['gate']}]  "
-              f"(overfit={r['overfit_flag']})")
+        print(f"   {r['regime']:<13} n={r['width']:>4}  Δ mean {r['delta_mean']:+.4f} ± {r['delta_std']:.4f}  "
+              f"[{r['gate']}]  (any_overfit={r['any_overfit']}, n_seeds={r['n_seeds']})")
     print(f"   wrote {args.out / 'bio_gate_summary.json'}")
 
 
