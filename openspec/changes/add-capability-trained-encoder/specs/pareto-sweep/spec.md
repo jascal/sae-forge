@@ -31,10 +31,15 @@ Constraints:
   by `seed`; `holdout_frac` SHALL be in `(0, 1)`.
 - The trained `E` SHALL have shape exactly `(d_model, n_features)` (matched capacity —
   no additional degrees of freedom over the `pinv` it replaces).
-- `objective="distill"` (default) SHALL be **label-free**: the loss SHALL match the
-  forged→decoded latents to the **host** encoder's latents (MSE or cosine on host
-  feature activations) and SHALL require `host_encoder`. `objective="supervised"` SHALL
-  be a differentiable BCE of the decoded latents against `dataset.labels`.
+- `objective="distill"` (default) SHALL be **label-free** and SHALL require `host_encoder`
+  (the `CapabilityDataset.encoder`, i.e. the downstream task encoder — NOT the host
+  transformer). For a host hidden state `x`, the loss SHALL be
+  `dist( host_encoder((x @ E) @ W_dec), host_encoder(x) )` — making the basis-projected
+  residual read the same downstream latents the un-projected host residual does. `dist`
+  SHALL default to **cosine distance** (`loss="cosine"`; chosen over MSE because SAE
+  latents are sparse/magnitude-skewed) with standardized MSE available (`loss="mse"`).
+  `objective="supervised"` SHALL be a differentiable BCE-with-logits of the decoded
+  latents against `dataset.labels` (labels enter only here, never in `distill`).
 - The rank-AUC retained-mAUC metric SHALL be used for **scoring only** and SHALL NEVER
   be the training loss (the gameable-excess-metric guard; see `design.md` Decision 2).
 - The returned `EncoderCalibrationReport` SHALL carry, all measured on the **held-out**
@@ -71,24 +76,29 @@ Constraints:
 ### Requirement: `sweep_pareto_capability` opt-in trained encoder and readout-aligned ordering
 
 `saeforge.sweep_pareto_capability` SHALL accept `train_encoder: bool = False`,
-`basis_order: Literal["row_norm", "readout_aligned"] = "row_norm"`, and an optional
+`basis_order: Literal["row_norm", "readout_aligned"] = "row_norm"`,
+`readout_fallback: Literal["downstream_decode"] | None = None`, and an optional
 `host_encoder`. The defaults SHALL reproduce the current sweep exactly.
 
 - When `train_encoder=True`, the sweep SHALL fit a trained `E` per
-  `(encoding, width, scale_boost)` cell via `train_encoder(...)` and SHALL report the
-  trained held-out retained-mAUC **alongside** the `pinv` baseline (both on the held-out
-  split). The trained `E` SHALL be applied via `SubspaceProjector(encoder_override=E)`.
+  `(encoding, width, scale_boost)` cell via `train_encoder(...)`, SHALL cache `E` keyed by
+  `(basis hash, width, encoding, scale_boost, objective, seed)`, and SHALL **always**
+  compute the `pinv` baseline on the *same* held-out split for **every** cell (not only on
+  demand). It SHALL report the trained held-out retained-mAUC **alongside** the baseline.
+  The trained `E` SHALL be applied via `SubspaceProjector(encoder_override=E)`.
 - When `basis_order="readout_aligned"`, the width slice SHALL be ordered by a
   readout-aligned score (projection onto the top-competitor `gain⊙U` SVD subspace) when a
-  readout geometry (`u_matrix` + `gain`) is available. When it is not available
-  (encoder-only families: esm2, whisper_encoder), the sweep SHALL either raise a clear
-  error naming the missing `u_matrix` OR fall back to the downstream encoder's decode
-  geometry — the chosen behavior SHALL be documented per family and SHALL NOT silently
-  reorder by a different criterion.
+  readout geometry (`u_matrix` + `gain`, supplied or resolved from an LM-family adapter) is
+  available. When it is **not** available (encoder-only families: esm2, whisper_encoder),
+  the sweep SHALL **raise `ValueError`** naming the missing `u_matrix` and the family —
+  **unless** `readout_fallback="downstream_decode"`, in which case it SHALL emit a one-shot
+  `UserWarning` and order by the downstream encoder's decode geometry. It SHALL NEVER
+  silently revert to `row_norm`.
 - The per-cell row schema SHALL gain optional fields `retained_mauc_trained`,
-  `retained_mauc_pinv_baseline`, `encoder_trained` (bool), and `basis_order`, all
-  defaulting to `None`/`False`, preserving serialization back-compat with the existing
-  row schema.
+  `retained_mauc_pinv_baseline`, `delta_heldout`, `encoder_trained` (bool),
+  `overfit_flag` (bool), `basis_order`, and `encoder_artifact_path` (the sidecar path of
+  the trained `E` matrix), all defaulting to `None`/`False`, preserving serialization
+  back-compat with the existing row schema.
 
 #### Scenario: default sweep is unchanged
 
@@ -108,7 +118,11 @@ Constraints:
 #### Scenario: readout-aligned ordering on an encoder-only family is explicit
 
 - **WHEN** `basis_order="readout_aligned"` is requested for an `esm2` / `whisper_encoder`
-  forge with no `u_matrix` supplied
-- **THEN** the sweep SHALL either raise a clear error naming the missing readout geometry
-  OR use the documented downstream-decode-geometry fallback — never silently fall back to
-  `row_norm`
+  forge with no `u_matrix` supplied **and** `readout_fallback is None`
+- **THEN** the sweep SHALL raise `ValueError` naming the missing `u_matrix` and the family
+
+#### Scenario: readout-aligned fallback is explicit opt-in
+
+- **WHEN** the same encoder-only request is made with `readout_fallback="downstream_decode"`
+- **THEN** the sweep SHALL emit a one-shot `UserWarning` and order by the downstream
+  encoder's decode geometry — and SHALL NOT silently revert to `row_norm`

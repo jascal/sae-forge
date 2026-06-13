@@ -39,15 +39,18 @@
 - [ ] 2.2 `EncoderCalibrationReport` dataclass: `retained_mauc_trained`, `retained_mauc_pinv_baseline`,
   `delta_heldout`, `retained_mauc_trained_fit`, `objective`, `steps`, `lr`, `holdout_frac`, `n_fit`,
   `n_heldout`, `overfit_flag` (True iff fit improves but held-out regresses vs baseline).
-- [ ] 2.3 `train_encoder(*, basis, dataset, objective="distill", init="pinv", steps=300, lr=1e-3,
-  holdout_frac=0.3, host_encoder=None, seed=0)`:
+- [ ] 2.3 `train_encoder(*, basis, dataset, objective="distill", loss="cosine", init="pinv", steps=300,
+  lr=1e-3, holdout_frac=0.3, patience=30, host_encoder=None, seed=0)`:
   - Carve a disjoint fit/held-out split (seeded) over `dataset` items.
-  - `E = nn.Parameter(pinv(W_dec)*scale_boost)`; Adam(lr). Loss per `objective`:
-    - `"distill"`: MSE (or cosine) between `host_encoder(decode(forged_latents))` and the **host's** encoded
-      latents on the fit split (label-free). Requires `host_encoder`.
-    - `"supervised"`: BCE of decoded latents vs `dataset.labels` on the fit split.
+  - `E = nn.Parameter(pinv(W_dec)*scale_boost)`; Adam(lr). Loss per `objective` (design.md Decision 2,
+    precise definition — `host_encoder` is the `CapabilityDataset.encoder`, NOT the host transformer):
+    - `"distill"` (label-free): `dist( host_encoder((x @ E) @ W_dec), host_encoder(x) )` on the fit split,
+      where `dist` is **cosine distance** (`loss="cosine"`, default) or standardized MSE (`loss="mse"`).
+      Requires `host_encoder`.
+    - `"supervised"`: BCE-with-logits of decoded latents vs `dataset.labels` on the fit split.
+  - **Early-stop** on held-out-score plateau (`patience` steps with no held-out improvement; Decision 6).
   - After training: score retained-mAUC of the trained `E` AND of `pinv` on the held-out split (same items);
-    fill the report; set `overfit_flag`.
+    fill the report (incl. both fit and held-out curves); set `overfit_flag`.
   - Return `(E.detach().cpu().numpy(), report)`.
 - [ ] 2.4 Pin `lr`/`steps` defaults from the gate reproduction; expose both fit and held-out curves so the
   under-/over-fit regime is visible (R2 saw both — Decision 1 / open question).
@@ -62,25 +65,40 @@
 ## 3. `saeforge/sweep_capability.py` — opt-in trained encoder + readout-aligned ordering
 
 - [ ] 3.1 `_BasisCube`: add a `readout_aligned` ordering helper (project rows onto the top-competitor
-  `gain⊙U` SVD subspace) gated on a supplied `u_matrix`/`gain`; default ordering stays `row_norms`.
-- [ ] 3.2 `sweep_pareto_capability(..., train_encoder=False, basis_order="row_norm", host_encoder=None)`:
-  - `basis_order="readout_aligned"` selects the readout-aligned width slice **when a readout geometry is
-    available**; otherwise raises a clear error (encoder-only family without `u_matrix`) OR falls back to the
-    downstream encoder's decode geometry per family (documented).
-  - `train_encoder=True` calls `train_encoder(...)` per cell, caches `E`, and reports the trained retained-mAUC
-    alongside the pinv baseline.
+  `gain⊙U` SVD subspace) gated on a supplied/resolvable `u_matrix`/`gain`; default ordering stays `row_norms`.
+  Detection: LM-family adapters expose the unembed; encoder-only adapters return `None` (Decision 5).
+- [ ] 3.2 `sweep_pareto_capability(..., train_encoder=False, basis_order="row_norm",
+  readout_fallback=None, host_encoder=None)`:
+  - `basis_order="readout_aligned"`: order by the readout-aligned slice when a readout geometry is available;
+    when absent, **raise `ValueError`** naming the missing `u_matrix` + family, **unless**
+    `readout_fallback="downstream_decode"` (then warn once + use the downstream encoder's decode geometry).
+    Never silently revert to `row_norm` (Decision 5).
+  - `train_encoder=True`: call `train_encoder(...)` per cell; **cache** `E` keyed by `(basis hash, width,
+    encoding, scale_boost, objective, seed)`; **always** compute + store the `pinv` baseline on the *same*
+    held-out split for every cell (apples-to-apples, Decision 6); apply the trained `E` via
+    `SubspaceProjector(encoder_override=E)`.
 - [ ] 3.3 Extend the per-cell row schema with optional `retained_mauc_trained`,
-  `retained_mauc_pinv_baseline`, `encoder_trained` (bool), `basis_order` — all default `None`/`False`,
-  serialization back-compat with the existing row schema.
+  `retained_mauc_pinv_baseline`, `delta_heldout`, `encoder_trained` (bool), `overfit_flag` (bool),
+  `basis_order`, and `encoder_artifact_path` — all default `None`/`False`, serialization back-compat. The
+  trained `E` matrix is saved as a **sidecar** (`<cell>.encoder.npy` / safetensors entry beside the basis)
+  and referenced by `encoder_artifact_path`, keeping rows lightweight + the encoder reproducible (Decision 8).
 - [ ] 3.4 Tests `tests/test_sweep_capability_trained.py`: a `train_encoder=True` sweep on a tiny fixture
-  populates the new fields and the pinv-baseline column matches a `train_encoder=False` run at the same cell.
+  populates the new fields, the pinv-baseline column matches a `train_encoder=False` run at the same cell, the
+  sidecar `E` round-trips, and `basis_order="readout_aligned"` without `u_matrix` raises (and the
+  `readout_fallback` opt-in warns instead).
 
 ## 4. `saeforge/cli.py` — flags
 
 - [ ] 4.1 `sae-forge sweep capability` gains `--train-encoder` and `--basis-order {row_norm,readout_aligned}`.
-- [ ] 4.2 `sae-forge recommend` prefers a trained-encoder row when its **held-out** retained-mAUC clears the
-  pinv baseline by the reported margin; ties keep the simpler (pinv) forge.
+- [ ] 4.2 `sae-forge recommend` prefers a trained-encoder row only when `delta_heldout > 0.02`
+  (held-out retained-mAUC margin over the pinv baseline) **and** `overfit_flag is False`; otherwise it keeps
+  the simpler (pinv) forge. The `0.02` threshold is a flag (`--trained-margin`); ties default to pinv.
 - [ ] 4.3 CLI help text documents the encoder-only-family readout caveat and the held-out gate.
+
+- [ ] 4.4 **De-risk script (run early, before the full sweep wiring):**
+  `scripts/forge_trained_encoder_gate.py` — load one bio fixture, fit `train_encoder` at the single gate
+  width, print trained vs pinv held-out retained-mAUC + `overfit_flag`. This exercises the core claim
+  (tasks 1–2) on real data before the sweep/CLI surface exists, per the reviewer's de-risk suggestion.
 
 ## 5. Exports + docs
 
@@ -91,7 +109,9 @@
 
 ## 6. Acceptance gate (blocking merge)
 
-- [ ] 6.1 Compression-controlled, held-out: trained-E retained-mAUC **≥ pinv baseline** on bio-sae's spread
-  (`uniref50_n5000` pooled, n=512) and concentrated (`uniref50_small` residue, n=16) fixtures. A tie is a pass
-  (reported descriptively); trained-E < baseline on held-out is the documented overfit failure (must surface,
-  not hide). No "closes the tax" / "irreducible" language either way (`no-necessity-claims`).
+- [ ] 6.1 Compression-controlled, held-out: trained-E retained-mAUC **≥ pinv baseline**. Spread
+  (`uniref50_n5000` pooled, n=512): single seed, report held-out n. Concentrated (`uniref50_small` residue,
+  n=16): **multi-seed** `{0,1,2,3,4}` — require **mean** trained-E ≥ mean pinv baseline within tolerance,
+  report mean ± std (Decision 7; ~5 held-out items is noisy). A tie is a pass (reported descriptively);
+  trained-E < baseline on held-out is the documented overfit failure (must surface, not hide). No "closes the
+  tax" / "irreducible" language either way (`no-necessity-claims`).
