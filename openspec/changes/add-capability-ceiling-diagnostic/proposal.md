@@ -119,6 +119,36 @@ The verdict is the **decomposition**, not a pass/fail. No "irreducible" / "close
 `ceiling_gap` — it is a *measured gap at rank `N`*, achievability open, and the ceiling itself is empirical
 (a lower bound on the intrinsic cost).
 
+### Implemented + Gate RESULT (2026-06-13) — the encoder-side mirror of R2, + a matched-SAE control
+
+Implemented (`saeforge/capability_ceiling.py` + `scripts/capability_ceiling_gate.py` +
+`tests/test_capability_ceiling.py`; all baselines **activation/encoder-side** per the correction above) and run
+on **GPT-2 `hidden_states[8]`**, 3 seeds — with the **matched-SAE control** the FABLE list called for: the
+*same host + activation point*, a **ReLU** SAE (jbloom, 24576) vs a **TopK** SAE (OpenAI v5
+`blocks.7.hook_resid_post` = `hidden_states[8]`, k=32, 32768). Data:
+`scripts/capability_ceiling_gate_results.json`.
+
+| n=128 | `svd` (activation-PCA) | `pinv` (atoms) | `ceiling` (trained) | `interpretability_tax` | `selection_gap` |
+|---|---|---|---|---|---|
+| GPT-2 + **ReLU** | 0.959 | 0.767 | 0.948 | **+0.163** | +0.018 |
+| GPT-2 + **TopK** | 0.925 | 0.743 | 0.970 | **+0.257** | −0.030 |
+
+**Finding 1 — the encoder-side mirror of R2 (the deepest result).** The trained `ceiling` ≈ the closed-form
+**activation-PCA** `svd` (often `svd ≥ ceiling`). So on an **encoder-side** metric the closed-form subspace is
+**near-optimal** and training the subspace gives ~nothing — the exact opposite of decode-side R2, where a
+trained subspace beats frozen SVD by +52pp. This is the cleanest confirmation that "train-the-subspace beats
+closed-form" is **decode-specific**, and it explains *why* X2 (training the encoder) was a near-no-op: on the
+encoder side there is no closed-form gap to exploit. *(Caveat: `svd` is scored in-sample while `ceiling` is
+held-out, so the comparison is directional, not exact; the qualitative "training barely beats PCA" holds.)*
+
+**Finding 2 — the matched-SAE control (host held fixed).** ReLU and TopK leave **similar room** to the encoder
+optimum (`interpretability_tax` ≈ +0.16 vs +0.26; `selection_gap + interp_tax` ≈ +0.18 both), so the X2
+ReLU-vs-TopK asymmetry is **not** a gross `pinv`-conditioning difference. The real SAE-type signal is in
+**`selection_gap`**: **positive for ReLU** (capability-supervised atom selection helps) but **negative for
+TopK** (TopK's more uniform/orthogonal atoms make *which* atoms you keep matter less). So "fix it with atom
+selection" is a **ReLU-dictionary lever**, not a TopK one — a precise, host-controlled refinement of the
+SAE-type story. Descriptive; `no-necessity-claims`.
+
 ## Scope / what this is NOT
 
 - **Not a forge mode.** The trained subspace is computed and reported; it is **never** returned as a basis the

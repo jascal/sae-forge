@@ -1,5 +1,16 @@
 # Implementation tasks
 
+## Implementation status — DONE (2026-06-13)
+
+`saeforge/capability_ceiling.py` (`capability_ceiling_decomposition` — random/activation-PCA `svd`/`pinv`/
+capability-supervised `best_atoms`/trained `ceiling` + the three gaps, all **encoder-side** per PR #122),
+`scripts/capability_ceiling_gate.py` (+ the matched-SAE control: GPT-2 ReLU vs TopK at `hidden_states[8]`),
+`tests/test_capability_ceiling.py` (3). **Gate RESULT** in `proposal.md`: encoder-side `ceiling ≈ activation-PCA`
+(training the subspace is decode-specific — the mirror of R2); matched-SAE control shows the SAE-type signal is
+in `selection_gap` (ReLU + / TopK −), not gross `pinv` conditioning. *Note:* shipped as a standalone library +
+gate (the science); wiring `compute_capability_ceiling` into `sweep_pareto_capability`'s `ParetoFrontierRow` is
+a thin follow-up.
+
 ## 0. Design pre-locks (blocking)
 
 - [ ] 0.1 Lock the **activation-level** measurement: every quantity (`svd` / `pinv` / `best_atoms` / `ceiling` /

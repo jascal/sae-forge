@@ -1,0 +1,78 @@
+{
+  "relu": [
+    {
+      "retained_mauc_random": 0.6932969905556295,
+      "retained_mauc_svd": 0.9405042729169933,
+      "retained_mauc_pinv": 0.7600636027002431,
+      "retained_mauc_best_atoms": 0.7735000502706609,
+      "retained_mauc_ceiling": 0.9320951971165597,
+      "selection_gap": 0.013436447570417842,
+      "interpretability_tax": 0.15859514684589882,
+      "ceiling_gap": 0.06790480288344025,
+      "width": 64,
+      "any_overfit": false
+    },
+    {
+      "retained_mauc_random": 0.7196629741077113,
+      "retained_mauc_svd": 0.9587141620094236,
+      "retained_mauc_pinv": 0.7667414621309113,
+      "retained_mauc_best_atoms": 0.7851317500527069,
+      "retained_mauc_ceiling": 0.9480518667088695,
+      "selection_gap": 0.018390287921795534,
+      "interpretability_tax": 0.16292011665616268,
+      "ceiling_gap": 0.05194813329113046,
+      "width": 128,
+      "any_overfit": false
+    },
+    {
+      "retained_mauc_random": 0.7699424090389856,
+      "retained_mauc_svd": 0.9755742634786047,
+      "retained_mauc_pinv": 0.7888609747230649,
+      "retained_mauc_best_atoms": 0.8294780083202457,
+      "retained_mauc_ceiling": 0.9643682108178252,
+      "selection_gap": 0.04061703359718083,
+      "interpretability_tax": 0.13489020249757946,
+      "ceiling_gap": 0.035631789182174876,
+      "width": 256,
+      "any_overfit": false
+    }
+  ],
+  "topk": [
+    {
+      "retained_mauc_random": 0.6179458478913727,
+      "retained_mauc_svd": 0.8644825847713583,
+      "retained_mauc_pinv": 0.7025141929852462,
+      "retained_mauc_best_atoms": 0.6969571143515475,
+      "retained_mauc_ceiling": 0.9083756881173025,
+      "selection_gap": -0.005557078633698809,
+      "interpretability_tax": 0.21141857376575512,
+      "ceiling_gap": 0.09162431188269748,
+      "width": 64,
+      "any_overfit": false
+    },
+    {
+      "retained_mauc_random": 0.6580462335993702,
+      "retained_mauc_svd": 0.9248072971877063,
+      "retained_mauc_pinv": 0.7426342615592484,
+      "retained_mauc_best_atoms": 0.7131014278815616,
+      "retained_mauc_ceiling": 0.9703967828582267,
+      "selection_gap": -0.029532833677686776,
+      "interpretability_tax": 0.2572953549766651,
+      "ceiling_gap": 0.029603217141773275,
+      "width": 128,
+      "any_overfit": false
+    },
+    {
+      "retained_mauc_random": 0.7492595882168681,
+      "retained_mauc_svd": 0.9724788703719108,
+      "retained_mauc_pinv": 0.8293346638052035,
+      "retained_mauc_best_atoms": 0.7603017343492406,
+      "retained_mauc_ceiling": 0.9880480441689131,
+      "selection_gap": -0.06903292945596284,
+      "interpretability_tax": 0.22774630981967256,
+      "ceiling_gap": 0.011951955831086805,
+      "width": 256,
+      "any_overfit": false
+    }
+  ]
+}
